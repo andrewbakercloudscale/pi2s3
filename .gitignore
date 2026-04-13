@@ -1,0 +1,8 @@
+# User configuration — never commit this, it contains your bucket name and ntfy topic
+config.env
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
