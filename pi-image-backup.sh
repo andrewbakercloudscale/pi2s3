@@ -201,6 +201,44 @@ log "  Compressor:   ${COMPRESSOR_NAME}"
 log "  Pi model:     ${PI_MODEL}"
 log "  OS:           ${OS_PRETTY}"
 log "  Retention:    ${MAX_IMAGES} images"
+
+# ── Check Docker data-root is on the same device as boot ─────────────────────
+# If Docker's data-root is on a SEPARATE physical device (e.g. a USB drive),
+# that data won't be in the image — this is a critical gap.
+if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
+    DOCKER_ROOT=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || echo "")
+    if [[ -n "${DOCKER_ROOT}" && -d "${DOCKER_ROOT}" ]]; then
+        DOCKER_DEV_NAME=$(df --output=source "${DOCKER_ROOT}" 2>/dev/null \
+            | tail -1 | xargs -I{} lsblk -no PKNAME {} 2>/dev/null || true)
+        DOCKER_DEV="/dev/${DOCKER_DEV_NAME}"
+        BOOT_DEV_NAME=$(basename "${BOOT_DEV}")
+
+        if [[ -n "${DOCKER_DEV_NAME}" && "${DOCKER_DEV_NAME}" != "${BOOT_DEV_NAME}" ]]; then
+            log ""
+            log "  ┌─────────────────────────────────────────────────────────────┐"
+            log "  │ WARNING: Docker data is on a DIFFERENT device than boot!    │"
+            log "  │                                                             │"
+            log "  │   Boot device:   ${BOOT_DEV} (will be imaged)              │"
+            log "  │   Docker data:   ${DOCKER_DEV} (NOT in this image)         │"
+            log "  │                                                             │"
+            log "  │ Docker volumes, databases, and uploads will NOT be          │"
+            log "  │ included in this image. Use BACKUP_EXTRA_DEVICE in          │"
+            log "  │ config.env to also image the Docker device:                 │"
+            log "  │   BACKUP_EXTRA_DEVICE=\"${DOCKER_DEV}\"                        │"
+            log "  └─────────────────────────────────────────────────────────────┘"
+            log ""
+
+            # If user has configured the extra device, we'll image it too (below).
+            EXTRA_DEVICE="${BACKUP_EXTRA_DEVICE:-}"
+            if [[ -z "${EXTRA_DEVICE}" ]]; then
+                log "  Continuing with boot device only. Set BACKUP_EXTRA_DEVICE to fix this."
+            fi
+        else
+            log "  Docker data:  on ${BOOT_DEV} (same device — fully covered)"
+        fi
+    fi
+fi
+
 log "  Preflight OK."
 
 # ── Duplicate check ──────────────────────────────────────────────────────────
@@ -262,6 +300,32 @@ fi
 
 BACKUP_END=$(date +%s)
 BACKUP_DURATION=$(( BACKUP_END - BACKUP_START ))
+
+# ── Optional: image a second device (e.g. Docker data on separate drive) ─────
+EXTRA_DEVICE="${BACKUP_EXTRA_DEVICE:-}"
+if [[ -n "${EXTRA_DEVICE}" && -b "${EXTRA_DEVICE}" ]]; then
+    EXTRA_BASENAME=$(basename "${EXTRA_DEVICE}")
+    EXTRA_FILENAME="pi-image-extra-${EXTRA_BASENAME}-${TIMESTAMP}.img.gz"
+    EXTRA_S3_KEY="${S3_DATE_PREFIX}/${EXTRA_FILENAME}"
+    EXTRA_SIZE=$(blockdev --getsize64 "${EXTRA_DEVICE}" 2>/dev/null || echo "0")
+    EXTRA_SIZE_HUMAN=$(numfmt --to=iec "${EXTRA_SIZE}" 2>/dev/null || echo "?")
+
+    log ""
+    log "Imaging extra device ${EXTRA_DEVICE} (${EXTRA_SIZE_HUMAN})..."
+    log "  Key: ${EXTRA_S3_KEY}"
+
+    if [[ "${DRY_RUN}" != "true" ]]; then
+        # shellcheck disable=SC2086
+        dd if="${EXTRA_DEVICE}" bs=4M status=none 2>/dev/null \
+            | ${COMPRESSOR} \
+            | aws_cmd s3 cp - "s3://${S3_BUCKET}/${EXTRA_S3_KEY}" \
+                --storage-class "${S3_STORAGE_CLASS}" \
+                --no-progress
+        log "  Extra device imaged OK."
+    else
+        log "  [DRY RUN] Would image ${EXTRA_DEVICE} → s3://${S3_BUCKET}/${EXTRA_S3_KEY}"
+    fi
+fi
 
 # ── Restart Docker ───────────────────────────────────────────────────────────
 if [[ "${_CONTAINERS_STOPPED}" == "true" && -n "${_STOPPED_IDS}" ]]; then
