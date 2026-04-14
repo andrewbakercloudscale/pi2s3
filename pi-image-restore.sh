@@ -16,6 +16,7 @@
 #   bash pi-image-restore.sh --date 2026-04-12     # restore specific date
 #   bash pi-image-restore.sh --device /dev/disk4   # specify target device
 #   bash pi-image-restore.sh --yes                 # skip confirmation prompts
+#   bash pi-image-restore.sh --verify /dev/disk4   # verify flashed device SHA256
 #
 # Requirements:
 #   - config.env filled in (see config.env.example)
@@ -47,6 +48,7 @@ TARGET_DATE=""
 TARGET_DEVICE=""
 YES=false
 LIST_ONLY=false
+VERIFY_DEVICE=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -56,9 +58,11 @@ while [[ $# -gt 0 ]]; do
         --date=*)     TARGET_DATE="${1#--date=}" ;;
         --device)     shift; TARGET_DEVICE="${1:-}" ;;
         --device=*)   TARGET_DEVICE="${1#--device=}" ;;
+        --verify)     shift; VERIFY_DEVICE="${1:-}" ;;
+        --verify=*)   VERIFY_DEVICE="${1#--verify=}" ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--list] [--date YYYY-MM-DD] [--device /dev/...] [--yes]"
+            echo "Usage: $0 [--list] [--date YYYY-MM-DD] [--device /dev/...] [--yes] [--verify /dev/...]"
             exit 1
             ;;
     esac
@@ -129,6 +133,75 @@ list_backups() {
 if [[ "${LIST_ONLY}" == "true" ]]; then
     list_backups
     exit 0
+fi
+
+# ── Verify flashed device ─────────────────────────────────────────────────────
+# Usage: pi-image-restore.sh --verify /dev/disk4 [--date YYYY-MM-DD]
+# Re-reads the device and compares its SHA256 to the manifest.
+if [[ -n "${VERIFY_DEVICE}" ]]; then
+    log "========================================================"
+    log "  Pi MI — post-flash device verification"
+    log "========================================================"
+
+    [[ ! -b "${VERIFY_DEVICE}" ]] && die "Device not found: ${VERIFY_DEVICE}"
+
+    # Find the backup to compare against
+    if [[ -z "${TARGET_DATE}" ]]; then
+        TARGET_DATE=$(aws_cmd s3 ls "s3://${S3_BUCKET}/${S3_PREFIX}/" 2>/dev/null \
+            | grep PRE | awk '{print $2}' | tr -d '/' | sort -r | head -1 || true)
+        [[ -z "${TARGET_DATE}" ]] && die "No backups found. Specify --date to select one."
+        log "Using latest backup for comparison: ${TARGET_DATE}"
+    else
+        log "Using backup: ${TARGET_DATE}"
+    fi
+
+    VD_PATH="s3://${S3_BUCKET}/${S3_PREFIX}/${TARGET_DATE}"
+
+    VD_MFILE=$(aws_cmd s3 ls "${VD_PATH}/" 2>/dev/null \
+        | grep manifest | awk '{print $4}' | head -1 || true)
+    [[ -z "${VD_MFILE}" ]] && die "No manifest found for ${TARGET_DATE}"
+
+    VD_MANIFEST=$(aws_cmd s3 cp "${VD_PATH}/${VD_MFILE}" - 2>/dev/null) \
+        || die "Failed to read manifest"
+    VD_EXPECTED=$(echo "${VD_MANIFEST}" \
+        | grep -o '"device_sha256": *"[^"]*"' | cut -d'"' -f4 || true)
+
+    if [[ -z "${VD_EXPECTED}" ]]; then
+        die "No device_sha256 in manifest — this backup predates integrity support."
+    fi
+
+    VD_DEV_SIZE=$(blockdev --getsize64 "${VERIFY_DEVICE}" 2>/dev/null \
+        || lsblk -bdno SIZE "${VERIFY_DEVICE}" 2>/dev/null || echo "0")
+    VD_DEV_SIZE_HUMAN=$(numfmt --to=iec "${VD_DEV_SIZE}" 2>/dev/null || echo "?")
+
+    log ""
+    log "Device:          ${VERIFY_DEVICE} (${VD_DEV_SIZE_HUMAN})"
+    log "Expected SHA256: ${VD_EXPECTED}"
+    log ""
+    log "Reading device and computing SHA256..."
+    log "  (reads the entire device — same duration as the original backup)"
+
+    if [[ "${OS_TYPE}" == "Darwin" ]]; then
+        VD_READ_DEV="${VERIFY_DEVICE/\/dev\/disk//dev/rdisk}"
+    else
+        VD_READ_DEV="${VERIFY_DEVICE}"
+    fi
+
+    VD_ACTUAL=$(sudo dd if="${VD_READ_DEV}" bs=4M status=none 2>/dev/null \
+        | sha256sum \
+        | awk '{print $1}')
+
+    log "Actual SHA256:   ${VD_ACTUAL}"
+    log ""
+
+    if [[ "${VD_EXPECTED}" == "${VD_ACTUAL}" ]]; then
+        log "VERIFY OK — device matches S3 image exactly."
+        exit 0
+    else
+        log "VERIFY FAILED — SHA256 mismatch! Flash may be incomplete or corrupted."
+        log "  Try reflashing: bash pi-image-restore.sh --date ${TARGET_DATE} --device ${VERIFY_DEVICE}"
+        exit 1
+    fi
 fi
 
 # ── Header ────────────────────────────────────────────────────────────────────

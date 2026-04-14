@@ -19,6 +19,9 @@
 #   bash pi-image-backup.sh --setup       # create S3 lifecycle policy (run once)
 #   bash pi-image-backup.sh --force       # skip duplicate-check
 #   bash pi-image-backup.sh --dry-run     # show what would happen, no upload
+#   bash pi-image-backup.sh --list        # list all backups in S3
+#   bash pi-image-backup.sh --verify      # verify latest S3 image SHA256
+#   bash pi-image-backup.sh --verify=DATE # verify specific date (YYYY-MM-DD)
 #
 # Cron (installed automatically by install.sh):
 #   0 2 * * * bash /home/pi/pi-mi/pi-image-backup.sh >> /var/log/pi-mi-backup.log 2>&1
@@ -69,12 +72,18 @@ MANIFEST_S3_KEY="${S3_DATE_PREFIX}/${MANIFEST_FILENAME}"
 DRY_RUN=false
 FORCE=false
 SETUP=false
+LIST=false
+VERIFY=false
+VERIFY_DATE=""
 
 for arg in "$@"; do
     case "$arg" in
-        --dry-run)  DRY_RUN=true ;;
-        --force)    FORCE=true ;;
-        --setup)    SETUP=true ;;
+        --dry-run)    DRY_RUN=true ;;
+        --force)      FORCE=true ;;
+        --setup)      SETUP=true ;;
+        --list)       LIST=true ;;
+        --verify)     VERIFY=true ;;
+        --verify=*)   VERIFY=true; VERIFY_DATE="${arg#--verify=}" ;;
     esac
 done
 
@@ -82,6 +91,7 @@ _BACKUP_SUCCEEDED=false
 _CONTAINERS_STOPPED=false
 _STOPPED_IDS=""
 _START_TIME=$(date +%s)
+DEVICE_SHA256=""
 
 log()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 die()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $*" >&2; exit 1; }
@@ -140,6 +150,100 @@ if [[ "${SETUP}" == "true" ]]; then
         }"
     log "Done."
     exit 0
+fi
+
+# ── List backups ─────────────────────────────────────────────────────────────
+if [[ "${LIST}" == "true" ]]; then
+    log "Available backups in s3://${S3_BUCKET}/${S3_PREFIX}/:"
+    echo ""
+    DATES=$(aws_cmd s3 ls "s3://${S3_BUCKET}/${S3_PREFIX}/" 2>/dev/null \
+        | grep PRE | awk '{print $2}' | tr -d '/' | sort -r || true)
+    if [[ -z "${DATES}" ]]; then
+        echo "  No backups found in s3://${S3_BUCKET}/${S3_PREFIX}/"
+        exit 0
+    fi
+    _idx=1
+    while IFS= read -r _d; do
+        [[ -z "${_d}" ]] && continue
+        _mfile=$(aws_cmd s3 ls "s3://${S3_BUCKET}/${S3_PREFIX}/${_d}/" 2>/dev/null \
+            | grep manifest | awk '{print $4}' | head -1 || true)
+        _info=""
+        if [[ -n "${_mfile}" ]]; then
+            _m=$(aws_cmd s3 cp "s3://${S3_BUCKET}/${S3_PREFIX}/${_d}/${_mfile}" - 2>/dev/null || true)
+            if [[ -n "${_m}" ]]; then
+                _sz=$(echo "${_m}" | grep -o '"compressed_size_human": *"[^"]*"' | cut -d'"' -f4 || true)
+                _hn=$(echo "${_m}" | grep -o '"hostname": *"[^"]*"' | cut -d'"' -f4 || true)
+                _info=" — ${_sz:-?} compressed (${_hn:-?})"
+            fi
+        fi
+        printf "  [%d] %s%s\n" "${_idx}" "${_d}" "${_info}"
+        (( _idx++ )) || true
+    done <<< "${DATES}"
+    echo ""
+    echo "  Total: $(echo "${DATES}" | grep -c . || true) backup(s)"
+    exit 0
+fi
+
+# ── Verify S3 image integrity ─────────────────────────────────────────────────
+if [[ "${VERIFY}" == "true" ]]; then
+    log "========================================================"
+    log "  Pi MI — S3 image integrity verification"
+    log "========================================================"
+
+    if [[ -z "${VERIFY_DATE}" ]]; then
+        VERIFY_DATE=$(aws_cmd s3 ls "s3://${S3_BUCKET}/${S3_PREFIX}/" 2>/dev/null \
+            | grep PRE | awk '{print $2}' | tr -d '/' | sort -r | head -1 || true)
+        [[ -z "${VERIFY_DATE}" ]] && die "No backups found in s3://${S3_BUCKET}/${S3_PREFIX}/"
+        log "Using latest backup: ${VERIFY_DATE}"
+    else
+        log "Verifying backup: ${VERIFY_DATE}"
+    fi
+
+    S3_VERIFY_PATH="s3://${S3_BUCKET}/${S3_PREFIX}/${VERIFY_DATE}"
+
+    V_MFILE=$(aws_cmd s3 ls "${S3_VERIFY_PATH}/" 2>/dev/null \
+        | grep manifest | awk '{print $4}' | head -1 || true)
+    [[ -z "${V_MFILE}" ]] && die "No manifest found for ${VERIFY_DATE}"
+
+    V_MANIFEST=$(aws_cmd s3 cp "${S3_VERIFY_PATH}/${V_MFILE}" - 2>/dev/null) \
+        || die "Failed to read manifest"
+    V_EXPECTED=$(echo "${V_MANIFEST}" \
+        | grep -o '"device_sha256": *"[^"]*"' | cut -d'"' -f4 || true)
+
+    if [[ -z "${V_EXPECTED}" ]]; then
+        die "No device_sha256 in manifest — this backup predates integrity support. Re-run with --force to create a new backup with a SHA256."
+    fi
+
+    V_IFILE=$(aws_cmd s3 ls "${S3_VERIFY_PATH}/" 2>/dev/null \
+        | grep '\.img\.gz' | awk '{print $4}' | tail -1 || true)
+    [[ -z "${V_IFILE}" ]] && die "No image file found for ${VERIFY_DATE}"
+
+    V_ISIZE=$(aws_cmd s3 ls "${S3_VERIFY_PATH}/${V_IFILE}" 2>/dev/null \
+        | awk '{print $3}' || echo "0")
+    V_ISIZE_HUMAN=$(numfmt --to=iec "${V_ISIZE}" 2>/dev/null || echo "?")
+
+    log ""
+    log "Image:           ${V_IFILE} (${V_ISIZE_HUMAN} compressed)"
+    log "Expected SHA256: ${V_EXPECTED}"
+    log ""
+    log "Streaming S3 → gunzip → sha256sum ..."
+    log "  (downloads and decompresses the full image — may take several minutes)"
+
+    V_ACTUAL=$(aws_cmd s3 cp "${S3_VERIFY_PATH}/${V_IFILE}" - \
+        | gunzip -c \
+        | sha256sum \
+        | awk '{print $1}')
+
+    log "Actual SHA256:   ${V_ACTUAL}"
+    log ""
+
+    if [[ "${V_EXPECTED}" == "${V_ACTUAL}" ]]; then
+        log "VERIFY OK — S3 image integrity confirmed."
+        exit 0
+    else
+        log "VERIFY FAILED — SHA256 mismatch! Image may be corrupted."
+        exit 1
+    fi
 fi
 
 # ── Detect boot device ───────────────────────────────────────────────────────
@@ -285,17 +389,31 @@ log "  (typically 10–30 min for a 32–128GB device — go make a coffee)"
 BACKUP_START=$(date +%s)
 
 if [[ "${DRY_RUN}" == "true" ]]; then
-    log "  [DRY RUN] dd if=${BOOT_DEV} bs=4M | ${COMPRESSOR} | aws s3 cp - s3://${S3_BUCKET}/${IMAGE_S3_KEY}"
+    log "  [DRY RUN] dd if=${BOOT_DEV} bs=4M | tee SHA256_FIFO | ${COMPRESSOR} | aws s3 cp - s3://${S3_BUCKET}/${IMAGE_S3_KEY}"
 else
-    # Stream: block device → parallel gzip → S3 multipart upload.
-    # AWS CLI v2 uses automatic multipart upload when reading from stdin.
-    # No local temp file needed — streams through RAM only.
+    # Compute SHA256 of raw device data in parallel via a named pipe.
+    # Hashing before compression means the same hash verifies both the S3
+    # image (decompress → hash) and the flashed device (re-read → hash).
+    _SHA256_FIFO=$(mktemp -u /tmp/pi-mi-sha256.XXXXXX)
+    _SHA256_TMP=$(mktemp /tmp/pi-mi-sha256sum.XXXXXX)
+    mkfifo "${_SHA256_FIFO}"
+
+    sha256sum "${_SHA256_FIFO}" > "${_SHA256_TMP}" &
+    _SHA256_PID=$!
+
+    # Stream: device → tee (→ sha256 fifo + stdout) → compress → S3
     # shellcheck disable=SC2086
     dd if="${BOOT_DEV}" bs=4M status=none 2>/dev/null \
+        | tee "${_SHA256_FIFO}" \
         | ${COMPRESSOR} \
         | aws_cmd s3 cp - "s3://${S3_BUCKET}/${IMAGE_S3_KEY}" \
             --storage-class "${S3_STORAGE_CLASS}" \
             --no-progress
+
+    wait "${_SHA256_PID}" || true
+    DEVICE_SHA256=$(awk '{print $1}' "${_SHA256_TMP}" 2>/dev/null || echo "")
+    rm -f "${_SHA256_FIFO}" "${_SHA256_TMP}"
+    [[ -n "${DEVICE_SHA256}" ]] && log "  SHA256 (raw device): ${DEVICE_SHA256}"
 fi
 
 BACKUP_END=$(date +%s)
@@ -378,7 +496,8 @@ MANIFEST_JSON=$(cat <<EOF
   "image_key": "${IMAGE_S3_KEY}",
   "manifest_key": "${MANIFEST_S3_KEY}",
   "compressor": "${COMPRESSOR_NAME}",
-  "storage_class": "${S3_STORAGE_CLASS}"
+  "storage_class": "${S3_STORAGE_CLASS}",
+  "device_sha256": "${DEVICE_SHA256}"
 }
 EOF
 )

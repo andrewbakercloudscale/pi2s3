@@ -19,9 +19,10 @@
 #   8. Runs --dry-run to verify everything works
 #
 # Options:
-#   bash install.sh --uninstall   # remove cron jobs (backup + watchdog)
+#   bash install.sh --uninstall   # remove cron jobs (backup + watchdog + heartbeat)
 #   bash install.sh --status      # show current state
 #   bash install.sh --watchdog    # install/reinstall watchdog only
+#   bash install.sh --upgrade     # git pull + redeploy watchdog binary
 # =============================================================
 set -euo pipefail
 
@@ -34,6 +35,8 @@ CONFIG_EXAMPLE="${SCRIPT_DIR}/config.env.example"
 LOG_FILE="/var/log/pi-mi-backup.log"
 CRON_MARKER="pi-image-backup.sh"
 WATCHDOG_CRON_MARKER="pi-mi-watchdog.sh"
+HEARTBEAT_SCRIPT="${SCRIPT_DIR}/pi-mi-heartbeat.sh"
+HEARTBEAT_CRON_MARKER="pi-mi-heartbeat.sh"
 
 log()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 ok()   { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ $*"; }
@@ -83,6 +86,51 @@ JOURNALEOF
     log "  CF metrics:  ${CF_METRICS_URL:-http://127.0.0.1:20241/metrics}"
 }
 
+# ── Upgrade ───────────────────────────────────────────────────────────────────
+upgrade() {
+    log "Upgrading Pi MI..."
+
+    # Pull latest code
+    if git -C "${SCRIPT_DIR}" rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+        BEFORE=$(git -C "${SCRIPT_DIR}" rev-parse --short HEAD 2>/dev/null || echo "unknown")
+        git -C "${SCRIPT_DIR}" pull --ff-only
+        AFTER=$(git -C "${SCRIPT_DIR}" rev-parse --short HEAD 2>/dev/null || echo "unknown")
+        if [[ "${BEFORE}" != "${AFTER}" ]]; then
+            ok "Code updated: ${BEFORE} → ${AFTER}"
+        else
+            ok "Already up to date (${AFTER})"
+        fi
+    else
+        warn "Not a git repo — skipping git pull. Update files manually."
+    fi
+
+    # Redeploy watchdog binary if installed
+    if [[ -f "${WATCHDOG_BIN}" ]]; then
+        if [[ -f "${WATCHDOG_SCRIPT}" ]]; then
+            sudo cp "${WATCHDOG_SCRIPT}" "${WATCHDOG_BIN}"
+            sudo chmod +x "${WATCHDOG_BIN}"
+            ok "Watchdog binary updated: ${WATCHDOG_BIN}"
+        else
+            warn "cf-tunnel-watchdog.sh not found — watchdog binary NOT updated"
+        fi
+    else
+        log "  Watchdog not installed — skipping watchdog update."
+    fi
+
+    # Update backup cron schedule if it changed in config
+    # shellcheck disable=SC1090
+    [[ -f "${CONFIG_FILE}" ]] && source "${CONFIG_FILE}" || true
+    CRON_SCHEDULE="${CRON_SCHEDULE:-0 2 * * *}"
+    CRON_LINE="${CRON_SCHEDULE} bash ${BACKUP_SCRIPT} >> ${LOG_FILE} 2>&1"
+    if crontab -l 2>/dev/null | grep -qF "${CRON_MARKER}"; then
+        ( crontab -l 2>/dev/null | grep -vF "${CRON_MARKER}"; echo "${CRON_LINE}" ) | crontab -
+        ok "Backup cron refreshed: ${CRON_SCHEDULE}"
+    fi
+
+    log ""
+    log "Upgrade complete. Run 'bash install.sh --status' to verify."
+}
+
 # ── Uninstall ─────────────────────────────────────────────────────────────────
 uninstall() {
     log "Uninstalling Pi MI..."
@@ -103,6 +151,11 @@ uninstall() {
     if [[ -f "${WATCHDOG_BIN}" ]]; then
         sudo rm -f "${WATCHDOG_BIN}"
         ok "Watchdog binary removed: ${WATCHDOG_BIN}"
+    fi
+
+    if crontab -l 2>/dev/null | grep -qF "${HEARTBEAT_CRON_MARKER}"; then
+        ( crontab -l 2>/dev/null | grep -vF "${HEARTBEAT_CRON_MARKER}" ) | crontab -
+        ok "Heartbeat cron removed."
     fi
 
     if [[ -f /etc/logrotate.d/pi-mi-backup ]]; then
@@ -137,9 +190,28 @@ status() {
     echo "Watchdog cron (root):"
     if sudo crontab -l 2>/dev/null | grep -qF "${WATCHDOG_CRON_MARKER}"; then
         sudo crontab -l 2>/dev/null | grep "${WATCHDOG_CRON_MARKER}" | sed 's/^/  /'
-        echo "  Binary: ${WATCHDOG_BIN} ($([ -f "${WATCHDOG_BIN}" ] && echo "present" || echo "MISSING"))"
+        if [[ -f "${WATCHDOG_BIN}" ]]; then
+            # Check if the installed binary matches the source file
+            if [[ -f "${WATCHDOG_SCRIPT}" ]] \
+               && ! diff -q "${WATCHDOG_SCRIPT}" "${WATCHDOG_BIN}" > /dev/null 2>&1; then
+                echo "  Binary: ${WATCHDOG_BIN} (STALE — source has changed)"
+                echo "  Update: bash ${SCRIPT_DIR}/install.sh --watchdog"
+            else
+                echo "  Binary: ${WATCHDOG_BIN} (present, up-to-date)"
+            fi
+        else
+            echo "  Binary: ${WATCHDOG_BIN} (MISSING — reinstall: bash install.sh --watchdog)"
+        fi
     else
         echo "  (not installed — set CF_WATCHDOG_ENABLED=true to enable)"
+    fi
+
+    echo ""
+    echo "Heartbeat cron:"
+    if crontab -l 2>/dev/null | grep -qF "${HEARTBEAT_CRON_MARKER}"; then
+        crontab -l 2>/dev/null | grep "${HEARTBEAT_CRON_MARKER}" | sed 's/^/  /'
+    else
+        echo "  (not installed — set NTFY_HEARTBEAT_ENABLED=true to enable)"
     fi
 
     echo ""
@@ -173,6 +245,7 @@ case "${1:-}" in
     --uninstall) uninstall;        exit 0 ;;
     --status)    status;           exit 0 ;;
     --watchdog)  install_watchdog; exit 0 ;;
+    --upgrade)   upgrade;          exit 0 ;;
 esac
 
 # ── Install ───────────────────────────────────────────────────────────────────
@@ -311,6 +384,29 @@ else
 fi
 log "  Schedule: ${CRON_SCHEDULE}"
 
+# ── Step 5b: Heartbeat cron (optional) ───────────────────────────────────────
+NTFY_HEARTBEAT_ENABLED="${NTFY_HEARTBEAT_ENABLED:-false}"
+NTFY_HEARTBEAT_SCHEDULE="${NTFY_HEARTBEAT_SCHEDULE:-0 8 * * *}"
+
+if [[ "${NTFY_HEARTBEAT_ENABLED}" == "true" ]]; then
+    if [[ -f "${HEARTBEAT_SCRIPT}" ]]; then
+        HEARTBEAT_CRON_LINE="${NTFY_HEARTBEAT_SCHEDULE} bash ${HEARTBEAT_SCRIPT} >> ${LOG_FILE} 2>&1"
+        if crontab -l 2>/dev/null | grep -qF "${HEARTBEAT_CRON_MARKER}"; then
+            ( crontab -l 2>/dev/null | grep -vF "${HEARTBEAT_CRON_MARKER}"
+              echo "${HEARTBEAT_CRON_LINE}" ) | crontab -
+            ok "Heartbeat cron updated: ${NTFY_HEARTBEAT_SCHEDULE}"
+        else
+            ( crontab -l 2>/dev/null; echo "${HEARTBEAT_CRON_LINE}" ) | crontab -
+            ok "Heartbeat cron installed: ${NTFY_HEARTBEAT_SCHEDULE}"
+        fi
+    else
+        warn "pi-mi-heartbeat.sh not found — skipping heartbeat cron"
+    fi
+else
+    log "  Heartbeat disabled (NTFY_HEARTBEAT_ENABLED=false in config.env)."
+    log "  To enable: set NTFY_HEARTBEAT_ENABLED=true then re-run install.sh"
+fi
+
 # ── Step 6: Log file + rotation ───────────────────────────────────────────────
 log ""
 log "Step 6: Setting up logging..."
@@ -373,9 +469,12 @@ log ""
 log "  Commands:"
 log "    Run now:           bash ${BACKUP_SCRIPT} --force"
 log "    Dry run:           bash ${BACKUP_SCRIPT} --dry-run"
-log "    List backups:      bash ${SCRIPT_DIR}/pi-image-restore.sh --list"
+log "    List backups:      bash ${BACKUP_SCRIPT} --list"
+log "    Verify S3 image:   bash ${BACKUP_SCRIPT} --verify"
 log "    Restore new Pi:    bash ${SCRIPT_DIR}/pi-image-restore.sh"
+log "    Verify flashed:    bash ${SCRIPT_DIR}/pi-image-restore.sh --verify /dev/diskN"
 log "    Status:            bash ${SCRIPT_DIR}/install.sh --status"
+log "    Upgrade:           bash ${SCRIPT_DIR}/install.sh --upgrade"
 log "    Install watchdog:  bash ${SCRIPT_DIR}/install.sh --watchdog"
 log "    Test watchdog:     sudo ${WATCHDOG_BIN}"
 log "============================================================"

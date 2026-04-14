@@ -67,7 +67,20 @@ STATE_FILE="/var/run/pi-mi-watchdog.state"
 LOCK_FILE="/var/run/pi-mi-watchdog.lock"
 REBOOT_TS_FILE="/var/log/pi-mi-watchdog-reboot.ts"
 PREDIAG_LOG="/var/log/pi-mi-watchdog-prediag.log"
+WATCHDOG_BIN="/usr/local/bin/pi-mi-watchdog.sh"
 LOG_TAG="pi-mi-watchdog"
+
+# ── Stale binary check ────────────────────────────────────────────────────────
+# When install.sh --watchdog copies this script to /usr/local/bin, cron runs
+# the binary. If the source has been updated (git pull) but the binary hasn't
+# been redeployed, log a warning so the operator knows to re-run install.sh.
+if [[ "${BASH_SOURCE[0]}" == "${WATCHDOG_BIN}" ]]; then
+    SOURCE_SCRIPT="$(find /home -name 'cf-tunnel-watchdog.sh' -path '*/pi-mi/*' 2>/dev/null | head -1 || true)"
+    if [[ -n "${SOURCE_SCRIPT}" ]] \
+       && ! diff -q "${SOURCE_SCRIPT}" "${WATCHDOG_BIN}" > /dev/null 2>&1; then
+        logger -t "${LOG_TAG}" "WARNING: watchdog binary is stale — source has changed. Run: bash ${SOURCE_SCRIPT%/cf-tunnel-watchdog.sh}/install.sh --watchdog"
+    fi
+fi
 
 # ── Prevent concurrent runs ───────────────────────────────────────────────────
 exec 9>"${LOCK_FILE}"

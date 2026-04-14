@@ -135,11 +135,14 @@ Costs vary by region. `af-south-1` (Cape Town) is slightly higher than `us-east-
 ## Backup script
 
 ```
-pi-image-backup.sh [--force] [--dry-run] [--setup]
+pi-image-backup.sh [--force] [--dry-run] [--setup] [--list] [--verify[=DATE]]
 
-  --force     Skip the duplicate-check (run even if today's backup exists)
-  --dry-run   Show what would happen without uploading anything
-  --setup     Create S3 lifecycle policy (run once after install)
+  --force           Skip the duplicate-check (run even if today's backup exists)
+  --dry-run         Show what would happen without uploading anything
+  --setup           Create S3 lifecycle policy (run once after install)
+  --list            List all backups in S3 with size and hostname
+  --verify          Verify latest S3 image SHA256 integrity
+  --verify=DATE     Verify specific date (YYYY-MM-DD)
 ```
 
 Each backup creates a dated folder in S3:
@@ -147,10 +150,25 @@ Each backup creates a dated folder in S3:
 s3://your-bucket/pi-image-backup/
   2026-04-14/
     pi-image-20260414_020045.img.gz     ← bootable block image
-    manifest-20260414_020045.json       ← metadata (hostname, sizes, duration)
+    manifest-20260414_020045.json       ← metadata (hostname, sizes, SHA256, duration)
 ```
 
+The manifest includes `device_sha256` — a SHA256 hash of the raw device data computed during backup (before compression). This same hash can verify both the S3 image and the flashed device.
+
 Old images beyond `MAX_IMAGES` are deleted automatically.
+
+### Integrity verification
+
+```bash
+# Verify the S3 image is intact (streams from S3 → decompress → sha256sum)
+bash ~/pi-mi/pi-image-backup.sh --verify
+
+# Verify a specific date
+bash ~/pi-mi/pi-image-backup.sh --verify=2026-04-13
+
+# After flashing, verify the device matches the S3 image exactly
+bash ~/pi-mi/pi-image-restore.sh --verify /dev/disk4 --date 2026-04-14
+```
 
 ---
 
@@ -199,13 +217,23 @@ ssh-keygen -R <ip-address>
 ssh pi@raspberrypi.local
 ```
 
+### Step 3b — Verify flash integrity (optional, Mac)
+
+After flashing and before booting, re-read the device and compare its SHA256 to the original:
+
+```bash
+bash ~/pi-mi/pi-image-restore.sh --verify /dev/disk4 --date 2026-04-14
+```
+
+Reads the entire device and confirms it matches the S3 image exactly. Takes as long as the original backup. Skip this if you trust your hardware — it's mainly useful for catching bad SD card writes.
+
 ### Step 4 — Validate (new Pi)
 
 ```bash
 bash ~/pi-mi/test-recovery.sh --post-boot
 ```
 
-Checks: filesystem expansion, NVMe mount, Docker + all containers, Cloudflare tunnel, cron jobs, MariaDB tables, memory, load. PASS/FAIL/WARN per check.
+Checks: `config.env` present and configured, filesystem expansion, NVMe mount, Docker + all containers, Cloudflare tunnel, cron jobs, MariaDB tables, memory, load. PASS/FAIL/WARN per check.
 
 ### Full walkthrough
 
@@ -355,6 +383,45 @@ sudo cat /var/log/pi-mi-watchdog-prediag.log
 
 ---
 
+## Daily heartbeat
+
+An optional daily "I'm alive" push notification via ntfy. If the notification stops arriving, the Pi is down or unreachable.
+
+Enable in `config.env`:
+```bash
+NTFY_HEARTBEAT_ENABLED=true
+NTFY_HEARTBEAT_SCHEDULE="0 8 * * *"   # 8:00am daily
+```
+
+Then install (or re-run install):
+```bash
+bash ~/pi-mi/install.sh
+```
+
+Each heartbeat includes: uptime, RAM usage, disk usage, Docker container count.
+
+---
+
+## Upgrade
+
+Pull the latest code and redeploy:
+
+```bash
+bash ~/pi-mi/install.sh --upgrade
+```
+
+This:
+- Runs `git pull` in the repo directory
+- Redeploys the watchdog binary to `/usr/local/bin/pi-mi-watchdog.sh` (if installed)
+- Refreshes the backup cron schedule in case `CRON_SCHEDULE` changed
+
+The `--status` command also detects if the watchdog binary is stale (source updated but binary not redeployed):
+```bash
+bash ~/pi-mi/install.sh --status
+```
+
+---
+
 ## Complement with app-layer backups
 
 Pi MI captures the full machine state but is large (~10GB/image). For cheap, fast, granular data recovery (restore just the database, single-file recovery, cross-version migrations), run an app-layer backup alongside:
@@ -420,8 +487,9 @@ ssh-keygen -R <ip-address>
 ## Manage status
 
 ```bash
-bash ~/pi-mi/install.sh --status     # show cron, log tail, dependency versions
-bash ~/pi-mi/install.sh --uninstall  # remove cron job and logrotate config
+bash ~/pi-mi/install.sh --status     # show cron, log tail, dependency versions, stale binary check
+bash ~/pi-mi/install.sh --uninstall  # remove all cron jobs and logrotate config
+bash ~/pi-mi/install.sh --upgrade    # git pull + redeploy watchdog binary + refresh cron
 ```
 
 ---

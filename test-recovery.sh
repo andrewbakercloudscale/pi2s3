@@ -321,6 +321,18 @@ if [[ "${PHASE}" == "pre-flash" ]]; then
             [[ -n "${MANIFEST_HOST}"   ]] && pass "Hostname in manifest: ${MANIFEST_HOST}"   || warn "Hostname missing from manifest"
             [[ -n "${MANIFEST_DEVICE}" ]] && pass "Boot device: ${MANIFEST_DEVICE}"          || warn "Device missing from manifest"
             [[ -n "${MANIFEST_OS}"     ]] && pass "OS: ${MANIFEST_OS}"                       || warn "OS missing from manifest"
+
+            # Check for SHA256 integrity field
+            MANIFEST_SHA=$(echo "${MANIFEST}" | grep -o '"device_sha256": *"[^"]*"' | cut -d'"' -f4 || true)
+            if [[ -n "${MANIFEST_SHA}" ]]; then
+                pass "SHA256 integrity available (device_sha256 in manifest)"
+                echo "    Hash: ${MANIFEST_SHA:0:16}..."
+                echo "    Verify S3 image:    bash ${SCRIPT_DIR}/pi-image-backup.sh --verify --date ${TARGET_DATE}"
+                echo "    Verify after flash: bash ${SCRIPT_DIR}/pi-image-restore.sh --verify /dev/diskN --date ${TARGET_DATE}"
+            else
+                warn "No SHA256 in manifest — backup predates integrity support"
+                echo "         Run a new backup to get a verified image: bash ~/pi-mi/pi-image-backup.sh --force"
+            fi
         fi
     else
         warn "No manifest found — backup predates manifest support or failed mid-way"
@@ -374,6 +386,27 @@ if [[ "${PHASE}" == "post-boot" ]]; then
     echo "  Pi MI — Post-boot recovery validation"
     echo "  Host: $(hostname) | $(uname -m) | $(date)"
     echo "================================================================"
+
+    # ── Config check ─────────────────────────────────────────────────────────
+    section "Pi MI configuration"
+
+    if [[ -f "${CONFIG_FILE}" ]]; then
+        pass "config.env found at ${CONFIG_FILE}"
+        # Source it for later checks
+        # shellcheck disable=SC1090
+        source "${CONFIG_FILE}" 2>/dev/null || true
+        [[ -n "${S3_BUCKET:-}" ]] && pass "S3_BUCKET = ${S3_BUCKET}" \
+            || warn "S3_BUCKET is empty — backup cron will fail"
+        [[ -n "${S3_REGION:-}" ]] && pass "S3_REGION = ${S3_REGION}" \
+            || warn "S3_REGION is empty — backup cron will fail"
+        [[ -n "${NTFY_URL:-}"  ]] && pass "NTFY_URL configured" \
+            || warn "NTFY_URL is empty — no push notifications"
+    else
+        fail "config.env not found at ${CONFIG_FILE}"
+        echo "         The backup cron will silently fail without this file."
+        echo "         Restore it from your original Pi or re-run install.sh:"
+        echo "           bash ~/pi-mi/install.sh"
+    fi
 
     # ── OS & hardware ─────────────────────────────────────────────────────────
     section "OS & hardware"
