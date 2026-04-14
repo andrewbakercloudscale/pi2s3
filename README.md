@@ -268,6 +268,93 @@ The script will then image both devices, storing the second as `pi-image-extra-s
 
 ---
 
+## Cloudflare tunnel watchdog
+
+An optional self-healing monitor that runs every 5 minutes as a root cron job. If your site or Cloudflare tunnel goes down, it automatically recovers through three escalating phases before rebooting the Pi as a last resort.
+
+### How it works
+
+```
+Every 5 min (root cron)
+  ↓
+Check 1: Any Docker containers stopped?
+Check 2: HTTP probe on localhost — 5xx or connection failure?
+Check 3: cloudflared ha_connections > 0? (if metrics endpoint available)
+  ↓
+All OK → log and exit
+  ↓
+Something down:
+
+Phase 1 (attempts 1–4, 0–20 min)
+  → start stopped containers + restart cloudflared
+  → verify, notify recovery or continue
+
+Phase 2 (attempts 5–8, 20–40 min)
+  → docker compose down/up (full stack restart) + cloudflared
+  → verify, notify recovery or continue
+
+Phase 3 (attempt 9+, 40+ min)
+  → dump diagnostics to /var/log/pi-mi-watchdog-prediag.log
+  → reboot Pi (max once per 6 hours — rate-limited)
+  → if rate-limited: "manual needed" alert sent, exit without reboot
+```
+
+Push notifications via ntfy at every stage: first failure, each phase escalation, recovery, and stuck-down alerts.
+
+### Enable
+
+In `config.env`:
+```bash
+CF_WATCHDOG_ENABLED=true
+CF_SITE_HOSTNAME="your-site.com"   # used in push notification titles
+CF_HTTP_PORT=80                    # local port to probe
+CF_COMPOSE_DIR=""                  # auto-detected, or set explicitly
+```
+
+Then install:
+```bash
+bash ~/pi-mi/install.sh --watchdog
+```
+
+Or set `CF_WATCHDOG_ENABLED=true` before running the initial `install.sh` and it installs automatically as part of setup.
+
+### Configuration
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CF_WATCHDOG_ENABLED` | `false` | Set `true` to install |
+| `CF_SITE_HOSTNAME` | hostname | Used in ntfy notification titles |
+| `CF_HTTP_PORT` | `80` | Local port for HTTP probe |
+| `CF_HTTP_PROBE_PATH` | `/` | URL path to probe |
+| `CF_METRICS_URL` | `http://127.0.0.1:20241/metrics` | cloudflared metrics endpoint |
+| `CF_COMPOSE_DIR` | auto-detect | Path to `docker-compose.yml` |
+| `CF_PHASE1_MAX` | `4` | Attempts before full stack restart |
+| `CF_PHASE2_MAX` | `8` | Attempts before Pi reboot |
+| `CF_REBOOT_MIN_INTERVAL` | `21600` | Seconds between reboots (6 hours) |
+
+> **cloudflared metrics**: only checked if the endpoint is reachable. Enable in your cloudflared config with `metrics: localhost:20241`. If not configured, the watchdog skips the tunnel connection check and relies on Docker + HTTP checks only.
+
+### Commands
+
+```bash
+# Install / reinstall watchdog
+bash ~/pi-mi/install.sh --watchdog
+
+# Manual test run
+sudo /usr/local/bin/pi-mi-watchdog.sh
+
+# Live log tail
+sudo journalctl -t pi-mi-watchdog -f
+
+# View today's watchdog activity
+sudo journalctl -t pi-mi-watchdog --since today
+
+# View pre-reboot diagnostics (if a watchdog reboot occurred)
+sudo cat /var/log/pi-mi-watchdog-prediag.log
+```
+
+---
+
 ## Complement with app-layer backups
 
 Pi MI captures the full machine state but is large (~10GB/image). For cheap, fast, granular data recovery (restore just the database, single-file recovery, cross-version migrations), run an app-layer backup alongside:
