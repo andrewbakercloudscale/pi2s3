@@ -3,7 +3,7 @@
 # install.sh — Set up Pi MI on a Raspberry Pi
 #
 # Run once on the Pi after cloning this repo:
-#   git clone https://github.com/andrewbakerninja/pi-mi.git ~/pi-mi
+#   git clone https://github.com/andrewbakercloudscale/pi-mi.git ~/pi-mi
 #   cd ~/pi-mi
 #   bash install.sh
 #
