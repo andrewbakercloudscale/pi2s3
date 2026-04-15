@@ -301,8 +301,8 @@ log "========================================================"
 log ""
 log "Preflight checks..."
 
-command -v aws       &>/dev/null || die "aws CLI not found. Run: bash install.sh"
-command -v partclone &>/dev/null || die "partclone not found. Run: bash install.sh"
+command -v aws          &>/dev/null || die "aws CLI not found. Run: bash install.sh"
+command -v partclone.ext4 &>/dev/null || die "partclone not found. Run: sudo apt install partclone"
 aws_cmd s3 ls "s3://${S3_BUCKET}/" > /dev/null 2>&1 \
     || die "Cannot reach s3://${S3_BUCKET}/. Check AWS credentials and bucket name."
 

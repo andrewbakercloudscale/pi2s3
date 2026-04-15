@@ -413,8 +413,9 @@ if [[ "${BACKUP_TYPE}" == "partclone" ]]; then
         exit 1
     fi
 
-    command -v sfdisk      &>/dev/null || die "sfdisk not found. Install: sudo apt install util-linux"
-    command -v partclone.ext4 &>/dev/null || die "partclone not found. Install: sudo apt install partclone"
+    command -v sfdisk         &>/dev/null || die "sfdisk not found. Install: sudo apt install util-linux"
+    { command -v partclone.ext4 &>/dev/null || [[ -x /usr/sbin/partclone.ext4 ]]; } \
+        || die "partclone not found. Install: sudo apt install partclone"
     command -v python3     &>/dev/null || die "python3 not found (required for manifest parsing)"
 
     # 1. Restore partition table
