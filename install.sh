@@ -235,6 +235,9 @@ status() {
     command -v pigz &>/dev/null \
         && echo "  pigz:     $(pigz --version 2>&1)" \
         || echo "  pigz:     not installed (gzip fallback)"
+    command -v partclone.ext4 &>/dev/null \
+        && echo "  partclone: $(partclone.ext4 --version 2>&1 | head -1 || echo 'installed')" \
+        || echo "  partclone: NOT INSTALLED (run install.sh to fix)"
     command -v pv   &>/dev/null \
         && echo "  pv:       $(pv --version 2>&1 | head -1)" \
         || echo "  pv:       not installed (no progress bar on restore)"
@@ -317,6 +320,14 @@ else
     log "  Installing pv (progress viewer)..."
     sudo apt-get install -y -qq pv 2>/dev/null && ok "pv installed." \
         || warn "pv unavailable — restore will work without it."
+fi
+
+if command -v partclone.ext4 &>/dev/null; then
+    ok "partclone: $(partclone.ext4 --version 2>&1 | head -1 || echo 'installed')"
+else
+    log "  Installing partclone (reads only used blocks — much faster than dd)..."
+    sudo apt-get install -y -qq partclone
+    ok "partclone installed."
 fi
 
 if command -v aws &>/dev/null; then

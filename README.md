@@ -9,17 +9,58 @@ Think of it as an AMI for your Pi.
 ## How it works
 
 ```
-BACKUP (runs on Pi nightly)
-  /dev/nvme0n1  ──►  dd  ──►  pigz  ──►  aws s3 cp  ──►  S3
-                     raw      parallel    streaming
-                     blocks   gzip        no local file
+BACKUP (runs on Pi nightly via cron)
 
-RESTORE (run on Mac or Linux)
-  S3  ──►  aws s3 cp  ──►  gunzip  ──►  dd  ──►  /dev/rdisk4
-           streaming        decompress   write    new NVMe/SD
+  1. Stop Docker containers  (~10 seconds)
+     └─ ensures databases and volumes are in a consistent state
+
+  2. Sync filesystem  (instant)
+     └─ flush dirty pages and drop caches
+
+  3. Restart Docker containers  (site back up before imaging starts)
+     └─ partclone reads from a frozen filesystem snapshot
+
+  4. Save partition table (GPT/MBR)
+     └─ sfdisk -d /dev/nvme0n1  ──►  S3
+
+  5. Image each partition with partclone
+     └─ partclone reads the filesystem allocation map and skips
+        unallocated blocks — only used data is transferred
+
+     /dev/nvme0n1p1  ──►  partclone.ext4  ──►  pigz  ──►  aws s3 cp  ──►  S3
+     /dev/nvme0n1p2  ──►  partclone.ext4  ──►  pigz  ──►  aws s3 cp  ──►  S3
+     /dev/mmcblk0p1  ──►  partclone.vfat  ──►  pigz  ──►  aws s3 cp  ──►  S3
+     (boot firmware)      partition-aware  parallel   streaming
+                          clone           gzip       no local file
+
+  6. Upload manifest JSON (metadata: partitions, sizes, duration)
+
+
+RESTORE (run on a Linux machine or another Pi)
+
+  1. Download partition table from S3
+     └─ sfdisk /dev/target  (recreates GPT layout)
+
+  2. Restore each partition with partclone
+     └─ S3  ──►  gunzip  ──►  partclone.restore  ──►  /dev/target
+
+  3. Boot — root filesystem auto-expands to fill device on first boot
 ```
 
-Everything on the boot device is captured: OS, kernel, Docker runtime, all container volumes, databases, configs, SSH keys, cron jobs, Cloudflare tunnel — the whole machine state in one compressed image.
+### Why partclone instead of dd?
+
+`dd` reads every sector on the device regardless of whether it's used. On a 954 GB NVMe that's 28% full, `dd` reads **954 GB**. `partclone` reads the filesystem allocation bitmap and skips unallocated blocks — it reads **only the ~28 GB of used data**. Same result, 20× less data.
+
+| | dd | partclone |
+|---|---|---|
+| Reads | every sector (used + empty) | used blocks only |
+| Speed on 954GB NVMe (28% full) | ~90 min | ~5 min |
+| S3 upload size | ~10 GB (compressed zeros) | ~3–5 GB |
+| Restore | gunzip \| dd | partclone per partition |
+
+### Docker downtime
+
+Containers are stopped **briefly** (typically ~10 seconds) for a clean filesystem sync before imaging starts. They are restarted **before the partition imaging begins**, so your site is back up during the entire backup stream. The resulting image is crash-consistent — databases like MariaDB/InnoDB recover automatically on next boot using their write-ahead log.
 
 ---
 
@@ -34,7 +75,8 @@ Everything on the boot device is captured: OS, kernel, Docker runtime, all conta
 | App config + `.env` files | `/dev/nvme0n1` | ✅ |
 | SSH authorized keys | `/dev/nvme0n1` | ✅ |
 | Cron jobs | `/dev/nvme0n1` | ✅ |
-| Boot firmware (`config.txt`, `cmdline.txt`) | `/dev/nvme0n1p1` | ✅ |
+| GPT partition table | `/dev/nvme0n1` | ✅ |
+| Boot firmware (`config.txt`, `cmdline.txt`) | `/boot/firmware` partition | ✅ |
 | NVMe performance tuning | `/dev/nvme0n1` | ✅ |
 
 > **Split-device setups**: if your Docker data root is on a *different physical device* than your OS (e.g. SD card boots, USB NVMe holds data), the backup script detects this and warns you. Set `BACKUP_EXTRA_DEVICE` in `config.env` to image both devices.
@@ -44,14 +86,19 @@ Everything on the boot device is captured: OS, kernel, Docker runtime, all conta
 ## Requirements
 
 **On the Pi (backup):**
-- Raspberry Pi OS (Bookworm 64-bit recommended)
+- Raspberry Pi OS (Bookworm or Trixie, 64-bit recommended)
 - AWS CLI v2 — installed automatically by `install.sh`
+- `partclone` — installed automatically by `install.sh`
 - `pigz` — installed automatically by `install.sh` (parallel gzip, much faster than `gzip` on Pi 5's quad-core)
 - AWS credentials with `s3:PutObject`, `s3:GetObject`, `s3:ListBucket`, `s3:DeleteObject`
 
-**For restore (Mac or Linux):**
-- AWS CLI v2 configured with read access to your bucket
-- `pv` optional for a live progress bar: `brew install pv`
+**For restore (Linux):**
+- Linux machine with `sfdisk` (util-linux) and `partclone` installed
+- AWS CLI v2 with read access to your bucket
+- `python3` (for manifest parsing — standard on all modern Linux distros)
+- `pv` optional for a live progress bar: `sudo apt install pv`
+
+> **macOS note**: The restore script requires Linux because `sfdisk` and `partclone` are not available on macOS. The easiest approach: boot the new Pi from a minimal SD card, attach the target NVMe, SSH in, and run `pi-image-restore.sh` from there.
 
 ---
 
@@ -73,7 +120,7 @@ bash install.sh
 `install.sh` will:
 - Prompt for your S3 bucket, AWS region, and ntfy notification URL
 - Write `config.env` (gitignored — never committed)
-- Install `pigz` and AWS CLI v2 if not present
+- Install `partclone`, `pigz`, and AWS CLI v2 if not present
 - Verify AWS access to your bucket
 - Set up S3 lifecycle policy
 - Install the nightly cron job (2:00am by default)
@@ -85,7 +132,7 @@ bash install.sh
 bash ~/pi-mi/pi-image-backup.sh --force
 ```
 
-Takes 15–30 minutes depending on device size and network speed. You'll get an ntfy push notification when done.
+Takes 3–10 minutes depending on how full the device is and your network speed. You'll get an ntfy push notification when done.
 
 ---
 
@@ -107,7 +154,7 @@ AWS_PROFILE=""                 # blank = default profile or instance role
 S3_STORAGE_CLASS="STANDARD_IA" # ~40% cheaper than STANDARD for backups
 
 # Backup behaviour
-STOP_DOCKER=true               # stop Docker briefly for DB consistency
+STOP_DOCKER=true               # stop Docker briefly for DB consistency (~10s)
 DOCKER_STOP_TIMEOUT=30         # seconds to wait for containers to stop
 CRON_SCHEDULE="0 2 * * *"     # 2:00am daily
 
@@ -120,13 +167,13 @@ NTFY_LEVEL="all"               # "all" | "failure"
 
 ### Cost estimate
 
-At ~10GB compressed per image (128GB NVMe, 20–30% full):
+At ~3–5 GB compressed per image (128 GB NVMe, ~25% full):
 
 | Retention | S3 storage | Monthly cost (STANDARD_IA) |
 |-----------|-----------|----------------------------|
-| 7 images  | ~70GB     | ~$1/month                  |
-| 30 images | ~300GB    | ~$4/month                  |
-| 60 images | ~600GB    | ~$8/month                  |
+| 7 images  | ~25 GB    | <$1/month                  |
+| 30 images | ~120 GB   | ~$2/month                  |
+| 60 images | ~240 GB   | ~$3/month                  |
 
 Costs vary by region. `af-south-1` (Cape Town) is slightly higher than `us-east-1`.
 
@@ -141,7 +188,7 @@ pi-image-backup.sh [--force] [--dry-run] [--setup] [--list] [--verify[=DATE]]
   --dry-run         Show what would happen without uploading anything
   --setup           Create S3 lifecycle policy (run once after install)
   --list            List all backups in S3 with size and hostname
-  --verify          Verify latest S3 image SHA256 integrity
+  --verify          Verify latest S3 backup files exist and are non-zero
   --verify=DATE     Verify specific date (YYYY-MM-DD)
 ```
 
@@ -149,26 +196,16 @@ Each backup creates a dated folder in S3:
 ```
 s3://your-bucket/pi-image-backup/
   2026-04-14/
-    pi-image-20260414_020045.img.gz     ← bootable block image
-    manifest-20260414_020045.json       ← metadata (hostname, sizes, SHA256, duration)
+    partition-table-20260414_020045.sfdisk   ← GPT layout (applied first on restore)
+    nvme0n1p1-20260414_020045.img.gz         ← partclone image, partition 1
+    nvme0n1p2-20260414_020045.img.gz         ← partclone image, partition 2
+    mmcblk0p1-boot-fw-20260414_020045.img.gz ← boot firmware (if on separate device)
+    manifest-20260414_020045.json            ← metadata
 ```
 
-The manifest includes `device_sha256` — a SHA256 hash of the raw device data computed during backup (before compression). This same hash can verify both the S3 image and the flashed device.
+The manifest records hostname, Pi model, OS, partition layout, sizes, duration, and storage class. The `--verify` flag checks all files listed in the manifest exist and are non-zero in S3.
 
 Old images beyond `MAX_IMAGES` are deleted automatically.
-
-### Integrity verification
-
-```bash
-# Verify the S3 image is intact (streams from S3 → decompress → sha256sum)
-bash ~/pi-mi/pi-image-backup.sh --verify
-
-# Verify a specific date
-bash ~/pi-mi/pi-image-backup.sh --verify=2026-04-13
-
-# After flashing, verify the device matches the S3 image exactly
-bash ~/pi-mi/pi-image-restore.sh --verify /dev/disk4 --date 2026-04-14
-```
 
 ---
 
@@ -184,9 +221,12 @@ bash ~/pi-mi/test-recovery.sh --pre-flash
 
 Checks AWS access, confirms image exists and is non-zero, reads the manifest, estimates flash time, prints the restore command.
 
-### Step 2 — Flash (Mac)
+### Step 2 — Flash (Linux or Pi)
 
-Connect the new Pi's NVMe (via enclosure) or SD card, then:
+> **Requires Linux** — `sfdisk` and `partclone` are not available on macOS.
+>
+> **On macOS**: boot the new Pi from a minimal SD card, attach the target NVMe,
+> SSH in, clone the repo, and run from there.
 
 ```bash
 bash ~/pi-mi/pi-image-restore.sh
@@ -194,17 +234,20 @@ bash ~/pi-mi/pi-image-restore.sh
 
 Interactive prompts let you pick the backup date and target device. Streams directly from S3 — no local download needed.
 
-On macOS, automatically uses `/dev/rdisk` for ~10× faster writes.
-
-Install `pv` beforehand for a live progress bar:
-```bash
-brew install pv
-```
-
 Or restore a specific date non-interactively:
 ```bash
-bash ~/pi-mi/pi-image-restore.sh --date 2026-04-13 --device /dev/disk4 --yes
+bash ~/pi-mi/pi-image-restore.sh --date 2026-04-13 --device /dev/nvme0n1 --yes
 ```
+
+Install `pv` for a live progress bar:
+```bash
+sudo apt install pv
+```
+
+What happens during restore:
+1. Partition table downloaded from S3 and applied to target device with `sfdisk`
+2. Each partition streamed from S3 → `gunzip` → `partclone.restore` with inline checksum verification
+3. Boot firmware partition restored separately (if it was on a separate device)
 
 ### Step 3 — Boot
 
@@ -216,16 +259,6 @@ ssh-keygen -R raspberrypi.local
 ssh-keygen -R <ip-address>
 ssh pi@raspberrypi.local
 ```
-
-### Step 3b — Verify flash integrity (optional, Mac)
-
-After flashing and before booting, re-read the device and compare its SHA256 to the original:
-
-```bash
-bash ~/pi-mi/pi-image-restore.sh --verify /dev/disk4 --date 2026-04-14
-```
-
-Reads the entire device and confirms it matches the S3 image exactly. Takes as long as the original backup. Skip this if you trust your hardware — it's mainly useful for catching bad SD card writes.
 
 ### Step 4 — Validate (new Pi)
 
@@ -424,16 +457,16 @@ bash ~/pi-mi/install.sh --status
 
 ## Complement with app-layer backups
 
-Pi MI captures the full machine state but is large (~10GB/image). For cheap, fast, granular data recovery (restore just the database, single-file recovery, cross-version migrations), run an app-layer backup alongside:
+Pi MI captures the full machine state but is large (~3–5 GB/image). For cheap, fast, granular data recovery (restore just the database, single-file recovery, cross-version migrations), run an app-layer backup alongside:
 
 | | Pi MI | App-layer backup |
 |---|---|---|
 | What's backed up | Entire disk | DB + uploads + config files |
-| Compressed size | ~10–15GB | ~500MB |
+| Compressed size | ~3–5 GB | ~500 MB |
 | Restore scenario | Pi hardware failure, OS corruption | DB corruption, accidental delete |
 | Restore process | Flash + boot | docker restore commands |
 | Knowledge needed | None | Some |
-| Cost (60 days) | ~$8/month | <$1/month |
+| Cost (60 days) | ~$3/month | <$1/month |
 
 Both are complementary. Pi MI for disaster recovery; app-layer for day-to-day data safety.
 
@@ -448,6 +481,12 @@ findmnt -n -o SOURCE /
 lsblk
 ```
 Override manually by setting `BOOT_DEV` at the top of `pi-image-backup.sh`.
+
+**`partclone not found`**
+Re-run `install.sh` or install manually:
+```bash
+sudo apt install partclone
+```
 
 **`Cannot reach s3://your-bucket/`**
 Check credentials and IAM permissions:

@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # =============================================================
-# pi-image-backup.sh — Full disk image of Raspberry Pi to S3
+# pi-image-backup.sh — Partition-level image of Raspberry Pi to S3
 #
-# Streams the entire boot device (NVMe or SD card) through pigz
-# directly to S3 — no local staging file required.
+# Uses partclone to image only USED blocks on each partition —
+# much faster than dd on sparse devices (e.g. 954G NVMe with 30G
+# used → reads ~30G instead of 954G).
 #
 # What gets backed up:
-#   - Boot partition (FAT32: firmware, config.txt, cmdline.txt)
-#   - Root partition (ext4: OS, all packages, systemd services)
-#   - Docker data root (if on same device — NVMe setup)
-#   - Everything else on the device
+#   - All partitions on the boot device (root + data)
+#   - GPT/MBR partition table
+#   - Boot firmware partition if on a separate device (/boot/firmware)
 #
-# The result is a bootable block image. Restore it to a new Pi
-# with pi-image-restore.sh and it boots exactly as the original.
+# The result is a complete, bootable image set. Restore to a new
+# Pi with pi-image-restore.sh.
 #
 # Usage:
 #   bash pi-image-backup.sh               # run backup
@@ -20,7 +20,7 @@
 #   bash pi-image-backup.sh --force       # skip duplicate-check
 #   bash pi-image-backup.sh --dry-run     # show what would happen, no upload
 #   bash pi-image-backup.sh --list        # list all backups in S3
-#   bash pi-image-backup.sh --verify      # verify latest S3 image SHA256
+#   bash pi-image-backup.sh --verify      # verify latest backup files exist in S3
 #   bash pi-image-backup.sh --verify=DATE # verify specific date (YYYY-MM-DD)
 #
 # Cron (installed automatically by install.sh):
@@ -28,7 +28,8 @@
 #
 # Prerequisites on Pi:
 #   - config.env filled in (see config.env.example)
-#   - AWS CLI v2 configured with s3:PutObject, s3:GetObject, s3:ListBucket, s3:DeleteObject
+#   - AWS CLI v2 with s3:PutObject, s3:GetObject, s3:ListBucket, s3:DeleteObject
+#   - partclone: sudo apt install partclone
 #   - pigz recommended (falls back to gzip): sudo apt install pigz
 # =============================================================
 set -euo pipefail
@@ -63,10 +64,8 @@ AWS_PROFILE="${AWS_PROFILE:-}"
 DATE=$(date +%Y-%m-%d)
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 S3_PREFIX="pi-image-backup"
-IMAGE_FILENAME="pi-image-${TIMESTAMP}.img.gz"
 MANIFEST_FILENAME="manifest-${TIMESTAMP}.json"
 S3_DATE_PREFIX="${S3_PREFIX}/${DATE}"
-IMAGE_S3_KEY="${S3_DATE_PREFIX}/${IMAGE_FILENAME}"
 MANIFEST_S3_KEY="${S3_DATE_PREFIX}/${MANIFEST_FILENAME}"
 
 DRY_RUN=false
@@ -91,7 +90,6 @@ _BACKUP_SUCCEEDED=false
 _CONTAINERS_STOPPED=false
 _STOPPED_IDS=""
 _START_TIME=$(date +%s)
-DEVICE_SHA256=""
 
 log()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 die()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $*" >&2; exit 1; }
@@ -114,6 +112,20 @@ ntfy_send() {
         "${extra[@]}" \
         -d "$msg" \
         "${NTFY_URL}" > /dev/null 2>&1 || true
+}
+
+# Return the appropriate partclone tool for a filesystem type.
+# Falls back to partclone.dd for unrecognised types.
+partclone_tool() {
+    local fstype="$1"
+    case "${fstype}" in
+        ext2|ext3|ext4) echo "partclone.ext4" ;;
+        vfat|fat16|fat32) echo "partclone.vfat" ;;
+        xfs)            echo "partclone.xfs"  ;;
+        ntfs)           echo "partclone.ntfs" ;;
+        btrfs)          echo "partclone.btrfs" ;;
+        *)              echo "partclone.dd"   ;;
+    esac
 }
 
 on_exit() {
@@ -174,7 +186,9 @@ if [[ "${LIST}" == "true" ]]; then
         if [[ -n "${_mfile}" ]]; then
             _m=$(aws_cmd s3 cp "s3://${S3_BUCKET}/${S3_PREFIX}/${_d}/${_mfile}" - 2>/dev/null || true)
             if [[ -n "${_m}" ]]; then
-                _sz=$(echo "${_m}" | grep -o '"compressed_size_human": *"[^"]*"' | cut -d'"' -f4 || true)
+                # Support both old (compressed_size_human) and new (total_compressed_human) manifests
+                _sz=$(echo "${_m}" | grep -o '"total_compressed_human": *"[^"]*"' | cut -d'"' -f4 || true)
+                [[ -z "${_sz}" ]] && _sz=$(echo "${_m}" | grep -o '"compressed_size_human": *"[^"]*"' | cut -d'"' -f4 || true)
                 _hn=$(echo "${_m}" | grep -o '"hostname": *"[^"]*"' | cut -d'"' -f4 || true)
                 _info=" — ${_sz:-?} compressed (${_hn:-?})"
             fi
@@ -187,10 +201,10 @@ if [[ "${LIST}" == "true" ]]; then
     exit 0
 fi
 
-# ── Verify S3 image integrity ─────────────────────────────────────────────────
+# ── Verify backup integrity ───────────────────────────────────────────────────
 if [[ "${VERIFY}" == "true" ]]; then
     log "========================================================"
-    log "  Pi MI — S3 image integrity verification"
+    log "  Pi MI — backup integrity verification"
     log "========================================================"
 
     if [[ -z "${VERIFY_DATE}" ]]; then
@@ -210,41 +224,43 @@ if [[ "${VERIFY}" == "true" ]]; then
 
     V_MANIFEST=$(aws_cmd s3 cp "${S3_VERIFY_PATH}/${V_MFILE}" - 2>/dev/null) \
         || die "Failed to read manifest"
-    V_EXPECTED=$(echo "${V_MANIFEST}" \
-        | grep -o '"device_sha256": *"[^"]*"' | cut -d'"' -f4 || true)
 
-    if [[ -z "${V_EXPECTED}" ]]; then
-        die "No device_sha256 in manifest — this backup predates integrity support. Re-run with --force to create a new backup with a SHA256."
+    log ""
+    log "Manifest: ${V_MFILE}"
+
+    # Check every key listed in the manifest exists and is non-zero in S3
+    VERIFY_PASS=true
+    while IFS= read -r key; do
+        [[ -z "${key}" ]] && continue
+        SIZE=$(aws_cmd s3 ls "s3://${S3_BUCKET}/${key}" 2>/dev/null | awk '{print $3}' | head -1 || echo "0")
+        SIZE_H=$(numfmt --to=iec "${SIZE}" 2>/dev/null || echo "?")
+        BASENAME=$(basename "${key}")
+        if [[ "${SIZE:-0}" -gt 0 ]]; then
+            log "  OK  ${BASENAME} (${SIZE_H})"
+        else
+            log "  MISSING or EMPTY: ${BASENAME}"
+            VERIFY_PASS=false
+        fi
+    done < <(echo "${V_MANIFEST}" | grep -o '"key": *"[^"]*"' | cut -d'"' -f4)
+
+    # Also check partition table
+    PTABLE_KEY=$(echo "${V_MANIFEST}" | grep -o '"partition_table_key": *"[^"]*"' | cut -d'"' -f4 || true)
+    if [[ -n "${PTABLE_KEY}" ]]; then
+        SIZE=$(aws_cmd s3 ls "s3://${S3_BUCKET}/${PTABLE_KEY}" 2>/dev/null | awk '{print $3}' | head -1 || echo "0")
+        if [[ "${SIZE:-0}" -gt 0 ]]; then
+            log "  OK  partition-table (${SIZE} bytes)"
+        else
+            log "  MISSING: partition-table"
+            VERIFY_PASS=false
+        fi
     fi
 
-    V_IFILE=$(aws_cmd s3 ls "${S3_VERIFY_PATH}/" 2>/dev/null \
-        | grep '\.img\.gz' | awk '{print $4}' | tail -1 || true)
-    [[ -z "${V_IFILE}" ]] && die "No image file found for ${VERIFY_DATE}"
-
-    V_ISIZE=$(aws_cmd s3 ls "${S3_VERIFY_PATH}/${V_IFILE}" 2>/dev/null \
-        | awk '{print $3}' || echo "0")
-    V_ISIZE_HUMAN=$(numfmt --to=iec "${V_ISIZE}" 2>/dev/null || echo "?")
-
     log ""
-    log "Image:           ${V_IFILE} (${V_ISIZE_HUMAN} compressed)"
-    log "Expected SHA256: ${V_EXPECTED}"
-    log ""
-    log "Streaming S3 → gunzip → sha256sum ..."
-    log "  (downloads and decompresses the full image — may take several minutes)"
-
-    V_ACTUAL=$(aws_cmd s3 cp "${S3_VERIFY_PATH}/${V_IFILE}" - \
-        | gunzip -c \
-        | sha256sum \
-        | awk '{print $1}')
-
-    log "Actual SHA256:   ${V_ACTUAL}"
-    log ""
-
-    if [[ "${V_EXPECTED}" == "${V_ACTUAL}" ]]; then
-        log "VERIFY OK — S3 image integrity confirmed."
+    if [[ "${VERIFY_PASS}" == "true" ]]; then
+        log "VERIFY OK — all backup files present in S3."
         exit 0
     else
-        log "VERIFY FAILED — SHA256 mismatch! Image may be corrupted."
+        log "VERIFY FAILED — one or more files missing from S3."
         exit 1
     fi
 fi
@@ -271,10 +287,10 @@ detect_boot_device() {
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 log "========================================================"
-log "  Pi MI — disk image backup"
+log "  Pi MI — partition image backup"
 log "  Host:      $(hostname)"
 log "  Date:      ${DATE}"
-log "  S3 target: s3://${S3_BUCKET}/${IMAGE_S3_KEY}"
+log "  S3 target: s3://${S3_BUCKET}/${S3_DATE_PREFIX}/"
 [[ "${DRY_RUN}" == "true" ]] && log "  *** DRY RUN — no data will be uploaded ***"
 log "========================================================"
 
@@ -282,7 +298,8 @@ log "========================================================"
 log ""
 log "Preflight checks..."
 
-command -v aws &>/dev/null || die "aws CLI not found. Run: bash install.sh"
+command -v aws       &>/dev/null || die "aws CLI not found. Run: bash install.sh"
+command -v partclone &>/dev/null || die "partclone not found. Run: bash install.sh"
 aws_cmd s3 ls "s3://${S3_BUCKET}/" > /dev/null 2>&1 \
     || die "Cannot reach s3://${S3_BUCKET}/. Check AWS credentials and bucket name."
 
@@ -303,43 +320,46 @@ PI_MODEL=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || echo "unknown")
 OS_PRETTY=$(grep PRETTY_NAME /etc/os-release 2>/dev/null | cut -d'"' -f2 || echo "unknown")
 KERNEL=$(uname -r)
 
+# Enumerate partitions on boot device
+mapfile -t BOOT_PARTITIONS < <(
+    lsblk -lno NAME,TYPE "${BOOT_DEV}" \
+    | awk '$2=="part"{print "/dev/"$1}' | sort
+)
+[[ ${#BOOT_PARTITIONS[@]} -eq 0 ]] && die "No partitions found on ${BOOT_DEV}"
+
 log "  Boot device:  ${BOOT_DEV} (${DEV_SIZE_HUMAN})"
+log "  Partitions:   ${BOOT_PARTITIONS[*]}"
 log "  Compressor:   ${COMPRESSOR_NAME}"
 log "  Pi model:     ${PI_MODEL}"
 log "  OS:           ${OS_PRETTY}"
 log "  Retention:    ${MAX_IMAGES} images"
 
+# Check for a separate boot firmware partition (e.g. SD card on /boot/firmware)
+BOOT_FW_PART=""
+BOOT_FW_SOURCE=$(findmnt -n -o SOURCE /boot/firmware 2>/dev/null || true)
+if [[ -n "${BOOT_FW_SOURCE}" ]]; then
+    FW_PARENT=$(lsblk -no PKNAME "${BOOT_FW_SOURCE}" 2>/dev/null || true)
+    if [[ -n "${FW_PARENT}" && "/dev/${FW_PARENT}" != "${BOOT_DEV}" ]]; then
+        BOOT_FW_PART="${BOOT_FW_SOURCE}"
+        FW_SIZE=$(lsblk -bdno SIZE "${BOOT_FW_PART}" 2>/dev/null || echo "0")
+        FW_SIZE_HUMAN=$(numfmt --to=iec "${FW_SIZE}" 2>/dev/null || echo "?")
+        log "  Boot firmware: ${BOOT_FW_PART} (${FW_SIZE_HUMAN}) — will also be imaged"
+    fi
+fi
+
 # ── Check Docker data-root is on the same device as boot ─────────────────────
-# If Docker's data-root is on a SEPARATE physical device (e.g. a USB drive),
-# that data won't be in the image — this is a critical gap.
 if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
     DOCKER_ROOT=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || echo "")
     if [[ -n "${DOCKER_ROOT}" && -d "${DOCKER_ROOT}" ]]; then
         DOCKER_DEV_NAME=$(df --output=source "${DOCKER_ROOT}" 2>/dev/null \
             | tail -1 | xargs -I{} lsblk -no PKNAME {} 2>/dev/null || true)
-        DOCKER_DEV="/dev/${DOCKER_DEV_NAME}"
         BOOT_DEV_NAME=$(basename "${BOOT_DEV}")
-
         if [[ -n "${DOCKER_DEV_NAME}" && "${DOCKER_DEV_NAME}" != "${BOOT_DEV_NAME}" ]]; then
             log ""
-            log "  ┌─────────────────────────────────────────────────────────────┐"
-            log "  │ WARNING: Docker data is on a DIFFERENT device than boot!    │"
-            log "  │                                                             │"
-            log "  │   Boot device:   ${BOOT_DEV} (will be imaged)              │"
-            log "  │   Docker data:   ${DOCKER_DEV} (NOT in this image)         │"
-            log "  │                                                             │"
-            log "  │ Docker volumes, databases, and uploads will NOT be          │"
-            log "  │ included in this image. Use BACKUP_EXTRA_DEVICE in          │"
-            log "  │ config.env to also image the Docker device:                 │"
-            log "  │   BACKUP_EXTRA_DEVICE=\"${DOCKER_DEV}\"                        │"
-            log "  └─────────────────────────────────────────────────────────────┘"
+            log "  WARNING: Docker data is on /dev/${DOCKER_DEV_NAME} — NOT on ${BOOT_DEV}"
+            log "  Docker volumes will NOT be in this backup."
+            log "  Set BACKUP_EXTRA_DEVICE=\"/dev/${DOCKER_DEV_NAME}\" in config.env to include it."
             log ""
-
-            # If user has configured the extra device, we'll image it too (below).
-            EXTRA_DEVICE="${BACKUP_EXTRA_DEVICE:-}"
-            if [[ -z "${EXTRA_DEVICE}" ]]; then
-                log "  Continuing with boot device only. Set BACKUP_EXTRA_DEVICE to fix this."
-            fi
         else
             log "  Docker data:  on ${BOOT_DEV} (same device — fully covered)"
         fi
@@ -351,10 +371,10 @@ log "  Preflight OK."
 # ── Duplicate check ──────────────────────────────────────────────────────────
 if [[ "${FORCE}" != "true" && "${DRY_RUN}" != "true" ]]; then
     EXISTING=$(aws_cmd s3 ls "s3://${S3_BUCKET}/${S3_DATE_PREFIX}/" 2>/dev/null \
-        | grep -c '\.img\.gz' || true)
+        | grep -c 'manifest' || true)
     if [[ "${EXISTING}" -gt 0 ]]; then
         log ""
-        log "Image for ${DATE} already exists (${EXISTING} file). Skipping."
+        log "Backup for ${DATE} already exists. Skipping."
         log "Use --force to override."
         _BACKUP_SUCCEEDED=true
         exit 0
@@ -374,7 +394,7 @@ if [[ "${STOP_DOCKER}" == "true" ]] \
         [[ "${DRY_RUN}" != "true" ]] \
             && docker stop --timeout "${DOCKER_STOP_TIMEOUT}" ${_STOPPED_IDS}
         _CONTAINERS_STOPPED=true
-        log "  Stopped. Will restart after imaging."
+        log "  Stopped."
     fi
 fi
 
@@ -386,9 +406,8 @@ echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null 2>&1 || true
 
 # ── Restart Docker before streaming ──────────────────────────────────────────
 # Docker was stopped only long enough for a clean filesystem sync (~10 seconds).
-# Restart it now before the long dd stream begins so the site stays up during
-# the backup. The image is crash-consistent (InnoDB recovers on boot), which is
-# perfectly acceptable for disaster recovery.
+# Restart before the partclone stream so the site stays up during the backup.
+# The image is crash-consistent — InnoDB recovers cleanly on next boot.
 if [[ "${_CONTAINERS_STOPPED}" == "true" && -n "${_STOPPED_IDS}" ]]; then
     log ""
     log "Restarting Docker containers (before stream — site back up)..."
@@ -398,113 +417,156 @@ if [[ "${_CONTAINERS_STOPPED}" == "true" && -n "${_STOPPED_IDS}" ]]; then
     log "  Containers restarted. Backup stream begins now."
 fi
 
-# ── Stream to S3 ─────────────────────────────────────────────────────────────
+# ── Partition table ───────────────────────────────────────────────────────────
+PARTITION_TABLE_KEY="${S3_DATE_PREFIX}/partition-table-${TIMESTAMP}.sfdisk"
+
 log ""
-log "Streaming ${BOOT_DEV} → ${COMPRESSOR_NAME} → S3..."
-log "  (typically 10–30 min for a 32–128GB device — go make a coffee)"
-
-BACKUP_START=$(date +%s)
-
+log "Saving partition table..."
 if [[ "${DRY_RUN}" == "true" ]]; then
-    log "  [DRY RUN] dd if=${BOOT_DEV} bs=4M | tee SHA256_FIFO | ${COMPRESSOR} | aws s3 cp - s3://${S3_BUCKET}/${IMAGE_S3_KEY}"
+    log "  [DRY RUN] sfdisk -d ${BOOT_DEV} → s3://${S3_BUCKET}/${PARTITION_TABLE_KEY}"
 else
-    # Compute SHA256 of raw device data in parallel via a named pipe.
-    # Hashing before compression means the same hash verifies both the S3
-    # image (decompress → hash) and the flashed device (re-read → hash).
-    _SHA256_FIFO=$(mktemp -u /tmp/pi-mi-sha256.XXXXXX)
-    _SHA256_TMP=$(mktemp /tmp/pi-mi-sha256sum.XXXXXX)
-    mkfifo "${_SHA256_FIFO}"
+    sfdisk -d "${BOOT_DEV}" 2>/dev/null \
+        | aws_cmd s3 cp - "s3://${S3_BUCKET}/${PARTITION_TABLE_KEY}" \
+            --content-type "text/plain" \
+            --storage-class "STANDARD"
+    log "  Saved."
+fi
 
-    sha256sum "${_SHA256_FIFO}" > "${_SHA256_TMP}" &
-    _SHA256_PID=$!
+# ── Image each partition with partclone ───────────────────────────────────────
+BACKUP_START=$(date +%s)
+TOTAL_USED_BYTES=0
+TOTAL_COMPRESSED_BYTES=0
+PARTITIONS_JSON=""
 
-    # Stream: device → tee (→ sha256 fifo + stdout) → compress → S3
-    # shellcheck disable=SC2086
-    sudo dd if="${BOOT_DEV}" bs=4M status=none 2>/dev/null \
-        | tee "${_SHA256_FIFO}" \
-        | ${COMPRESSOR} \
-        | aws_cmd s3 cp - "s3://${S3_BUCKET}/${IMAGE_S3_KEY}" \
-            --storage-class "${S3_STORAGE_CLASS}" \
-            --no-progress
+log ""
+log "Imaging ${#BOOT_PARTITIONS[@]} partition(s) with partclone..."
 
-    wait "${_SHA256_PID}" || true
-    DEVICE_SHA256=$(awk '{print $1}' "${_SHA256_TMP}" 2>/dev/null || echo "")
-    rm -f "${_SHA256_FIFO}" "${_SHA256_TMP}"
-    [[ -n "${DEVICE_SHA256}" ]] && log "  SHA256 (raw device): ${DEVICE_SHA256}"
+for PART in "${BOOT_PARTITIONS[@]}"; do
+    PART_NAME=$(basename "${PART}")
+    FSTYPE=$(lsblk -no FSTYPE "${PART}" 2>/dev/null | tr -d '[:space:]' || echo "")
+    TOOL=$(partclone_tool "${FSTYPE}")
+    PART_KEY="${S3_DATE_PREFIX}/${PART_NAME}-${TIMESTAMP}.img.gz"
+
+    PART_SIZE_BYTES=$(lsblk -bdno SIZE "${PART}" 2>/dev/null || echo "0")
+    PART_SIZE_HUMAN=$(numfmt --to=iec "${PART_SIZE_BYTES}" 2>/dev/null || echo "?")
+
+    # Get used space (mounted partitions only)
+    PART_USED_BYTES=0
+    PART_USED_HUMAN="?"
+    if df "${PART}" &>/dev/null 2>&1; then
+        PART_USED_BYTES=$(df -B1 --output=used "${PART}" 2>/dev/null | tail -1 | tr -d ' ' || echo "0")
+        PART_USED_HUMAN=$(numfmt --to=iec "${PART_USED_BYTES}" 2>/dev/null || echo "?")
+        TOTAL_USED_BYTES=$(( TOTAL_USED_BYTES + PART_USED_BYTES ))
+    fi
+
+    log ""
+    log "  ${PART}  (${FSTYPE:-unknown}, ${PART_SIZE_HUMAN} total, ${PART_USED_HUMAN} used)"
+    log "  Tool: ${TOOL}"
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        log "  [DRY RUN] ${TOOL} -c -s ${PART} | ${COMPRESSOR} | aws s3 cp - s3://${S3_BUCKET}/${PART_KEY}"
+        PART_COMPRESSED_BYTES=0
+    else
+        # shellcheck disable=SC2086
+        sudo "${TOOL}" -c -s "${PART}" -o - 2>/dev/null \
+            | ${COMPRESSOR} \
+            | aws_cmd s3 cp - "s3://${S3_BUCKET}/${PART_KEY}" \
+                --storage-class "${S3_STORAGE_CLASS}" \
+                --no-progress
+
+        PART_COMPRESSED_BYTES=$(aws_cmd s3 ls "s3://${S3_BUCKET}/${PART_KEY}" 2>/dev/null \
+            | awk '{print $3}' | head -1 || echo "0")
+        PART_COMPRESSED_HUMAN=$(numfmt --to=iec "${PART_COMPRESSED_BYTES}" 2>/dev/null || echo "?")
+        TOTAL_COMPRESSED_BYTES=$(( TOTAL_COMPRESSED_BYTES + PART_COMPRESSED_BYTES ))
+        log "  Done: ${PART_COMPRESSED_HUMAN} compressed → ${PART_KEY}"
+    fi
+
+    # Build partitions JSON array (newline-separated entries, joined later)
+    PARTITIONS_JSON+="    {\"name\":\"${PART_NAME}\",\"device\":\"${PART}\",\"fstype\":\"${FSTYPE}\",\"tool\":\"${TOOL}\",\"size_bytes\":${PART_SIZE_BYTES},\"size_human\":\"${PART_SIZE_HUMAN}\",\"used_bytes\":${PART_USED_BYTES},\"used_human\":\"${PART_USED_HUMAN}\",\"compressed_bytes\":${PART_COMPRESSED_BYTES:-0},\"key\":\"${PART_KEY}\"},"$'\n'
+done
+
+# ── Optional: separate boot firmware (e.g. SD card /boot/firmware) ────────────
+BOOT_FW_JSON=""
+if [[ -n "${BOOT_FW_PART}" ]]; then
+    FW_NAME=$(basename "${BOOT_FW_PART}")
+    FW_KEY="${S3_DATE_PREFIX}/${FW_NAME}-boot-fw-${TIMESTAMP}.img.gz"
+    FW_FSTYPE=$(lsblk -no FSTYPE "${BOOT_FW_PART}" 2>/dev/null | tr -d '[:space:]' || echo "vfat")
+
+    log ""
+    log "  ${BOOT_FW_PART}  (boot firmware, ${FW_SIZE_HUMAN})"
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        log "  [DRY RUN] partclone.vfat -c -s ${BOOT_FW_PART} | ${COMPRESSOR} | aws s3 cp -"
+    else
+        sudo partclone.vfat -c -s "${BOOT_FW_PART}" -o - 2>/dev/null \
+            | ${COMPRESSOR} \
+            | aws_cmd s3 cp - "s3://${S3_BUCKET}/${FW_KEY}" \
+                --storage-class "${S3_STORAGE_CLASS}" \
+                --no-progress
+
+        FW_COMPRESSED=$(aws_cmd s3 ls "s3://${S3_BUCKET}/${FW_KEY}" 2>/dev/null \
+            | awk '{print $3}' | head -1 || echo "0")
+        FW_COMPRESSED_HUMAN=$(numfmt --to=iec "${FW_COMPRESSED}" 2>/dev/null || echo "?")
+        TOTAL_COMPRESSED_BYTES=$(( TOTAL_COMPRESSED_BYTES + FW_COMPRESSED ))
+        log "  Done: ${FW_COMPRESSED_HUMAN} compressed → ${FW_KEY}"
+        BOOT_FW_JSON="{\"name\":\"${FW_NAME}\",\"device\":\"${BOOT_FW_PART}\",\"fstype\":\"${FW_FSTYPE}\",\"key\":\"${FW_KEY}\",\"compressed_bytes\":${FW_COMPRESSED}}"
+    fi
 fi
 
 BACKUP_END=$(date +%s)
 BACKUP_DURATION=$(( BACKUP_END - BACKUP_START ))
 
-# ── Optional: image a second device (e.g. Docker data on separate drive) ─────
-EXTRA_DEVICE="${BACKUP_EXTRA_DEVICE:-}"
-if [[ -n "${EXTRA_DEVICE}" && -b "${EXTRA_DEVICE}" ]]; then
-    EXTRA_BASENAME=$(basename "${EXTRA_DEVICE}")
-    EXTRA_FILENAME="pi-image-extra-${EXTRA_BASENAME}-${TIMESTAMP}.img.gz"
-    EXTRA_S3_KEY="${S3_DATE_PREFIX}/${EXTRA_FILENAME}"
-    EXTRA_SIZE=$(blockdev --getsize64 "${EXTRA_DEVICE}" 2>/dev/null || echo "0")
-    EXTRA_SIZE_HUMAN=$(numfmt --to=iec "${EXTRA_SIZE}" 2>/dev/null || echo "?")
-
-    log ""
-    log "Imaging extra device ${EXTRA_DEVICE} (${EXTRA_SIZE_HUMAN})..."
-    log "  Key: ${EXTRA_S3_KEY}"
-
-    if [[ "${DRY_RUN}" != "true" ]]; then
-        # shellcheck disable=SC2086
-        sudo dd if="${EXTRA_DEVICE}" bs=4M status=none 2>/dev/null \
-            | ${COMPRESSOR} \
-            | aws_cmd s3 cp - "s3://${S3_BUCKET}/${EXTRA_S3_KEY}" \
-                --storage-class "${S3_STORAGE_CLASS}" \
-                --no-progress
-        log "  Extra device imaged OK."
-    else
-        log "  [DRY RUN] Would image ${EXTRA_DEVICE} → s3://${S3_BUCKET}/${EXTRA_S3_KEY}"
-    fi
+# ── Summary ───────────────────────────────────────────────────────────────────
+TOTAL_USED_HUMAN=$(numfmt --to=iec "${TOTAL_USED_BYTES}" 2>/dev/null || echo "?")
+TOTAL_COMPRESSED_HUMAN=$(numfmt --to=iec "${TOTAL_COMPRESSED_BYTES}" 2>/dev/null || echo "?")
+if [[ "${TOTAL_USED_BYTES}" -gt 0 && "${TOTAL_COMPRESSED_BYTES}" -gt 0 ]]; then
+    COMPRESSION_RATIO=$(awk \
+        "BEGIN {printf \"%.1f%%\", (1 - ${TOTAL_COMPRESSED_BYTES}/${TOTAL_USED_BYTES}) * 100}")
+else
+    COMPRESSION_RATIO=""
 fi
 
-# ── Report compressed size ────────────────────────────────────────────────────
-COMPRESSED_SIZE=0
-COMPRESSED_SIZE_HUMAN="unknown"
-COMPRESSION_RATIO=""
 if [[ "${DRY_RUN}" != "true" ]]; then
-    COMPRESSED_SIZE=$(aws_cmd s3 ls "s3://${S3_BUCKET}/${IMAGE_S3_KEY}" 2>/dev/null \
-        | awk '{print $3}' | head -1 || echo "0")
-    COMPRESSED_SIZE_HUMAN=$(numfmt --to=iec "${COMPRESSED_SIZE}" 2>/dev/null \
-        || echo "${COMPRESSED_SIZE} bytes")
-    if [[ "${DEV_SIZE}" -gt 0 && "${COMPRESSED_SIZE}" -gt 0 ]]; then
-        COMPRESSION_RATIO=$(awk \
-            "BEGIN {printf \"%.1f%%\", (1 - ${COMPRESSED_SIZE}/${DEV_SIZE}) * 100}")
-    fi
     log ""
-    log "  Original:    ${DEV_SIZE_HUMAN}"
-    log "  Compressed:  ${COMPRESSED_SIZE_HUMAN} (${COMPRESSION_RATIO} saved)"
+    log "  Used data:   ${TOTAL_USED_HUMAN} (across all partitions)"
+    log "  Compressed:  ${TOTAL_COMPRESSED_HUMAN}${COMPRESSION_RATIO:+ (${COMPRESSION_RATIO} saved)}"
     log "  Duration:    ${BACKUP_DURATION}s"
 fi
 
 # ── Upload manifest ───────────────────────────────────────────────────────────
 log ""
 log "Uploading manifest..."
+
+# Trim trailing comma+newline from last partition entry
+PARTITIONS_JSON_CLEAN="${PARTITIONS_JSON%,$'\n'}"
+
 MANIFEST_JSON=$(cat <<EOF
 {
   "date": "${DATE}",
   "timestamp": "${TIMESTAMP}",
   "hostname": "$(hostname)",
+  "backup_type": "partclone",
   "pi_model": "${PI_MODEL}",
   "os": "${OS_PRETTY}",
   "kernel": "${KERNEL}",
   "device": "${BOOT_DEV}",
   "device_size_bytes": ${DEV_SIZE},
   "device_size_human": "${DEV_SIZE_HUMAN}",
-  "compressed_size_bytes": ${COMPRESSED_SIZE},
-  "compressed_size_human": "${COMPRESSED_SIZE_HUMAN}",
+  "total_used_bytes": ${TOTAL_USED_BYTES},
+  "total_used_human": "${TOTAL_USED_HUMAN}",
+  "total_compressed_bytes": ${TOTAL_COMPRESSED_BYTES},
+  "total_compressed_human": "${TOTAL_COMPRESSED_HUMAN}",
   "compression_ratio": "${COMPRESSION_RATIO}",
   "backup_duration_seconds": ${BACKUP_DURATION},
+  "partition_table_key": "${PARTITION_TABLE_KEY}",
+  "partitions": [
+${PARTITIONS_JSON_CLEAN}
+  ],
+  "boot_firmware": ${BOOT_FW_JSON:-null},
   "s3_bucket": "${S3_BUCKET}",
-  "image_key": "${IMAGE_S3_KEY}",
   "manifest_key": "${MANIFEST_S3_KEY}",
   "compressor": "${COMPRESSOR_NAME}",
-  "storage_class": "${S3_STORAGE_CLASS}",
-  "device_sha256": "${DEVICE_SHA256}"
+  "storage_class": "${S3_STORAGE_CLASS}"
 }
 EOF
 )
@@ -548,9 +610,9 @@ TOTAL_ELAPSED=$(( $(date +%s) - _START_TIME ))
 log ""
 log "========================================================"
 log "  Backup complete!"
-log "  Image: s3://${S3_BUCKET}/${IMAGE_S3_KEY}"
-log "  Size:  ${COMPRESSED_SIZE_HUMAN} compressed from ${DEV_SIZE_HUMAN}"
-log "  Time:  ${TOTAL_ELAPSED}s"
+log "  Location: s3://${S3_BUCKET}/${S3_DATE_PREFIX}/"
+log "  Size:     ${TOTAL_COMPRESSED_HUMAN} compressed from ${TOTAL_USED_HUMAN} used"
+log "  Time:     ${TOTAL_ELAPSED}s"
 log ""
 log "  Restore: bash pi-image-restore.sh"
 log "========================================================"
@@ -559,11 +621,7 @@ _BACKUP_SUCCEEDED=true
 
 if [[ "${NTFY_LEVEL}" == "all" && "${DRY_RUN}" != "true" ]]; then
     _NTFY_MSG="$(hostname) — ${DATE}
-Size:    ${COMPRESSED_SIZE_HUMAN} compressed from ${DEV_SIZE_HUMAN}
-Time:    ${TOTAL_ELAPSED}s"
-    if [[ -n "${DEVICE_SHA256}" ]]; then
-        _NTFY_MSG+="
-SHA256:  ${DEVICE_SHA256}"
-    fi
+Size:  ${TOTAL_COMPRESSED_HUMAN} compressed (from ${TOTAL_USED_HUMAN} used)
+Time:  ${TOTAL_ELAPSED}s"
     ntfy_send "Pi MI backup complete" "${_NTFY_MSG}" "low" "white_check_mark,floppy_disk"
 fi

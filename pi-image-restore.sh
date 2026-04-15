@@ -2,26 +2,39 @@
 # =============================================================
 # pi-image-restore.sh — Flash a Pi MI image from S3 to new storage
 #
-# Run this on a Mac or Linux machine with the target SD card or
-# NVMe enclosure connected. Streams the compressed image from S3
-# directly to the device — no local download required.
+# Supports two backup formats:
 #
-# After flashing, boot the new Pi. The restored system will
-# expand the root filesystem to fill the new device automatically
-# on first boot (Raspberry Pi OS handles this out of the box).
+#   partclone (current) — each partition is a separate image
+#     - Restores partition table with sfdisk
+#     - Restores each partition with partclone (verifies checksums inline)
+#     - REQUIRES LINUX (sfdisk + partclone not available on macOS)
+#     - On macOS: boot the new Pi with a minimal SD card, then SSH in
+#       and run this script there
+#
+#   dd (legacy) — single .img.gz of full device
+#     - Works on Mac and Linux
+#     - Streams gunzip | dd to target device
+#
+# Run on a Linux machine (Pi or other) with the target NVMe or SD
+# card connected. Streams directly from S3 — no local download.
 #
 # Usage:
 #   bash pi-image-restore.sh                       # interactive
 #   bash pi-image-restore.sh --list                # list available backups
 #   bash pi-image-restore.sh --date 2026-04-12     # restore specific date
-#   bash pi-image-restore.sh --device /dev/disk4   # specify target device
+#   bash pi-image-restore.sh --device /dev/sda     # specify target device
 #   bash pi-image-restore.sh --yes                 # skip confirmation prompts
-#   bash pi-image-restore.sh --verify /dev/disk4   # verify flashed device SHA256
+#   bash pi-image-restore.sh --verify /dev/sda     # verify after flash (dd format only)
 #
-# Requirements:
-#   - config.env filled in (see config.env.example)
+# Requirements (partclone format):
+#   - Linux with sfdisk (util-linux) and partclone installed
 #   - AWS CLI v2 with read access to the S3 bucket
-#   - pv optional (progress bar): brew install pv / sudo apt install pv
+#   - python3 (for manifest parsing)
+#   - pv optional (progress bar): sudo apt install pv
+#
+# Requirements (dd legacy format):
+#   - Mac or Linux with AWS CLI v2
+#   - pv optional: brew install pv / sudo apt install pv
 # =============================================================
 set -euo pipefail
 
@@ -49,6 +62,7 @@ TARGET_DEVICE=""
 YES=false
 LIST_ONLY=false
 VERIFY_DEVICE=""
+VERIFY_DATE_FOR_VERIFY=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -115,11 +129,12 @@ list_backups() {
             manifest=$(aws_cmd s3 cp \
                 "s3://${S3_BUCKET}/${S3_PREFIX}/${date}/${manifest_file}" - 2>/dev/null || true)
             if [[ -n "${manifest}" ]]; then
-                local compressed device hostname_val
-                compressed=$(get_manifest_field "${manifest}" "compressed_size_human")
-                device=$(get_manifest_field "${manifest}" "device")
+                local compressed hostname_val
+                # Support both new (total_compressed_human) and old (compressed_size_human) formats
+                compressed=$(get_manifest_field "${manifest}" "total_compressed_human")
+                [[ -z "${compressed}" ]] && compressed=$(get_manifest_field "${manifest}" "compressed_size_human")
                 hostname_val=$(get_manifest_field "${manifest}" "hostname")
-                size_info=" — ${compressed:-?} compressed, ${device:-?} (${hostname_val:-?})"
+                size_info=" — ${compressed:-?} compressed (${hostname_val:-?})"
             fi
         fi
         printf "  [%d] %s%s\n" "${idx}" "${date}" "${size_info}"
@@ -135,9 +150,9 @@ if [[ "${LIST_ONLY}" == "true" ]]; then
     exit 0
 fi
 
-# ── Verify flashed device ─────────────────────────────────────────────────────
-# Usage: pi-image-restore.sh --verify /dev/disk4 [--date YYYY-MM-DD]
-# Re-reads the device and compares its SHA256 to the manifest.
+# ── Verify flashed device (dd format only) ────────────────────────────────────
+# Reads back the device and compares SHA256 to the manifest.
+# For partclone format, verification happens inline during restore.
 if [[ -n "${VERIFY_DEVICE}" ]]; then
     log "========================================================"
     log "  Pi MI — post-flash device verification"
@@ -163,6 +178,20 @@ if [[ -n "${VERIFY_DEVICE}" ]]; then
 
     VD_MANIFEST=$(aws_cmd s3 cp "${VD_PATH}/${VD_MFILE}" - 2>/dev/null) \
         || die "Failed to read manifest"
+
+    VD_BACKUP_TYPE=$(get_manifest_field "${VD_MANIFEST}" "backup_type")
+
+    if [[ "${VD_BACKUP_TYPE}" == "partclone" ]]; then
+        log ""
+        log "This is a partclone-format backup."
+        log "Partclone verifies block checksums automatically during restore."
+        log "Post-flash SHA256 verification is not available for partclone backups."
+        log ""
+        log "To verify S3 objects are intact, run on the Pi:"
+        log "  bash ~/pi-mi/pi-image-backup.sh --verify"
+        exit 0
+    fi
+
     VD_EXPECTED=$(echo "${VD_MANIFEST}" \
         | grep -o '"device_sha256": *"[^"]*"' | cut -d'"' -f4 || true)
 
@@ -246,30 +275,40 @@ fi
 S3_DATE_PATH="s3://${S3_BUCKET}/${S3_PREFIX}/${TARGET_DATE}"
 log "Backup selected: ${TARGET_DATE}"
 
-IMAGE_FILE=$(aws_cmd s3 ls "${S3_DATE_PATH}/" 2>/dev/null \
-    | grep '\.img\.gz' | awk '{print $4}' | tail -1)
-[[ -z "${IMAGE_FILE}" ]] && die "No .img.gz found in ${S3_DATE_PATH}/"
-
-FULL_IMAGE_KEY="${S3_PREFIX}/${TARGET_DATE}/${IMAGE_FILE}"
-
-# ── Show manifest ─────────────────────────────────────────────────────────────
+# ── Read manifest and detect backup type ─────────────────────────────────────
 MANIFEST_FILE=$(aws_cmd s3 ls "${S3_DATE_PATH}/" 2>/dev/null \
     | grep manifest | awk '{print $4}' | head -1 || true)
+
+MANIFEST=""
+BACKUP_TYPE="dd"   # default for old backups without a manifest
+
 if [[ -n "${MANIFEST_FILE}" ]]; then
-    echo ""
-    log "Backup details:"
     MANIFEST=$(aws_cmd s3 cp "${S3_DATE_PATH}/${MANIFEST_FILE}" - 2>/dev/null || true)
     if [[ -n "${MANIFEST}" ]]; then
+        BACKUP_TYPE=$(get_manifest_field "${MANIFEST}" "backup_type")
+        [[ -z "${BACKUP_TYPE}" ]] && BACKUP_TYPE="dd"
+    fi
+fi
+
+# ── Show backup summary ───────────────────────────────────────────────────────
+if [[ -n "${MANIFEST}" ]]; then
+    echo ""
+    log "Backup details:"
+    if [[ "${BACKUP_TYPE}" == "partclone" ]]; then
+        for field in hostname pi_model os device total_used_human total_compressed_human backup_duration_seconds; do
+            val=$(get_manifest_field "${MANIFEST}" "${field}")
+            [[ -n "${val}" ]] && printf "  %-28s %s\n" "${field}:" "${val}"
+        done
+        # Count partitions
+        PART_COUNT=$(echo "${MANIFEST}" | grep -c '"name":' || true)
+        echo "  partitions:                  ${PART_COUNT}"
+    else
         for field in hostname pi_model os device device_size_human compressed_size_human backup_duration_seconds; do
             val=$(get_manifest_field "${MANIFEST}" "${field}")
             [[ -n "${val}" ]] && printf "  %-28s %s\n" "${field}:" "${val}"
         done
     fi
 fi
-
-IMAGE_SIZE=$(aws_cmd s3 ls "${S3_DATE_PATH}/${IMAGE_FILE}" 2>/dev/null \
-    | awk '{print $3}' | head -1 || echo "0")
-IMAGE_SIZE_HUMAN=$(numfmt --to=iec "${IMAGE_SIZE}" 2>/dev/null || echo "${IMAGE_SIZE} bytes")
 
 # ── Pick target device ────────────────────────────────────────────────────────
 echo ""
@@ -290,7 +329,7 @@ if [[ -z "${TARGET_DEVICE}" ]]; then
     echo ""
     echo "  WARNING: All data on the target device will be permanently destroyed."
     echo ""
-    read -r -p "  Enter target device (e.g. /dev/disk4 or /dev/sdb): " TARGET_DEVICE
+    read -r -p "  Enter target device (e.g. /dev/sda or /dev/nvme0n1): " TARGET_DEVICE
 fi
 
 [[ -z "${TARGET_DEVICE}" ]] && die "No target device specified."
@@ -311,9 +350,22 @@ fi
 
 # ── Final confirmation ────────────────────────────────────────────────────────
 echo ""
-echo "  Source:  s3://${S3_BUCKET}/${FULL_IMAGE_KEY}"
-echo "  Size:    ${IMAGE_SIZE_HUMAN} (compressed)"
-echo "  Target:  ${TARGET_DEVICE}"
+if [[ "${BACKUP_TYPE}" == "partclone" ]]; then
+    TOTAL_COMPRESSED=$(get_manifest_field "${MANIFEST}" "total_compressed_human")
+    echo "  Backup:  ${TARGET_DATE} (partclone format)"
+    echo "  Size:    ${TOTAL_COMPRESSED:-?} (compressed, all partitions)"
+    echo "  Target:  ${TARGET_DEVICE}"
+else
+    IMAGE_FILE=$(aws_cmd s3 ls "${S3_DATE_PATH}/" 2>/dev/null \
+        | grep '\.img\.gz' | awk '{print $4}' | tail -1 || true)
+    [[ -z "${IMAGE_FILE}" ]] && die "No .img.gz found in ${S3_DATE_PATH}/"
+    IMAGE_SIZE=$(aws_cmd s3 ls "${S3_DATE_PATH}/${IMAGE_FILE}" 2>/dev/null \
+        | awk '{print $3}' | head -1 || echo "0")
+    IMAGE_SIZE_HUMAN=$(numfmt --to=iec "${IMAGE_SIZE}" 2>/dev/null || echo "${IMAGE_SIZE} bytes")
+    echo "  Source:  s3://${S3_BUCKET}/${S3_PREFIX}/${TARGET_DATE}/${IMAGE_FILE}"
+    echo "  Size:    ${IMAGE_SIZE_HUMAN} (compressed)"
+    echo "  Target:  ${TARGET_DEVICE}"
+fi
 echo ""
 if [[ "${OS_TYPE}" == "Darwin" ]]; then
     diskutil info "${TARGET_DEVICE}" 2>/dev/null \
@@ -338,31 +390,170 @@ else
 fi
 
 # ── Flash ─────────────────────────────────────────────────────────────────────
-log ""
-log "Flashing... (${IMAGE_SIZE_HUMAN} compressed — will take several minutes)"
-echo ""
-
 START_TIME=$(date +%s)
 
-# macOS: use /dev/rdisk (raw device — ~10x faster writes than /dev/disk)
-if [[ "${OS_TYPE}" == "Darwin" ]]; then
-    WRITE_DEVICE="${TARGET_DEVICE/\/dev\/disk//dev/rdisk}"
-    DD_BS="4m"    # macOS requires lowercase suffix
-else
-    WRITE_DEVICE="${TARGET_DEVICE}"
-    DD_BS="4M"
-fi
+if [[ "${BACKUP_TYPE}" == "partclone" ]]; then
+    # ── Partclone restore ─────────────────────────────────────────────────────
+    log ""
+    log "Partclone restore — partition by partition..."
 
-if command -v pv &>/dev/null; then
-    aws_cmd s3 cp "s3://${S3_BUCKET}/${FULL_IMAGE_KEY}" - \
-        | pv -s "${IMAGE_SIZE}" \
-        | gunzip -c \
-        | sudo dd of="${WRITE_DEVICE}" bs="${DD_BS}" status=none
+    if [[ "${OS_TYPE}" != "Linux" ]]; then
+        echo ""
+        echo "  Partclone restore requires Linux (sfdisk + partclone are not available on macOS)."
+        echo ""
+        echo "  To restore on macOS:"
+        echo "    1. Boot the new Pi from a minimal SD card (Raspberry Pi OS Lite)"
+        echo "    2. Attach the target NVMe via USB enclosure or directly"
+        echo "    3. SSH into the Pi, clone the repo, then run:"
+        echo "       bash ~/pi-mi/pi-image-restore.sh"
+        echo ""
+        exit 1
+    fi
+
+    command -v sfdisk      &>/dev/null || die "sfdisk not found. Install: sudo apt install util-linux"
+    command -v partclone.ext4 &>/dev/null || die "partclone not found. Install: sudo apt install partclone"
+    command -v python3     &>/dev/null || die "python3 not found (required for manifest parsing)"
+
+    # 1. Restore partition table
+    PTABLE_KEY=$(get_manifest_field "${MANIFEST}" "partition_table_key")
+    [[ -z "${PTABLE_KEY}" ]] && die "No partition_table_key in manifest."
+
+    log ""
+    log "Restoring partition table to ${TARGET_DEVICE}..."
+    aws_cmd s3 cp "s3://${S3_BUCKET}/${PTABLE_KEY}" - 2>/dev/null \
+        | sudo sfdisk --force --no-reread "${TARGET_DEVICE}" 2>&1 \
+        | grep -v '^$' | sed 's/^/  /' || true
+
+    # Wait for kernel to update partition table
+    sudo partprobe "${TARGET_DEVICE}" 2>/dev/null \
+        || sudo blockdev --rereadpt "${TARGET_DEVICE}" 2>/dev/null || true
+    sleep 2
+    log "  Partition table restored."
+
+    # 2. Parse partitions from manifest
+    PART_DATA=$(echo "${MANIFEST}" | python3 -c "
+import json, sys
+m = json.load(sys.stdin)
+for p in m.get('partitions', []):
+    print('\t'.join([
+        p.get('name',''),
+        p.get('tool','partclone.dd'),
+        p.get('key',''),
+        str(p.get('compressed_bytes', 0))
+    ]))
+") || die "Failed to parse manifest partitions (python3 error)"
+
+    # 3. Restore each partition
+    while IFS=$'\t' read -r PART_NAME PART_TOOL PART_KEY PART_CSIZE; do
+        [[ -z "${PART_NAME}" || -z "${PART_KEY}" ]] && continue
+
+        # Map source partition name to target partition device by number
+        PART_NUM=$(echo "${PART_NAME}" | grep -o '[0-9]*$' || true)
+        [[ -z "${PART_NUM}" ]] && { log "  Skipping ${PART_NAME} — cannot determine partition number"; continue; }
+
+        if [[ "${TARGET_DEVICE}" =~ (nvme|mmcblk) ]]; then
+            TARGET_PART="${TARGET_DEVICE}p${PART_NUM}"
+        else
+            TARGET_PART="${TARGET_DEVICE}${PART_NUM}"
+        fi
+
+        PART_SIZE_H=$(numfmt --to=iec "${PART_CSIZE}" 2>/dev/null || echo "${PART_CSIZE} bytes")
+
+        log ""
+        log "  Restoring ${TARGET_PART}  (${PART_SIZE_H} compressed)"
+        log "  Source: ${PART_KEY}"
+
+        # Wait up to 10s for partition device node to appear
+        RETRIES=0
+        while [[ ! -b "${TARGET_PART}" && ${RETRIES} -lt 10 ]]; do
+            sleep 1
+            (( RETRIES++ )) || true
+        done
+        [[ ! -b "${TARGET_PART}" ]] && die "Partition ${TARGET_PART} did not appear after partition table restore."
+
+        if command -v pv &>/dev/null; then
+            aws_cmd s3 cp "s3://${S3_BUCKET}/${PART_KEY}" - \
+                | pv -s "${PART_CSIZE}" \
+                | gunzip \
+                | sudo "${PART_TOOL}" -r -s - -o "${TARGET_PART}"
+        else
+            aws_cmd s3 cp "s3://${S3_BUCKET}/${PART_KEY}" - \
+                | gunzip \
+                | sudo "${PART_TOOL}" -r -s - -o "${TARGET_PART}"
+        fi
+
+        log "  ${TARGET_PART} restored."
+    done <<< "${PART_DATA}"
+
+    # 4. Restore boot firmware (separate SD card partition) if present
+    FW_DATA=$(echo "${MANIFEST}" | python3 -c "
+import json, sys
+m = json.load(sys.stdin)
+fw = m.get('boot_firmware')
+if fw and fw.get('key'):
+    print('\t'.join([
+        fw.get('name',''),
+        fw.get('tool','partclone.vfat'),
+        fw.get('key',''),
+        str(fw.get('compressed_bytes', 0))
+    ]))
+") || true
+
+    if [[ -n "${FW_DATA}" ]]; then
+        IFS=$'\t' read -r FW_NAME FW_TOOL FW_KEY FW_CSIZE <<< "${FW_DATA}"
+        FW_SIZE_H=$(numfmt --to=iec "${FW_CSIZE}" 2>/dev/null || echo "${FW_CSIZE} bytes")
+        log ""
+        log "Boot firmware is on a separate SD card partition (${FW_NAME}, ${FW_SIZE_H})."
+        if [[ "${YES}" == "true" ]]; then
+            log "  --yes flag set; skipping boot firmware restore."
+            log "  To restore manually: aws s3 cp s3://${S3_BUCKET}/${FW_KEY} - | gunzip | sudo ${FW_TOOL} -r -s - -o /dev/mmcblk0p1"
+        else
+            read -r -p "  Enter SD card partition for boot firmware (e.g. /dev/mmcblk0p1, or Enter to skip): " FW_TARGET
+            if [[ -n "${FW_TARGET}" && -b "${FW_TARGET}" ]]; then
+                log "  Restoring boot firmware to ${FW_TARGET}..."
+                if command -v pv &>/dev/null; then
+                    aws_cmd s3 cp "s3://${S3_BUCKET}/${FW_KEY}" - \
+                        | pv -s "${FW_CSIZE}" \
+                        | gunzip \
+                        | sudo "${FW_TOOL}" -r -s - -o "${FW_TARGET}"
+                else
+                    aws_cmd s3 cp "s3://${S3_BUCKET}/${FW_KEY}" - \
+                        | gunzip \
+                        | sudo "${FW_TOOL}" -r -s - -o "${FW_TARGET}"
+                fi
+                log "  Boot firmware restored."
+            else
+                log "  Skipping boot firmware restore."
+                log "  NOTE: If the Pi boots from SD card, /boot/firmware may need restoring."
+            fi
+        fi
+    fi
+
 else
-    log "  (Install pv for a live progress bar: brew install pv / sudo apt install pv)"
-    aws_cmd s3 cp "s3://${S3_BUCKET}/${FULL_IMAGE_KEY}" - \
-        | gunzip -c \
-        | sudo dd of="${WRITE_DEVICE}" bs="${DD_BS}" status=progress
+    # ── Legacy dd restore ─────────────────────────────────────────────────────
+    log ""
+    log "Flashing... (${IMAGE_SIZE_HUMAN} compressed — will take several minutes)"
+    echo ""
+
+    if [[ "${OS_TYPE}" == "Darwin" ]]; then
+        WRITE_DEVICE="${TARGET_DEVICE/\/dev\/disk//dev/rdisk}"
+        DD_BS="4m"
+    else
+        WRITE_DEVICE="${TARGET_DEVICE}"
+        DD_BS="4M"
+    fi
+
+    if command -v pv &>/dev/null; then
+        aws_cmd s3 cp "s3://${S3_BUCKET}/${S3_PREFIX}/${TARGET_DATE}/${IMAGE_FILE}" - \
+            | pv -s "${IMAGE_SIZE}" \
+            | gunzip -c \
+            | sudo dd of="${WRITE_DEVICE}" bs="${DD_BS}" status=none
+    else
+        log "  (Install pv for a live progress bar: brew install pv / sudo apt install pv)"
+        aws_cmd s3 cp "s3://${S3_BUCKET}/${S3_PREFIX}/${TARGET_DATE}/${IMAGE_FILE}" - \
+            | gunzip -c \
+            | sudo dd of="${WRITE_DEVICE}" bs="${DD_BS}" status=progress
+    fi
 fi
 
 sync
