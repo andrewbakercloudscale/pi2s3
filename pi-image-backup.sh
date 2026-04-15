@@ -369,7 +369,7 @@ if [[ "${STOP_DOCKER}" == "true" ]] \
         log ""
         log "Stopping ${CONTAINER_COUNT} Docker container(s) for consistent snapshot..."
         [[ "${DRY_RUN}" != "true" ]] \
-            && docker stop --time "${DOCKER_STOP_TIMEOUT}" ${_STOPPED_IDS}
+            && docker stop --timeout "${DOCKER_STOP_TIMEOUT}" ${_STOPPED_IDS}
         _CONTAINERS_STOPPED=true
         log "  Stopped. Will restart after imaging."
     fi
@@ -403,7 +403,7 @@ else
 
     # Stream: device → tee (→ sha256 fifo + stdout) → compress → S3
     # shellcheck disable=SC2086
-    dd if="${BOOT_DEV}" bs=4M status=none 2>/dev/null \
+    sudo dd if="${BOOT_DEV}" bs=4M status=none 2>/dev/null \
         | tee "${_SHA256_FIFO}" \
         | ${COMPRESSOR} \
         | aws_cmd s3 cp - "s3://${S3_BUCKET}/${IMAGE_S3_KEY}" \
@@ -434,7 +434,7 @@ if [[ -n "${EXTRA_DEVICE}" && -b "${EXTRA_DEVICE}" ]]; then
 
     if [[ "${DRY_RUN}" != "true" ]]; then
         # shellcheck disable=SC2086
-        dd if="${EXTRA_DEVICE}" bs=4M status=none 2>/dev/null \
+        sudo dd if="${EXTRA_DEVICE}" bs=4M status=none 2>/dev/null \
             | ${COMPRESSOR} \
             | aws_cmd s3 cp - "s3://${S3_BUCKET}/${EXTRA_S3_KEY}" \
                 --storage-class "${S3_STORAGE_CLASS}" \
