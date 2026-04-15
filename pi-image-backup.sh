@@ -118,8 +118,11 @@ ntfy_send() {
 
 on_exit() {
     local rc=$?
+    # Safety net: if the script crashes before the pre-stream restart, ensure
+    # Docker comes back up. Under normal flow _CONTAINERS_STOPPED is false by
+    # the time streaming starts, so this block is a no-op.
     if [[ "${_CONTAINERS_STOPPED}" == "true" && -n "${_STOPPED_IDS}" ]]; then
-        log "Restarting Docker containers..."
+        log "Restarting Docker containers (crash recovery)..."
         # shellcheck disable=SC2086
         docker start ${_STOPPED_IDS} 2>/dev/null || true
         _CONTAINERS_STOPPED=false
@@ -381,6 +384,20 @@ log "Syncing filesystem..."
 sync
 echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null 2>&1 || true
 
+# ── Restart Docker before streaming ──────────────────────────────────────────
+# Docker was stopped only long enough for a clean filesystem sync (~10 seconds).
+# Restart it now before the long dd stream begins so the site stays up during
+# the backup. The image is crash-consistent (InnoDB recovers on boot), which is
+# perfectly acceptable for disaster recovery.
+if [[ "${_CONTAINERS_STOPPED}" == "true" && -n "${_STOPPED_IDS}" ]]; then
+    log ""
+    log "Restarting Docker containers (before stream — site back up)..."
+    # shellcheck disable=SC2086
+    [[ "${DRY_RUN}" != "true" ]] && docker start ${_STOPPED_IDS} 2>/dev/null || true
+    _CONTAINERS_STOPPED=false
+    log "  Containers restarted. Backup stream begins now."
+fi
+
 # ── Stream to S3 ─────────────────────────────────────────────────────────────
 log ""
 log "Streaming ${BOOT_DEV} → ${COMPRESSOR_NAME} → S3..."
@@ -443,16 +460,6 @@ if [[ -n "${EXTRA_DEVICE}" && -b "${EXTRA_DEVICE}" ]]; then
     else
         log "  [DRY RUN] Would image ${EXTRA_DEVICE} → s3://${S3_BUCKET}/${EXTRA_S3_KEY}"
     fi
-fi
-
-# ── Restart Docker ───────────────────────────────────────────────────────────
-if [[ "${_CONTAINERS_STOPPED}" == "true" && -n "${_STOPPED_IDS}" ]]; then
-    log ""
-    log "Restarting Docker containers..."
-    # shellcheck disable=SC2086
-    [[ "${DRY_RUN}" != "true" ]] && docker start ${_STOPPED_IDS} 2>/dev/null || true
-    _CONTAINERS_STOPPED=false
-    log "  Containers restarted."
 fi
 
 # ── Report compressed size ────────────────────────────────────────────────────
