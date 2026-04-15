@@ -11,19 +11,16 @@ Think of it as an AMI for your Pi.
 ```
 BACKUP (runs on Pi nightly via cron)
 
-  1. Stop Docker containers  (~10 seconds)
-     └─ ensures databases and volumes are in a consistent state
+  1. Stop Docker containers
+     └─ ensures databases flush writes before imaging starts
 
   2. Sync filesystem  (instant)
      └─ flush dirty pages and drop caches
 
-  3. Restart Docker containers  (site back up before imaging starts)
-     └─ partclone reads from a frozen filesystem snapshot
-
-  4. Save partition table (GPT/MBR)
+  3. Save partition table (GPT/MBR)
      └─ sfdisk -d /dev/nvme0n1  ──►  S3
 
-  5. Image each partition with partclone
+  4. Image each partition with partclone  (~5–15 min for typical used data)
      └─ partclone reads the filesystem allocation map and skips
         unallocated blocks — only used data is transferred
 
@@ -32,6 +29,8 @@ BACKUP (runs on Pi nightly via cron)
      /dev/mmcblk0p1  ──►  partclone.vfat  ──►  pigz  ──►  aws s3 cp  ──►  S3
      (boot firmware)      partition-aware  parallel   streaming
                           clone           gzip       no local file
+
+  5. Restart Docker containers  (site back up)
 
   6. Upload manifest JSON (metadata: partitions, sizes, duration)
 
@@ -60,7 +59,9 @@ RESTORE (run on a Linux machine or another Pi)
 
 ### Docker downtime
 
-Containers are stopped **briefly** (typically ~10 seconds) for a clean filesystem sync before imaging starts. They are restarted **before the partition imaging begins**, so your site is back up during the entire backup stream. The resulting image is crash-consistent — databases like MariaDB/InnoDB recover automatically on next boot using their write-ahead log.
+Containers are stopped for the duration of partition imaging — typically **5–15 minutes** (depending on how much data is used) when scheduled at 2am. Docker is restarted immediately after all partitions are imaged.
+
+This is far better than the old `dd` approach (60–90 minutes on a full NVMe), and gives a fully consistent image: databases like MariaDB/InnoDB have all writes flushed to disk and no new writes occur during the backup. On restore, no recovery step is needed.
 
 ---
 

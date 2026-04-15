@@ -133,9 +133,7 @@ partclone_tool() {
 
 on_exit() {
     local rc=$?
-    # Safety net: if the script crashes before the pre-stream restart, ensure
-    # Docker comes back up. Under normal flow _CONTAINERS_STOPPED is false by
-    # the time streaming starts, so this block is a no-op.
+    # Safety net: if the script crashes mid-imaging, ensure Docker comes back up.
     if [[ "${_CONTAINERS_STOPPED}" == "true" && -n "${_STOPPED_IDS}" ]]; then
         log "Restarting Docker containers (crash recovery)..."
         # shellcheck disable=SC2086
@@ -384,7 +382,10 @@ if [[ "${FORCE}" != "true" && "${DRY_RUN}" != "true" ]]; then
     fi
 fi
 
-# ── Stop Docker briefly for consistent snapshot ───────────────────────────────
+# ── Stop Docker for consistent snapshot ──────────────────────────────────────
+# Containers are stopped for the duration of partition imaging.
+# With partclone reading only used blocks (~10–30GB typical), downtime is
+# 5–15 minutes — far less than the old dd approach (60–90 min on a full NVMe).
 if [[ "${STOP_DOCKER}" == "true" ]] \
    && command -v docker &>/dev/null \
    && docker info &>/dev/null 2>&1; then
@@ -397,7 +398,7 @@ if [[ "${STOP_DOCKER}" == "true" ]] \
         [[ "${DRY_RUN}" != "true" ]] \
             && docker stop --timeout "${DOCKER_STOP_TIMEOUT}" ${_STOPPED_IDS}
         _CONTAINERS_STOPPED=true
-        log "  Stopped."
+        log "  Stopped. Will restart after imaging."
     fi
 fi
 
@@ -406,19 +407,6 @@ log ""
 log "Syncing filesystem..."
 sync
 echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null 2>&1 || true
-
-# ── Restart Docker before streaming ──────────────────────────────────────────
-# Docker was stopped only long enough for a clean filesystem sync (~10 seconds).
-# Restart before the partclone stream so the site stays up during the backup.
-# The image is crash-consistent — InnoDB recovers cleanly on next boot.
-if [[ "${_CONTAINERS_STOPPED}" == "true" && -n "${_STOPPED_IDS}" ]]; then
-    log ""
-    log "Restarting Docker containers (before stream — site back up)..."
-    # shellcheck disable=SC2086
-    [[ "${DRY_RUN}" != "true" ]] && docker start ${_STOPPED_IDS} 2>/dev/null || true
-    _CONTAINERS_STOPPED=false
-    log "  Containers restarted. Backup stream begins now."
-fi
 
 # ── Partition table ───────────────────────────────────────────────────────────
 PARTITION_TABLE_KEY="${S3_DATE_PREFIX}/partition-table-${TIMESTAMP}.sfdisk"
@@ -470,8 +458,9 @@ for PART in "${BOOT_PARTITIONS[@]}"; do
         log "  [DRY RUN] ${TOOL} -c -s ${PART} | ${COMPRESSOR} | aws s3 cp - s3://${S3_BUCKET}/${PART_KEY}"
         PART_COMPRESSED_BYTES=0
     else
+        # -F: allow cloning mounted partitions (all NVMe partitions remain mounted)
         # shellcheck disable=SC2086
-        sudo "${TOOL}" -c -s "${PART}" -o - 2>/dev/null \
+        sudo "${TOOL}" -c -F -s "${PART}" -o - 2>/dev/null \
             | ${COMPRESSOR} \
             | aws_cmd s3 cp - "s3://${S3_BUCKET}/${PART_KEY}" \
                 --storage-class "${S3_STORAGE_CLASS}" \
@@ -501,7 +490,7 @@ if [[ -n "${BOOT_FW_PART}" ]]; then
     if [[ "${DRY_RUN}" == "true" ]]; then
         log "  [DRY RUN] partclone.vfat -c -s ${BOOT_FW_PART} | ${COMPRESSOR} | aws s3 cp -"
     else
-        sudo partclone.vfat -c -s "${BOOT_FW_PART}" -o - 2>/dev/null \
+        sudo partclone.vfat -c -F -s "${BOOT_FW_PART}" -o - 2>/dev/null \
             | ${COMPRESSOR} \
             | aws_cmd s3 cp - "s3://${S3_BUCKET}/${FW_KEY}" \
                 --storage-class "${S3_STORAGE_CLASS}" \
@@ -518,6 +507,16 @@ fi
 
 BACKUP_END=$(date +%s)
 BACKUP_DURATION=$(( BACKUP_END - BACKUP_START ))
+
+# ── Restart Docker after imaging ──────────────────────────────────────────────
+if [[ "${_CONTAINERS_STOPPED}" == "true" && -n "${_STOPPED_IDS}" ]]; then
+    log ""
+    log "Restarting Docker containers (imaging complete)..."
+    # shellcheck disable=SC2086
+    [[ "${DRY_RUN}" != "true" ]] && docker start ${_STOPPED_IDS} 2>/dev/null || true
+    _CONTAINERS_STOPPED=false
+    log "  Containers restarted."
+fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 TOTAL_USED_HUMAN=$(numfmt --to=iec "${TOTAL_USED_BYTES}" 2>/dev/null || echo "?")
