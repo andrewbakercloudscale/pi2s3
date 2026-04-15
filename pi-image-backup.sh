@@ -19,6 +19,7 @@
 #   bash pi-image-backup.sh --setup       # create S3 lifecycle policy (run once)
 #   bash pi-image-backup.sh --force       # skip duplicate-check
 #   bash pi-image-backup.sh --dry-run     # show what would happen, no upload
+#   bash pi-image-backup.sh --no-stop-docker  # skip Docker stop (daytime test, no downtime)
 #   bash pi-image-backup.sh --list        # list all backups in S3
 #   bash pi-image-backup.sh --verify      # verify latest backup files exist in S3
 #   bash pi-image-backup.sh --verify=DATE # verify specific date (YYYY-MM-DD)
@@ -80,12 +81,13 @@ VERIFY_DATE=""
 
 for arg in "$@"; do
     case "$arg" in
-        --dry-run)    DRY_RUN=true ;;
-        --force)      FORCE=true ;;
-        --setup)      SETUP=true ;;
-        --list)       LIST=true ;;
-        --verify)     VERIFY=true ;;
-        --verify=*)   VERIFY=true; VERIFY_DATE="${arg#--verify=}" ;;
+        --dry-run)         DRY_RUN=true ;;
+        --force)           FORCE=true ;;
+        --setup)           SETUP=true ;;
+        --list)            LIST=true ;;
+        --verify)          VERIFY=true ;;
+        --verify=*)        VERIFY=true; VERIFY_DATE="${arg#--verify=}" ;;
+        --no-stop-docker)  STOP_DOCKER=false ;;
     esac
 done
 
@@ -137,13 +139,22 @@ on_exit() {
     if [[ "${_CONTAINERS_STOPPED}" == "true" && -n "${_STOPPED_IDS}" ]]; then
         log "Restarting Docker containers (crash recovery)..."
         # shellcheck disable=SC2086
-        docker start ${_STOPPED_IDS} 2>/dev/null || true
+        if docker start ${_STOPPED_IDS} 2>&1; then
+            log "  Containers restarted."
+        else
+            log "  ERROR: docker start failed — containers may still be stopped!"
+            ntfy_send "Pi MI — containers NOT restarted" \
+                "URGENT: backup crashed and container restart FAILED on $(hostname).
+Manual action required. Run: docker start ${_STOPPED_IDS}" \
+                "urgent" "sos,floppy_disk"
+        fi
         _CONTAINERS_STOPPED=false
-        log "  Containers restarted."
     fi
     if [[ "${_BACKUP_SUCCEEDED}" != "true" && $rc -ne 0 ]]; then
         ntfy_send "Pi MI backup FAILED" \
-            "Backup on $(hostname) failed (exit ${rc}). Check /var/log/pi-mi-backup.log" \
+            "Backup on $(hostname) failed (exit ${rc}).
+Bucket: s3://${S3_BUCKET}/
+Log: /var/log/pi-mi-backup.log" \
             "high" "warning,floppy_disk"
     fi
 }
@@ -459,8 +470,10 @@ for PART in "${BOOT_PARTITIONS[@]}"; do
         PART_COMPRESSED_BYTES=0
     else
         # -F: allow cloning mounted partitions (all NVMe partitions remain mounted)
+        # stderr is intentionally NOT suppressed so partclone errors/warnings land in the
+        # backup log and can fail the pipeline via set -euo pipefail.
         # shellcheck disable=SC2086
-        sudo "${TOOL}" -c -F -s "${PART}" -o - 2>/dev/null \
+        sudo "${TOOL}" -c -F -s "${PART}" -o - \
             | ${COMPRESSOR} \
             | aws_cmd s3 cp - "s3://${S3_BUCKET}/${PART_KEY}" \
                 --storage-class "${S3_STORAGE_CLASS}" \
@@ -468,6 +481,9 @@ for PART in "${BOOT_PARTITIONS[@]}"; do
 
         PART_COMPRESSED_BYTES=$(aws_cmd s3 ls "s3://${S3_BUCKET}/${PART_KEY}" 2>/dev/null \
             | awk '{print $3}' | head -1 || echo "0")
+        if [[ "${PART_COMPRESSED_BYTES:-0}" -eq 0 ]]; then
+            die "Upload of ${PART_KEY} appears empty (0 bytes in S3). Backup aborted."
+        fi
         PART_COMPRESSED_HUMAN=$(numfmt --to=iec "${PART_COMPRESSED_BYTES}" 2>/dev/null || echo "?")
         TOTAL_COMPRESSED_BYTES=$(( TOTAL_COMPRESSED_BYTES + PART_COMPRESSED_BYTES ))
         log "  Done: ${PART_COMPRESSED_HUMAN} compressed → ${PART_KEY}"
@@ -490,7 +506,7 @@ if [[ -n "${BOOT_FW_PART}" ]]; then
     if [[ "${DRY_RUN}" == "true" ]]; then
         log "  [DRY RUN] partclone.vfat -c -s ${BOOT_FW_PART} | ${COMPRESSOR} | aws s3 cp -"
     else
-        sudo partclone.vfat -c -F -s "${BOOT_FW_PART}" -o - 2>/dev/null \
+        sudo partclone.vfat -c -F -s "${BOOT_FW_PART}" -o - \
             | ${COMPRESSOR} \
             | aws_cmd s3 cp - "s3://${S3_BUCKET}/${FW_KEY}" \
                 --storage-class "${S3_STORAGE_CLASS}" \
@@ -498,6 +514,9 @@ if [[ -n "${BOOT_FW_PART}" ]]; then
 
         FW_COMPRESSED=$(aws_cmd s3 ls "s3://${S3_BUCKET}/${FW_KEY}" 2>/dev/null \
             | awk '{print $3}' | head -1 || echo "0")
+        if [[ "${FW_COMPRESSED:-0}" -eq 0 ]]; then
+            die "Upload of ${FW_KEY} appears empty (0 bytes in S3). Backup aborted."
+        fi
         FW_COMPRESSED_HUMAN=$(numfmt --to=iec "${FW_COMPRESSED}" 2>/dev/null || echo "?")
         TOTAL_COMPRESSED_BYTES=$(( TOTAL_COMPRESSED_BYTES + FW_COMPRESSED ))
         log "  Done: ${FW_COMPRESSED_HUMAN} compressed → ${FW_KEY}"
@@ -512,10 +531,21 @@ BACKUP_DURATION=$(( BACKUP_END - BACKUP_START ))
 if [[ "${_CONTAINERS_STOPPED}" == "true" && -n "${_STOPPED_IDS}" ]]; then
     log ""
     log "Restarting Docker containers (imaging complete)..."
-    # shellcheck disable=SC2086
-    [[ "${DRY_RUN}" != "true" ]] && docker start ${_STOPPED_IDS} 2>/dev/null || true
+    if [[ "${DRY_RUN}" != "true" ]]; then
+        # shellcheck disable=SC2086
+        if docker start ${_STOPPED_IDS} 2>&1; then
+            log "  Containers restarted."
+        else
+            log "  ERROR: docker start failed — containers may still be stopped!"
+            ntfy_send "Pi MI — containers NOT restarted" \
+                "URGENT: post-imaging container restart FAILED on $(hostname).
+Manual action required. Run: docker start ${_STOPPED_IDS}" \
+                "urgent" "sos,floppy_disk"
+        fi
+    else
+        log "  [DRY RUN] docker start ${_STOPPED_IDS}"
+    fi
     _CONTAINERS_STOPPED=false
-    log "  Containers restarted."
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
@@ -579,6 +609,14 @@ if [[ "${DRY_RUN}" != "true" ]]; then
             --content-type "application/json" \
             --storage-class "STANDARD"
     log "  s3://${S3_BUCKET}/${MANIFEST_S3_KEY}"
+
+    # Verify manifest landed in S3 (sanity check — if this fails the upload silently failed)
+    MANIFEST_SIZE=$(aws_cmd s3 ls "s3://${S3_BUCKET}/${MANIFEST_S3_KEY}" 2>/dev/null \
+        | awk '{print $3}' | head -1 || echo "0")
+    if [[ "${MANIFEST_SIZE:-0}" -eq 0 ]]; then
+        die "Manifest upload appears empty or missing in S3. Backup may be incomplete."
+    fi
+    log "  Manifest verified in S3 (${MANIFEST_SIZE} bytes)."
 else
     log "  [DRY RUN] ${MANIFEST_JSON}"
 fi
@@ -621,8 +659,9 @@ log "========================================================"
 
 _BACKUP_SUCCEEDED=true
 
-if [[ "${NTFY_LEVEL}" == "all" && "${DRY_RUN}" != "true" ]]; then
+if [[ "${NTFY_LEVEL}" != "failure" && "${DRY_RUN}" != "true" ]]; then
     _NTFY_MSG="$(hostname) — ${DATE}
+Bucket: s3://${S3_BUCKET}/${S3_DATE_PREFIX}/
 Size:  ${TOTAL_COMPRESSED_HUMAN} compressed (from ${TOTAL_USED_HUMAN} used)
 Time:  ${TOTAL_ELAPSED}s"
     ntfy_send "Pi MI backup complete" "${_NTFY_MSG}" "low" "white_check_mark,floppy_disk"
