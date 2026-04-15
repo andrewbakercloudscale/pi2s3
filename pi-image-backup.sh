@@ -428,7 +428,7 @@ log "Saving partition table..."
 if [[ "${DRY_RUN}" == "true" ]]; then
     log "  [DRY RUN] sfdisk -d ${BOOT_DEV} → s3://${S3_BUCKET}/${PARTITION_TABLE_KEY}"
 else
-    sfdisk -d "${BOOT_DEV}" 2>/dev/null \
+    sudo sfdisk -d "${BOOT_DEV}" \
         | aws_cmd s3 cp - "s3://${S3_BUCKET}/${PARTITION_TABLE_KEY}" \
             --content-type "text/plain" \
             --storage-class "STANDARD"
