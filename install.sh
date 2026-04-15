@@ -37,6 +37,8 @@ CRON_MARKER="pi-image-backup.sh"
 WATCHDOG_CRON_MARKER="pi-mi-watchdog.sh"
 HEARTBEAT_SCRIPT="${SCRIPT_DIR}/pi-mi-heartbeat.sh"
 HEARTBEAT_CRON_MARKER="pi-mi-heartbeat.sh"
+POST_CHECK_SCRIPT="${SCRIPT_DIR}/pi-mi-post-backup-check.sh"
+POST_CHECK_CRON_MARKER="pi-mi-post-backup-check.sh"
 
 log()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 ok()   { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ $*"; }
@@ -127,6 +129,17 @@ upgrade() {
         ok "Backup cron refreshed: ${CRON_SCHEDULE}"
     fi
 
+    # Update post-backup check cron if schedule changed
+    POST_BACKUP_CHECK_ENABLED="${POST_BACKUP_CHECK_ENABLED:-true}"
+    POST_BACKUP_CHECK_SCHEDULE="${POST_BACKUP_CHECK_SCHEDULE:-30 2 * * *}"
+    if [[ "${POST_BACKUP_CHECK_ENABLED}" == "true" ]] \
+       && crontab -l 2>/dev/null | grep -qF "${POST_CHECK_CRON_MARKER}"; then
+        POST_CHECK_CRON_LINE="${POST_BACKUP_CHECK_SCHEDULE} bash ${POST_CHECK_SCRIPT} >> ${LOG_FILE} 2>&1"
+        ( crontab -l 2>/dev/null | grep -vF "${POST_CHECK_CRON_MARKER}"
+          echo "${POST_CHECK_CRON_LINE}" ) | crontab -
+        ok "Post-backup check cron refreshed: ${POST_BACKUP_CHECK_SCHEDULE}"
+    fi
+
     log ""
     log "Upgrade complete. Run 'bash install.sh --status' to verify."
 }
@@ -146,6 +159,11 @@ uninstall() {
         ( sudo crontab -l 2>/dev/null | grep -v "${WATCHDOG_CRON_MARKER}" ) \
             | sudo crontab -
         ok "Watchdog root cron removed."
+    fi
+
+    if crontab -l 2>/dev/null | grep -qF "${POST_CHECK_CRON_MARKER}"; then
+        ( crontab -l 2>/dev/null | grep -vF "${POST_CHECK_CRON_MARKER}" ) | crontab -
+        ok "Post-backup check cron removed."
     fi
 
     if [[ -f "${WATCHDOG_BIN}" ]]; then
@@ -204,6 +222,14 @@ status() {
         fi
     else
         echo "  (not installed — set CF_WATCHDOG_ENABLED=true to enable)"
+    fi
+
+    echo ""
+    echo "Post-backup check cron:"
+    if crontab -l 2>/dev/null | grep -qF "${POST_CHECK_CRON_MARKER}"; then
+        crontab -l 2>/dev/null | grep "${POST_CHECK_CRON_MARKER}" | sed 's/^/  /'
+    else
+        echo "  (not installed — set POST_BACKUP_CHECK_ENABLED=true to enable)"
     fi
 
     echo ""
@@ -416,6 +442,30 @@ if [[ "${NTFY_HEARTBEAT_ENABLED}" == "true" ]]; then
 else
     log "  Heartbeat disabled (NTFY_HEARTBEAT_ENABLED=false in config.env)."
     log "  To enable: set NTFY_HEARTBEAT_ENABLED=true then re-run install.sh"
+fi
+
+# ── Step 5c: Post-backup container safety check (optional) ───────────────────
+POST_BACKUP_CHECK_ENABLED="${POST_BACKUP_CHECK_ENABLED:-true}"
+POST_BACKUP_CHECK_SCHEDULE="${POST_BACKUP_CHECK_SCHEDULE:-30 2 * * *}"
+
+if [[ "${POST_BACKUP_CHECK_ENABLED}" == "true" ]]; then
+    if [[ -f "${POST_CHECK_SCRIPT}" ]]; then
+        POST_CHECK_CRON_LINE="${POST_BACKUP_CHECK_SCHEDULE} bash ${POST_CHECK_SCRIPT} >> ${LOG_FILE} 2>&1"
+        if crontab -l 2>/dev/null | grep -qF "${POST_CHECK_CRON_MARKER}"; then
+            ( crontab -l 2>/dev/null | grep -vF "${POST_CHECK_CRON_MARKER}"
+              echo "${POST_CHECK_CRON_LINE}" ) | crontab -
+            ok "Post-backup check cron updated: ${POST_BACKUP_CHECK_SCHEDULE}"
+        else
+            ( crontab -l 2>/dev/null; echo "${POST_CHECK_CRON_LINE}" ) | crontab -
+            ok "Post-backup check cron installed: ${POST_BACKUP_CHECK_SCHEDULE}"
+        fi
+        log "  Runs ${POST_BACKUP_CHECK_SCHEDULE} — restarts stopped containers after backup window."
+    else
+        warn "pi-mi-post-backup-check.sh not found — skipping post-check cron"
+    fi
+else
+    log "  Post-backup check disabled (POST_BACKUP_CHECK_ENABLED=false in config.env)."
+    log "  To enable: set POST_BACKUP_CHECK_ENABLED=true then re-run install.sh"
 fi
 
 # ── Step 6: Log file + rotation ───────────────────────────────────────────────
