@@ -235,8 +235,8 @@ status() {
     command -v pigz &>/dev/null \
         && echo "  pigz:     $(pigz --version 2>&1)" \
         || echo "  pigz:     not installed (gzip fallback)"
-    command -v partclone.ext4 &>/dev/null \
-        && echo "  partclone: $(partclone.ext4 --version 2>&1 | head -1 || echo 'installed')" \
+    { command -v partclone.ext4 &>/dev/null || [[ -x /usr/sbin/partclone.ext4 ]]; } \
+        && echo "  partclone: $(/usr/sbin/partclone.ext4 --version 2>&1 | head -1 || echo 'installed')" \
         || echo "  partclone: NOT INSTALLED (run install.sh to fix)"
     command -v pv   &>/dev/null \
         && echo "  pv:       $(pv --version 2>&1 | head -1)" \
@@ -322,8 +322,8 @@ else
         || warn "pv unavailable — restore will work without it."
 fi
 
-if command -v partclone.ext4 &>/dev/null; then
-    ok "partclone: $(partclone.ext4 --version 2>&1 | head -1 || echo 'installed')"
+if command -v partclone.ext4 &>/dev/null || [[ -x /usr/sbin/partclone.ext4 ]]; then
+    ok "partclone: $(/usr/sbin/partclone.ext4 --version 2>&1 | head -1 || echo 'installed')"
 else
     log "  Installing partclone (reads only used blocks — much faster than dd)..."
     sudo apt-get install -y -qq partclone

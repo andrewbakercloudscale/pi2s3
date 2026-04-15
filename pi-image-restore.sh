@@ -38,6 +38,9 @@
 # =============================================================
 set -euo pipefail
 
+# partclone installs to /usr/sbin on Debian/Ubuntu; ensure it's reachable
+export PATH="/usr/sbin:${PATH}"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="${SCRIPT_DIR}/config.env"
 
