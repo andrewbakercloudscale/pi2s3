@@ -551,7 +551,12 @@ log "========================================================"
 _BACKUP_SUCCEEDED=true
 
 if [[ "${NTFY_LEVEL}" == "all" && "${DRY_RUN}" != "true" ]]; then
-    ntfy_send "Pi MI backup complete" \
-        "$(hostname) — ${DATE} — ${COMPRESSED_SIZE_HUMAN} from ${DEV_SIZE_HUMAN} in ${TOTAL_ELAPSED}s." \
-        "low" "white_check_mark,floppy_disk"
+    _NTFY_MSG="$(hostname) — ${DATE}
+Size:    ${COMPRESSED_SIZE_HUMAN} compressed from ${DEV_SIZE_HUMAN}
+Time:    ${TOTAL_ELAPSED}s"
+    if [[ -n "${DEVICE_SHA256}" ]]; then
+        _NTFY_MSG+="
+SHA256:  ${DEVICE_SHA256}"
+    fi
+    ntfy_send "Pi MI backup complete" "${_NTFY_MSG}" "low" "white_check_mark,floppy_disk"
 fi
