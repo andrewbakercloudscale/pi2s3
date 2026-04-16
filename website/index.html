@@ -947,6 +947,15 @@
   </div>
 
   <div class="qs-step">
+    <div class="qs-num qs-num--alt">or</div>
+    <div class="qs-content">
+      <h3>Restore to a larger device: --resize</h3>
+      <p>Restoring a 128 GB backup to a 256 GB NVMe? Pass <code>--resize</code> and the last partition automatically expands to fill the available space after flash. Uses <code>growpart</code> and <code>resize2fs</code>.</p>
+      <pre><span class="kw">bash</span> ~/pi2s3/pi-image-restore.sh <span class="kw">--date</span> <span class="num">2026-04-16</span> <span class="kw">--device</span> /dev/nvme0n1 <span class="kw">--resize</span></pre>
+    </div>
+  </div>
+
+  <div class="qs-step">
     <div class="qs-num">3</div>
     <div class="qs-content">
       <h3>Boot &amp; clear stale SSH key</h3>

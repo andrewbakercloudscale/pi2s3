@@ -25,6 +25,7 @@
 #   bash pi-image-restore.sh --date 2026-04-12           # restore specific date
 #   bash pi-image-restore.sh --device /dev/sda           # specify target device
 #   bash pi-image-restore.sh --yes                       # skip confirmation prompts
+#   bash pi-image-restore.sh --resize                    # expand last partition to fill device after restore
 #   bash pi-image-restore.sh --verify /dev/sda           # verify after flash (dd only)
 #   bash pi-image-restore.sh --extract /home/pi          # extract a path from backup
 #   bash pi-image-restore.sh --extract /etc --date DATE  # extract from specific date
@@ -74,6 +75,7 @@ TARGET_DATE=""
 TARGET_DEVICE=""
 YES=false
 LIST_ONLY=false
+RESIZE=false
 VERIFY_DEVICE=""
 VERIFY_DATE_FOR_VERIFY=""
 EXTRACT_PATH=""
@@ -96,9 +98,10 @@ while [[ $# -gt 0 ]]; do
         --partition=*)    EXTRACT_PARTITION="${1#--partition=}" ;;
         --host)           shift; HOST_FILTER="${1:-}" ;;
         --host=*)         HOST_FILTER="${1#--host=}" ;;
+        --resize)         RESIZE=true ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--list] [--date YYYY-MM-DD] [--device /dev/...] [--yes] [--verify /dev/...] [--extract <path>] [--partition <name>] [--host <hostname>]"
+            echo "Usage: $0 [--list] [--date YYYY-MM-DD] [--device /dev/...] [--yes] [--resize] [--verify /dev/...] [--extract <path>] [--partition <name>] [--host <hostname>]"
             exit 1
             ;;
     esac
@@ -771,6 +774,68 @@ for p in m.get('partitions', []):
 
         log "  ${TARGET_PART} restored."
     done <<< "${PART_DATA}"
+
+    # 3b. Resize last partition to fill device (--resize)
+    if [[ "${RESIZE}" == "true" ]]; then
+        local _last_name _last_fs
+        IFS=$'\t' read -r _last_name _last_fs < <(echo "${MANIFEST}" | python3 -c "
+import json, sys
+m = json.load(sys.stdin)
+parts = m.get('partitions', [])
+if parts:
+    p = parts[-1]
+    print(p.get('name','') + '\t' + p.get('fstype',''))
+" 2>/dev/null || true)
+
+        if [[ -z "${_last_name}" ]]; then
+            log "  --resize: could not determine last partition from manifest. Skipping."
+        else
+            local _last_num
+            _last_num=$(echo "${_last_name}" | grep -o '[0-9]*$' || true)
+            local _last_target
+            if [[ "${TARGET_DEVICE}" =~ (nvme|mmcblk) ]]; then
+                _last_target="${TARGET_DEVICE}p${_last_num}"
+            else
+                _last_target="${TARGET_DEVICE}${_last_num}"
+            fi
+
+            log ""
+            log "Resizing ${_last_target} (${_last_fs}) to fill ${TARGET_DEVICE}..."
+
+            # Step 1: Expand the partition entry to fill the device
+            if command -v growpart &>/dev/null; then
+                sudo growpart "${TARGET_DEVICE}" "${_last_num}" 2>&1 | sed 's/^/  /' || true
+            else
+                log "  growpart not found (sudo apt install cloud-utils). Skipping partition table expand."
+                log "  Run manually: sudo growpart ${TARGET_DEVICE} ${_last_num}"
+            fi
+
+            sudo partprobe "${TARGET_DEVICE}" 2>/dev/null || true
+            sleep 1
+
+            # Step 2: Resize the filesystem
+            case "${_last_fs}" in
+                ext2|ext3|ext4)
+                    log "  Checking filesystem before resize..."
+                    sudo e2fsck -f -y "${_last_target}" 2>&1 | tail -5 | sed 's/^/  /' || true
+                    log "  Expanding filesystem..."
+                    sudo resize2fs "${_last_target}" 2>&1 | sed 's/^/  /' || true
+                    log "  Filesystem expanded."
+                    ;;
+                xfs)
+                    log "  XFS: filesystem will expand automatically on first mount."
+                    log "  Or after boot: sudo xfs_growfs /"
+                    ;;
+                btrfs)
+                    log "  btrfs: filesystem will need manual resize after mount:"
+                    log "    sudo btrfs filesystem resize max ${_last_target}"
+                    ;;
+                *)
+                    log "  Filesystem type '${_last_fs}' — resize not automated. Do it manually after boot."
+                    ;;
+            esac
+        fi
+    fi
 
     # 4. Restore boot firmware (separate SD card partition) if present
     FW_DATA=$(echo "${MANIFEST}" | python3 -c "
