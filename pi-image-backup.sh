@@ -49,17 +49,17 @@
 #     Implement via: | pv -L "${AWS_TRANSFER_RATE_LIMIT}" | aws s3 cp -
 #     pv is already listed as an optional dependency. Gracefully skip if unset.
 #
-#   TODO(6-preflight-health): Pre-backup Docker health check before stopping containers.
-#     Verify: all expected containers are Up+healthy, NVMe fsck clean, sufficient free
-#     space for pigz working buffers. Avoids imaging a degraded stack.
+#   DONE(6-preflight-health): preflight_health() runs before Docker stop.
+#     Checks: stopped/unhealthy containers, free disk space (<PREFLIGHT_MIN_FREE_MB),
+#     recent I/O errors in dmesg. PREFLIGHT_ABORT_ON_WARN=true to abort on warnings.
 #
 #   TODO(7-incremental): Manifest-diffing incremental backup. Compare used-block bitmap
 #     of current image against last manifest; only upload changed extents. Significant
 #     complexity — revisit once per-host namespacing is in place.
 #
-#   TODO(8-cross-device-restore): Document and handle sfdisk replay onto a device with
-#     different sector geometry. Add --resize flag to pi-image-restore.sh that adjusts
-#     the last partition to fill available space after sfdisk replay.
+#   DONE(8-cross-device-restore): --resize flag on pi-image-restore.sh.
+#     growpart expands the last partition entry; resize2fs/xfs_growfs expands the
+#     filesystem. Works for ext2/3/4 (online). XFS and btrfs: manual step noted.
 #
 #   TODO(9-per-host-retention): Per-hostname MAX_IMAGES in config.env.
 #     e.g. MAX_IMAGES_andrew-pi-5=30. Required for multi-Pi deployments once
@@ -96,6 +96,9 @@ DOCKER_STOP_TIMEOUT="${DOCKER_STOP_TIMEOUT:-30}"
 NTFY_LEVEL="${NTFY_LEVEL:-all}"
 AWS_PROFILE="${AWS_PROFILE:-}"
 STALE_BACKUP_HOURS="${STALE_BACKUP_HOURS:-25}"
+PREFLIGHT_ENABLED="${PREFLIGHT_ENABLED:-true}"
+PREFLIGHT_MIN_FREE_MB="${PREFLIGHT_MIN_FREE_MB:-500}"
+PREFLIGHT_ABORT_ON_WARN="${PREFLIGHT_ABORT_ON_WARN:-false}"
 # ─────────────────────────────────────────────────────────────────────────────
 
 DATE=$(date +%Y-%m-%d)
@@ -190,6 +193,72 @@ Log: /var/log/pi2s3-backup.log" \
 
     log "OK: last backup ${latest} (${age_h}h ago, threshold ${STALE_BACKUP_HOURS}h)."
     exit 0
+}
+
+# ── Pre-backup health check ───────────────────────────────────────────────────
+# Runs before stopping Docker. Warns (or aborts) if the stack looks degraded.
+# Checks: stopped/unhealthy containers, free disk space, recent I/O errors.
+# Set PREFLIGHT_ABORT_ON_WARN=true to abort backup on any warning.
+preflight_health() {
+    [[ "${PREFLIGHT_ENABLED}" != "true" ]] && return 0
+
+    log ""
+    log "Preflight health checks..."
+    local _warn=false
+
+    # Check 1: Docker container health (only if Docker is running)
+    if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
+        local _unhealthy _exited
+        _unhealthy=$(docker ps --filter health=unhealthy --format '{{.Names}}' 2>/dev/null || true)
+        _exited=$(docker ps -a --filter status=exited --filter status=dead \
+            --format '{{.Names}}' 2>/dev/null | grep -v '^$' || true)
+        if [[ -n "${_unhealthy}" ]]; then
+            log "  WARN: unhealthy containers: ${_unhealthy}"
+            _warn=true
+        fi
+        if [[ -n "${_exited}" ]]; then
+            log "  WARN: stopped/exited containers: ${_exited}"
+            _warn=true
+        fi
+        [[ -z "${_unhealthy}" && -z "${_exited}" ]] && log "  Docker: all containers healthy."
+    fi
+
+    # Check 2: Free disk space on root filesystem
+    local _free_mb
+    _free_mb=$(df -m / 2>/dev/null | awk 'NR==2{print $4}' || echo "0")
+    if [[ ${_free_mb} -lt ${PREFLIGHT_MIN_FREE_MB} ]]; then
+        log "  WARN: only ${_free_mb} MB free on / (minimum: ${PREFLIGHT_MIN_FREE_MB} MB)"
+        _warn=true
+    else
+        log "  Free space: ${_free_mb} MB on / (OK)."
+    fi
+
+    # Check 3: Recent I/O errors in dmesg (last hour)
+    local _io_errors
+    _io_errors=$(dmesg --since "1 hour ago" 2>/dev/null \
+        | grep -iE "I/O error|EXT4-fs error|blk_update_request: I/O|SCSI error" \
+        | tail -3 || true)
+    if [[ -n "${_io_errors}" ]]; then
+        log "  WARN: recent I/O errors in dmesg:"
+        while IFS= read -r _line; do log "    ${_line}"; done <<< "${_io_errors}"
+        _warn=true
+    else
+        log "  I/O errors: none detected."
+    fi
+
+    if [[ "${_warn}" == "true" ]]; then
+        log ""
+        if [[ "${PREFLIGHT_ABORT_ON_WARN}" == "true" ]]; then
+            ntfy_send "pi2s3 backup SKIPPED" \
+                "Preflight health check failed on $(hostname -s). Backup aborted. Check log: /var/log/pi2s3-backup.log" \
+                "high" "warning,floppy_disk"
+            die "Preflight health warnings found and PREFLIGHT_ABORT_ON_WARN=true. Aborting."
+        else
+            log "  Health warnings found — proceeding (set PREFLIGHT_ABORT_ON_WARN=true to abort)."
+        fi
+    else
+        log "  All health checks passed."
+    fi
 }
 
 # Return the appropriate partclone tool for a filesystem type.
@@ -487,6 +556,9 @@ if [[ "${FORCE}" != "true" && "${DRY_RUN}" != "true" ]]; then
         exit 0
     fi
 fi
+
+# ── Pre-backup health check ───────────────────────────────────────────────────
+preflight_health
 
 # ── Stop Docker for consistent snapshot ──────────────────────────────────────
 # Containers are stopped for the duration of partition imaging.
