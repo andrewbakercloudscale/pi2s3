@@ -250,7 +250,7 @@ status() {
     echo ""
     echo "Stale-check cron:"
     if crontab -l 2>/dev/null | grep -qF "${STALE_CHECK_CRON_MARKER}"; then
-        crontab -l 2>/dev/null | grep "${STALE_CHECK_CRON_MARKER}" | sed 's/^/  /'
+        crontab -l 2>/dev/null | grep -F "${STALE_CHECK_CRON_MARKER}" | sed 's/^/  /'
     else
         echo "  (not installed — set STALE_CHECK_ENABLED=true to enable)"
     fi
