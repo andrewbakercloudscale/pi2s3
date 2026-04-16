@@ -212,6 +212,8 @@ Old images beyond `MAX_IMAGES` are deleted automatically.
 
 ## Restore to a new Pi
 
+> **Full step-by-step runbook:** [RECOVERY.md](RECOVERY.md) — the document to open when your Pi is dead and you need to restore from scratch. Covers hardware requirements, bootstrap SD flashing from macOS, restore procedure, and post-boot verification.
+
 ### Step 1 — Validate (Mac)
 
 Before touching anything, confirm the S3 image is ready:
