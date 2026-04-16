@@ -322,16 +322,14 @@ if [[ "${PHASE}" == "pre-flash" ]]; then
             [[ -n "${MANIFEST_DEVICE}" ]] && pass "Boot device: ${MANIFEST_DEVICE}"          || warn "Device missing from manifest"
             [[ -n "${MANIFEST_OS}"     ]] && pass "OS: ${MANIFEST_OS}"                       || warn "OS missing from manifest"
 
-            # Check for SHA256 integrity field
-            MANIFEST_SHA=$(echo "${MANIFEST}" | grep -o '"device_sha256": *"[^"]*"' | cut -d'"' -f4 || true)
-            if [[ -n "${MANIFEST_SHA}" ]]; then
-                pass "SHA256 integrity available (device_sha256 in manifest)"
-                echo "    Hash: ${MANIFEST_SHA:0:16}..."
-                echo "    Verify S3 image:    bash ${SCRIPT_DIR}/pi-image-backup.sh --verify --date ${TARGET_DATE}"
-                echo "    Verify after flash: bash ${SCRIPT_DIR}/pi-image-restore.sh --verify /dev/diskN --date ${TARGET_DATE}"
+            # Check for SHA256 checksums (per-partition, computed in-flight during upload)
+            CHECKSUM_COUNT=$(echo "${MANIFEST}" | grep -o '"sha256": *"[^"]*"' | grep -vc '""' 2>/dev/null || echo "0")
+            if [[ "${CHECKSUM_COUNT}" -gt 0 ]]; then
+                pass "SHA256 checksums present (${CHECKSUM_COUNT} partition(s) verified at upload time)"
+                echo "    Full checksum listing: bash ${SCRIPT_DIR}/pi-image-backup.sh --verify --date ${TARGET_DATE}"
             else
-                warn "No SHA256 in manifest — backup predates integrity support"
-                echo "         Run a new backup to get a verified image: bash ~/pi2s3/pi-image-backup.sh --force"
+                warn "No SHA256 checksums in manifest — backup predates checksum support"
+                echo "         Run a new backup to get checksums: bash ~/pi2s3/pi-image-backup.sh --force"
             fi
         fi
     else

@@ -559,8 +559,10 @@
   <a href="#" class="nav-logo">pi<span>2</span>s3</a>
   <div class="nav-links">
     <a href="#how-it-works" class="hide-sm">How it works</a>
+    <a href="#prerequisites" class="hide-sm">Prerequisites</a>
     <a href="#quickstart" class="hide-sm">Quick start</a>
     <a href="#restore" class="hide-sm">Restore</a>
+    <a href="#troubleshooting" class="hide-sm">Troubleshooting</a>
     <a href="https://github.com/andrewbakercloudscale/pi2s3" target="_blank" class="btn-gh">
       <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
       GitHub
@@ -731,7 +733,7 @@
 <section id="coverage">
   <div class="section-label">Coverage</div>
   <h2>Everything. Block-level.</h2>
-  <p class="section-intro">Because it's a block-level image of the full device, there's nothing to configure. Every file, database, container, service, and SSH key is included automatically.</p>
+  <p class="section-intro">Because it's a block-level image of the full device, there's nothing to configure. Every file, database, container, service, and SSH key is included automatically. Works on both NVMe and SD card — boot media is auto-detected.</p>
 
   <div class="card-grid">
     <div class="card">
@@ -761,6 +763,62 @@
   </div>
 </section>
 
+<!-- PREREQUISITES -->
+<hr class="divider" />
+<section id="prerequisites">
+  <div class="section-label">Before you start</div>
+  <h2>Prerequisites</h2>
+  <p class="section-intro">Three things to have in place before running install.sh. The installer verifies all three and will tell you what's missing.</p>
+
+  <div class="qs-step">
+    <div class="qs-num">1</div>
+    <div class="qs-content">
+      <h3>AWS account &amp; S3 bucket</h3>
+      <p>You need an AWS account and an S3 bucket in your chosen region. Create the bucket in the S3 console or with the CLI:</p>
+      <pre><span class="kw">aws</span> s3 mb s3://<span class="val">your-bucket-name</span> <span class="flag">--region</span> <span class="val">af-south-1</span></pre>
+    </div>
+  </div>
+
+  <div class="qs-step">
+    <div class="qs-num">2</div>
+    <div class="qs-content">
+      <h3>IAM credentials on the Pi</h3>
+      <p>Configure AWS credentials on the Pi. Use the minimum required permissions — create an IAM user or role with this policy:</p>
+      <pre>{
+  <span class="str">"Version"</span>: <span class="str">"2012-10-17"</span>,
+  <span class="str">"Statement"</span>: [{
+    <span class="str">"Effect"</span>: <span class="str">"Allow"</span>,
+    <span class="str">"Action"</span>: [
+      <span class="str">"s3:PutObject"</span>,
+      <span class="str">"s3:GetObject"</span>,
+      <span class="str">"s3:DeleteObject"</span>,
+      <span class="str">"s3:ListBucket"</span>
+    ],
+    <span class="str">"Resource"</span>: [
+      <span class="str">"arn:aws:s3:::your-bucket-name"</span>,
+      <span class="str">"arn:aws:s3:::your-bucket-name/*"</span>
+    ]
+  }]
+}</pre>
+      <p style="margin-top:0.75rem;">Then configure credentials on the Pi:</p>
+      <pre><span class="kw">aws configure</span>   <span class="cmt"># or set AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY in environment</span></pre>
+    </div>
+  </div>
+
+  <div class="qs-step">
+    <div class="qs-num">3</div>
+    <div class="qs-content">
+      <h3>Enable S3 bucket encryption</h3>
+      <p>Your backup contains secrets: <code>.env</code> files, SSH keys, database data, API tokens. Enable default encryption before the first backup — it costs nothing and takes 30 seconds.</p>
+      <pre><span class="kw">aws</span> s3api put-bucket-encryption \
+  <span class="flag">--bucket</span> <span class="val">your-bucket-name</span> \
+  <span class="flag">--server-side-encryption-configuration</span> \
+  <span class="str">'{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'</span></pre>
+      <p style="margin-top:0.75rem; color:var(--muted); font-size:0.9rem;">Use SSE-KMS instead of AES256 if you need CloudTrail audit trails or cross-account key management. The backup does not encrypt client-side — S3-managed encryption is the recommended baseline.</p>
+    </div>
+  </div>
+</section>
+
 <!-- QUICKSTART -->
 <hr class="divider" />
 <section id="quickstart">
@@ -781,8 +839,11 @@
   <div class="qs-step">
     <div class="qs-num">2</div>
     <div class="qs-content">
-      <h3>Run the installer</h3>
-      <p>Prompts for your S3 bucket, region, and ntfy URL. Installs partclone, pigz, AWS CLI v2, sets up lifecycle policy and cron.</p>
+      <h3>Configure and run the installer</h3>
+      <p>Copy the example config and fill in your values. All available options are documented inline:</p>
+      <pre><span class="kw">cp</span> config.env.example config.env
+<span class="kw">nano</span> config.env   <span class="cmt"># required: S3_BUCKET, S3_REGION, NTFY_URL</span></pre>
+      <p style="margin-top:0.75rem;">Then run the installer — it handles dependencies, AWS verification, lifecycle policy, cron scheduling, and a dry-run test:</p>
       <pre><span class="kw">bash</span> install.sh</pre>
     </div>
   </div>
@@ -862,6 +923,22 @@
   </div>
 
   <div class="qs-step">
+    <div class="qs-num">alt</div>
+    <div class="qs-content">
+      <h3>Partial restore — recover a single file or directory</h3>
+      <p>No target device needed. Streams the partition from S3, mounts it via a loop device, and copies the requested path to <code>./pi2s3-extract-&lt;date&gt;/</code>. Linux only (requires <code>losetup</code>).</p>
+      <pre><span class="cmt"># Recover /home/pi from the latest backup</span>
+<span class="kw">bash</span> ~/pi2s3/pi-image-restore.sh <span class="kw">--extract</span> /home/pi
+
+<span class="cmt"># Recover /etc from a specific date</span>
+<span class="kw">bash</span> ~/pi2s3/pi-image-restore.sh <span class="kw">--extract</span> /etc <span class="kw">--date</span> <span class="num">2026-04-16</span>
+
+<span class="cmt"># Specify a partition explicitly (default: largest non-boot partition)</span>
+<span class="kw">bash</span> ~/pi2s3/pi-image-restore.sh <span class="kw">--extract</span> /var/lib/docker <span class="kw">--partition</span> nvme0n1p2</pre>
+    </div>
+  </div>
+
+  <div class="qs-step">
     <div class="qs-num">3</div>
     <div class="qs-content">
       <h3>Boot &amp; clear stale SSH key</h3>
@@ -888,6 +965,10 @@
 ✔ HTTP: 200 OK on localhost</span></pre>
     </div>
   </div>
+
+  <p style="margin-top:2rem; color:var(--muted); font-size:0.9rem; border-left:3px solid var(--border); padding-left:1rem;">
+    <strong style="color:var(--text);">If a restore is interrupted mid-way</strong> — network cut, power loss, wrong device — it is safe to rerun. partclone.restore writes blocks independently; rerunning overwrites the partial work cleanly. Re-apply the partition table with <code>sfdisk</code> before restarting the restore.
+  </p>
 </section>
 
 <!-- WATCHDOG -->
@@ -960,17 +1041,48 @@
   <p style="margin-top:1.5rem; color: var(--muted); font-size: 0.9rem;">S3 lifecycle policy is installed automatically by <code>install.sh --setup</code>. Images beyond <code>MAX_IMAGES</code> (default: 60) are deleted automatically. Switch to GLACIER_IR for long-term cold storage at ~80% less cost.</p>
 </section>
 
+<!-- TROUBLESHOOTING -->
+<hr class="divider" />
+<section id="troubleshooting">
+  <div class="section-label">Troubleshooting</div>
+  <h2>Common errors</h2>
+  <p class="section-intro">The three errors that account for most first-run failures.</p>
+
+  <div class="card-grid">
+    <div class="card">
+      <h3>pigz not found</h3>
+      <p>The installer tries to install pigz automatically. If it fails, install manually:</p>
+      <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="kw">sudo apt install pigz</span></pre>
+      <p style="margin-top:0.5rem;">The backup falls back to single-threaded <code>gzip</code> if pigz is absent — it will still work, just slower.</p>
+    </div>
+    <div class="card">
+      <h3>AWS credential failure</h3>
+      <p>The preflight check will print: <em>Cannot reach s3://…</em>. Verify credentials on the Pi:</p>
+      <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="kw">aws s3 ls</span> s3://<span class="val">your-bucket</span> <span class="flag">--region</span> <span class="val">af-south-1</span></pre>
+      <p style="margin-top:0.5rem;">Confirm <code>~/.aws/credentials</code> exists, or that <code>AWS_ACCESS_KEY_ID</code> and <code>AWS_SECRET_ACCESS_KEY</code> are set in the environment. Check the IAM policy includes <code>s3:ListBucket</code> on the bucket ARN (not just the <code>/*</code> path).</p>
+    </div>
+    <div class="card">
+      <h3>partclone device mismatch</h3>
+      <p>Error: <em>partclone: device size mismatch</em> or <em>filesystem not found</em>. Check the detected device:</p>
+      <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="kw">lsblk</span>   <span class="cmt"># confirm nvme0n1 or mmcblk0</span></pre>
+      <p style="margin-top:0.5rem;">Set <code>BOOT_DEV=/dev/mmcblk0</code> explicitly in <code>config.env</code> if auto-detection picks the wrong device.</p>
+    </div>
+  </div>
+</section>
+
 <!-- FOOTER -->
 <hr class="divider" />
 <footer>
   <div>
     <div class="footer-brand">pi<span>2</span>s3</div>
-    <div class="footer-meta" style="margin-top:0.4rem;">Built by <a href="https://github.com/andrewbakercloudscale" target="_blank">Andrew Baker</a> · Hands on CIO of Capitec Bank</div>
+    <div class="footer-meta" style="margin-top:0.4rem;">Built by <a href="https://andrewbaker.ninja" target="_blank">Andrew Baker</a> · Group CIO, Capitec Bank</div>
   </div>
   <div class="footer-links">
     <a href="https://github.com/andrewbakercloudscale/pi2s3" target="_blank">GitHub</a>
     <a href="https://github.com/andrewbakercloudscale/pi2s3/blob/main/LICENSE" target="_blank">MIT License</a>
     <a href="https://github.com/andrewbakercloudscale/pi2s3/blob/main/RECOVERY.md" target="_blank">Recovery Runbook</a>
+    <a href="https://andrewbaker.ninja" target="_blank">andrewbaker.ninja</a>
+    <a href="https://cloudtorepo.com" target="_blank">CloudToRepo</a>
   </div>
 </footer>
 
