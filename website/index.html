@@ -101,14 +101,16 @@
       text-align: center;
       padding: 6rem 2rem 4rem;
       position: relative;
+      border-bottom: 1px solid rgba(124, 106, 247, 0.25);
+      box-shadow: 0 1px 0 rgba(124, 106, 247, 0.1), 0 40px 80px -20px rgba(0,0,0,0.6);
     }
 
     .hero::before {
       content: '';
       position: absolute;
       top: -200px; left: 50%; transform: translateX(-50%);
-      width: 900px; height: 600px;
-      background: radial-gradient(ellipse at center, rgba(124, 106, 247, 0.15) 0%, transparent 70%);
+      width: 1000px; height: 700px;
+      background: radial-gradient(ellipse at center, rgba(124, 106, 247, 0.22) 0%, transparent 65%);
       pointer-events: none;
     }
 
@@ -117,7 +119,7 @@
       position: absolute;
       bottom: -100px; right: -200px;
       width: 600px; height: 400px;
-      background: radial-gradient(ellipse at center, rgba(94, 234, 212, 0.07) 0%, transparent 70%);
+      background: radial-gradient(ellipse at center, rgba(94, 234, 212, 0.1) 0%, transparent 70%);
       pointer-events: none;
     }
 
