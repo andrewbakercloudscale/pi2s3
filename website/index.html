@@ -264,7 +264,7 @@
     }
 
     .terminal-body .prompt { color: var(--accent2); user-select: none; }
-    .terminal-body .cmd { color: var(--text); }
+    .terminal-body .cmd { color: var(--accent); }
     .terminal-body .flag { color: var(--accent); }
     .terminal-body .val { color: #fbbf24; }
     .terminal-body .comment { color: var(--muted); }
@@ -486,7 +486,7 @@
       transition: transform 0.2s, border-color 0.2s;
     }
 
-    .stat:hover { transform: translateY(-4px); border-color: var(--accent); }
+    .stat:hover { transform: translateY(-6px) scale(1.02); border-color: var(--accent); box-shadow: 0 20px 40px rgba(0,0,0,0.5), 0 0 0 1px var(--accent), 0 8px 32px rgba(124,106,247,0.2); }
 
     .stat-num {
       font-size: 2rem;
@@ -542,7 +542,7 @@
     }
 
     .footer-meta a { color: var(--muted); text-decoration: none; }
-    .footer-meta a:hover { color: var(--text); }
+    .footer-meta a:hover { color: var(--accent); }
 
     .footer-links {
       display: flex;
@@ -551,7 +551,7 @@
     }
 
     .footer-links a { color: var(--muted); text-decoration: none; transition: color 0.2s; }
-    .footer-links a:hover { color: var(--text); }
+    .footer-links a:hover { color: var(--accent); }
 
     /* RESPONSIVE */
     @media (max-width: 640px) {
