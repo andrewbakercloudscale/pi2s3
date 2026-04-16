@@ -12,11 +12,12 @@
 #   2. Installs dependencies: pigz, pv, AWS CLI v2
 #   3. Verifies AWS credentials and S3 bucket access
 #   4. Sets up S3 lifecycle policy (run once)
-#   5. Installs nightly backup cron job
-#   6. Sets up log rotation
-#   7. Optionally installs the Cloudflare tunnel watchdog
+#   5. Creates log file with correct ownership (before cron fires)
+#   6. Installs nightly backup + heartbeat + post-check cron jobs
+#   7. Sets up log rotation
+#   8. Optionally installs the Cloudflare tunnel watchdog
 #      (if CF_WATCHDOG_ENABLED=true in config.env)
-#   8. Runs --dry-run to verify everything works
+#   9. Runs --dry-run to verify everything works
 #
 # Options:
 #   bash install.sh --uninstall   # remove cron jobs (backup + watchdog + heartbeat)
@@ -243,9 +244,17 @@ status() {
     echo ""
     echo "Log (${LOG_FILE}):"
     if [[ -f "${LOG_FILE}" ]]; then
-        tail -5 "${LOG_FILE}" | sed 's/^/  /'
+        if [[ ! -w "${LOG_FILE}" ]]; then
+            echo "  WARNING: log file exists but is not writable — cron jobs will silently fail"
+            echo "  Fix: sudo chown $(id -u):$(id -g) ${LOG_FILE}"
+        elif [[ ! -s "${LOG_FILE}" ]]; then
+            echo "  (file exists but is empty — backup has not run yet)"
+        else
+            tail -5 "${LOG_FILE}" | sed 's/^/  /'
+        fi
     else
-        echo "  (no log yet)"
+        echo "  WARNING: log file missing — cron jobs will silently fail until created"
+        echo "  Fix: sudo touch ${LOG_FILE} && sudo chown $(id -u):$(id -g) ${LOG_FILE}"
     fi
 
     echo ""
@@ -406,9 +415,24 @@ bash "${BACKUP_SCRIPT}" --setup 2>/dev/null \
     || warn "Could not set lifecycle policy (needs s3:PutLifecycleConfiguration)."
 log "  Script-managed retention: ${MAX_IMAGES} images."
 
-# ── Step 5: Cron job ──────────────────────────────────────────────────────────
+# ── Step 5: Log file (must exist before cron fires) ──────────────────────────
 log ""
-log "Step 5: Installing cron job..."
+log "Step 5: Setting up log file..."
+
+if [[ ! -f "${LOG_FILE}" ]]; then
+    sudo touch "${LOG_FILE}"
+    sudo chown "$(id -u):$(id -g)" "${LOG_FILE}"
+    ok "Log file created: ${LOG_FILE}"
+elif [[ ! -w "${LOG_FILE}" ]]; then
+    sudo chown "$(id -u):$(id -g)" "${LOG_FILE}"
+    ok "Log file ownership fixed: ${LOG_FILE}"
+else
+    ok "Log file OK: ${LOG_FILE}"
+fi
+
+# ── Step 6: Cron job ──────────────────────────────────────────────────────────
+log ""
+log "Step 6: Installing cron job..."
 
 CRON_LINE="${CRON_SCHEDULE} bash ${BACKUP_SCRIPT} >> ${LOG_FILE} 2>&1"
 
@@ -421,7 +445,7 @@ else
 fi
 log "  Schedule: ${CRON_SCHEDULE}"
 
-# ── Step 5b: Heartbeat cron (optional) ───────────────────────────────────────
+# ── Step 6b: Heartbeat cron (optional) ───────────────────────────────────────
 NTFY_HEARTBEAT_ENABLED="${NTFY_HEARTBEAT_ENABLED:-false}"
 NTFY_HEARTBEAT_SCHEDULE="${NTFY_HEARTBEAT_SCHEDULE:-0 8 * * *}"
 
@@ -444,7 +468,7 @@ else
     log "  To enable: set NTFY_HEARTBEAT_ENABLED=true then re-run install.sh"
 fi
 
-# ── Step 5c: Post-backup container safety check (optional) ───────────────────
+# ── Step 6c: Post-backup container safety check (optional) ───────────────────
 POST_BACKUP_CHECK_ENABLED="${POST_BACKUP_CHECK_ENABLED:-true}"
 POST_BACKUP_CHECK_SCHEDULE="${POST_BACKUP_CHECK_SCHEDULE:-30 2 * * *}"
 
@@ -468,12 +492,9 @@ else
     log "  To enable: set POST_BACKUP_CHECK_ENABLED=true then re-run install.sh"
 fi
 
-# ── Step 6: Log file + rotation ───────────────────────────────────────────────
+# ── Step 7: Log rotation ──────────────────────────────────────────────────────
 log ""
-log "Step 6: Setting up logging..."
-
-sudo touch "${LOG_FILE}"
-sudo chown "$(id -u):$(id -g)" "${LOG_FILE}"
+log "Step 7: Setting up log rotation..."
 
 cat > /tmp/pi-mi-logrotate << EOF
 ${LOG_FILE} {
@@ -486,11 +507,11 @@ ${LOG_FILE} {
 }
 EOF
 sudo mv /tmp/pi-mi-logrotate /etc/logrotate.d/pi-mi-backup
-ok "Log: ${LOG_FILE} (weekly rotation, 4 weeks retained)"
+ok "Log rotation configured: ${LOG_FILE} (weekly, 4 weeks retained)"
 
-# ── Step 7: Cloudflare tunnel watchdog (optional) ────────────────────────────
+# ── Step 8: Cloudflare tunnel watchdog (optional) ────────────────────────────
 log ""
-log "Step 7: Cloudflare tunnel watchdog..."
+log "Step 8: Cloudflare tunnel watchdog..."
 
 CF_WATCHDOG_ENABLED="${CF_WATCHDOG_ENABLED:-false}"
 
@@ -506,9 +527,9 @@ else
     log "  To enable: set CF_WATCHDOG_ENABLED=true then run: bash install.sh --watchdog"
 fi
 
-# ── Step 8: Dry run ───────────────────────────────────────────────────────────
+# ── Step 9: Dry run ───────────────────────────────────────────────────────────
 log ""
-log "Step 8: Dry run..."
+log "Step 9: Dry run..."
 bash "${BACKUP_SCRIPT}" --dry-run \
     && ok "Dry run successful — everything looks good." \
     || warn "Dry run had issues. Review the output above before running a real backup."
