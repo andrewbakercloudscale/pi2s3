@@ -40,7 +40,7 @@ HEARTBEAT_SCRIPT="${SCRIPT_DIR}/pi2s3-heartbeat.sh"
 HEARTBEAT_CRON_MARKER="pi2s3-heartbeat.sh"
 POST_CHECK_SCRIPT="${SCRIPT_DIR}/pi2s3-post-backup-check.sh"
 POST_CHECK_CRON_MARKER="pi2s3-post-backup-check.sh"
-STALE_CHECK_CRON_MARKER="--stale-check"
+STALE_CHECK_CRON_MARKER="pi-image-backup.sh --stale-check"
 
 log()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 ok()   { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ $*"; }
