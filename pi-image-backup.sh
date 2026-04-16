@@ -34,19 +34,16 @@
 #   - pigz recommended (falls back to gzip): sudo apt install pigz
 #
 # TODO — planned features (priority order):
-#   TODO(1-missed-backup-alert): Alert if no backup has been seen for this host in S3
-#     in over 25 hours. Options: cron job on Pi that checks S3 and ntfys if missing,
-#     or S3 EventBridge + Lambda. Closes the silent-failure gap where a broken cron
-#     goes undetected for days.
+#   DONE(1-missed-backup-alert): --stale-check mode + cron via install.sh.
+#     Ntfys if latest backup in S3 is older than STALE_BACKUP_HOURS (default 25h).
 #
-#   TODO(3-partial-restore): File-level restore from a compressed partition image.
-#     Mount the .img.gz non-destructively: partclone.restore → nbdfuse/nbd → mount.
-#     Let the user copy individual files/dirs out without flashing a second device.
-#     See design notes in RECOVERY.md. Highest-impact missing capability.
+#   DONE(2-sha256): Per-partition SHA256 computed in-flight via tee >(sha256sum).
 #
-#   TODO(4-per-host-namespacing): Prefix S3 keys with hostname/
-#     (pi-image-backup/<hostname>/<date>/). Breaking change — needs migration helper
-#     and --host flag on --list and --restore for multi-Pi shared-bucket deployments.
+#   DONE(3-partial-restore): --extract flag on pi-image-restore.sh.
+#     Streams partition from S3, loop-mounts it, copies requested path out.
+#
+#   DONE(4-per-host-namespacing): S3 keys now pi-image-backup/<hostname>/<date>/.
+#     pi-image-restore.sh auto-discovers host or prompts when multiple exist.
 #
 #   TODO(5-bandwidth-throttle): Add AWS_TRANSFER_RATE_LIMIT option in config.env.
 #     Implement via: | pv -L "${AWS_TRANSFER_RATE_LIMIT}" | aws s3 cp -
@@ -98,11 +95,13 @@ STOP_DOCKER="${STOP_DOCKER:-true}"
 DOCKER_STOP_TIMEOUT="${DOCKER_STOP_TIMEOUT:-30}"
 NTFY_LEVEL="${NTFY_LEVEL:-all}"
 AWS_PROFILE="${AWS_PROFILE:-}"
+STALE_BACKUP_HOURS="${STALE_BACKUP_HOURS:-25}"
 # ─────────────────────────────────────────────────────────────────────────────
 
 DATE=$(date +%Y-%m-%d)
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-S3_PREFIX="pi-image-backup"
+HOST_SHORT=$(hostname -s)
+S3_PREFIX="pi-image-backup/${HOST_SHORT}"
 MANIFEST_FILENAME="manifest-${TIMESTAMP}.json"
 S3_DATE_PREFIX="${S3_PREFIX}/${DATE}"
 MANIFEST_S3_KEY="${S3_DATE_PREFIX}/${MANIFEST_FILENAME}"
@@ -113,6 +112,7 @@ SETUP=false
 LIST=false
 VERIFY=false
 VERIFY_DATE=""
+STALE_CHECK=false
 
 for arg in "$@"; do
     case "$arg" in
@@ -123,6 +123,7 @@ for arg in "$@"; do
         --verify)          VERIFY=true ;;
         --verify=*)        VERIFY=true; VERIFY_DATE="${arg#--verify=}" ;;
         --no-stop-docker)  STOP_DOCKER=false ;;
+        --stale-check)     STALE_CHECK=true ;;
     esac
 done
 
@@ -152,6 +153,43 @@ ntfy_send() {
         "${extra[@]}" \
         -d "$msg" \
         "${NTFY_URL}" > /dev/null 2>&1 || true
+}
+
+# ── Stale backup check ────────────────────────────────────────────────────────
+# Called via: bash pi-image-backup.sh --stale-check
+# Ntfys if the latest backup in S3 is older than STALE_BACKUP_HOURS.
+stale_check() {
+    log "Checking for missed backup (host: ${HOST_SHORT}, threshold: ${STALE_BACKUP_HOURS}h)..."
+
+    local latest
+    latest=$(aws_cmd s3 ls "s3://${S3_BUCKET}/${S3_PREFIX}/" 2>/dev/null \
+        | grep PRE | awk '{print $2}' | tr -d '/' | sort -r | head -1 || true)
+
+    if [[ -z "${latest}" ]]; then
+        log "No backups found in s3://${S3_BUCKET}/${S3_PREFIX}/"
+        ntfy_send "pi2s3 backup MISSING" \
+            "No backups found for ${HOST_SHORT} in s3://${S3_BUCKET}/${S3_PREFIX}/. Check AWS credentials and bucket." \
+            "high" "warning,floppy_disk"
+        exit 1
+    fi
+
+    local latest_ts now_ts age_h
+    latest_ts=$(date -d "${latest}" +%s 2>/dev/null || echo "0")
+    now_ts=$(date +%s)
+    age_h=$(( (now_ts - latest_ts) / 3600 ))
+
+    if [[ ${age_h} -gt ${STALE_BACKUP_HOURS} ]]; then
+        log "OVERDUE: last backup ${latest} was ${age_h}h ago (threshold: ${STALE_BACKUP_HOURS}h)"
+        ntfy_send "pi2s3 backup OVERDUE" \
+            "No backup for ${HOST_SHORT} in ${age_h}h. Last: ${latest}. Expected every ${STALE_BACKUP_HOURS}h.
+Check cron: crontab -l | grep pi2s3
+Log: /var/log/pi2s3-backup.log" \
+            "high" "warning,floppy_disk"
+        exit 1
+    fi
+
+    log "OK: last backup ${latest} (${age_h}h ago, threshold ${STALE_BACKUP_HOURS}h)."
+    exit 0
 }
 
 # Return the appropriate partclone tool for a filesystem type.
@@ -200,6 +238,8 @@ ${_LOG_TAIL}}" \
             "high" "warning,floppy_disk"
     fi
 }
+[[ "${STALE_CHECK}" == "true" ]] && stale_check
+
 trap on_exit EXIT
 
 # ── One-time setup: S3 lifecycle policy ──────────────────────────────────────
@@ -213,7 +253,7 @@ if [[ "${SETUP}" == "true" ]]; then
             \"Rules\": [{
                 \"ID\": \"pi2s3-backup-retention\",
                 \"Status\": \"Enabled\",
-                \"Filter\": {\"Prefix\": \"${S3_PREFIX}/\"},
+                \"Filter\": {\"Prefix\": \"pi-image-backup/\"},
                 \"Expiration\": {\"Days\": 90}
             }]
         }"

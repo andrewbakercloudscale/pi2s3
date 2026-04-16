@@ -21,6 +21,7 @@
 # Usage:
 #   bash pi-image-restore.sh                             # interactive full restore
 #   bash pi-image-restore.sh --list                      # list available backups
+#   bash pi-image-restore.sh --host raspberrypi          # specify Pi hostname (multi-Pi buckets)
 #   bash pi-image-restore.sh --date 2026-04-12           # restore specific date
 #   bash pi-image-restore.sh --device /dev/sda           # specify target device
 #   bash pi-image-restore.sh --yes                       # skip confirmation prompts
@@ -66,7 +67,8 @@ source "${CONFIG_FILE}"
 [[ -z "${S3_REGION:-}" ]] && { echo "ERROR: S3_REGION is not set in config.env"; exit 1; }
 
 AWS_PROFILE="${AWS_PROFILE:-}"
-S3_PREFIX="pi-image-backup"
+S3_BASE="pi-image-backup"
+S3_PREFIX=""   # set by resolve_s3_prefix()
 
 TARGET_DATE=""
 TARGET_DEVICE=""
@@ -76,6 +78,7 @@ VERIFY_DEVICE=""
 VERIFY_DATE_FOR_VERIFY=""
 EXTRACT_PATH=""
 EXTRACT_PARTITION=""
+HOST_FILTER=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -91,9 +94,11 @@ while [[ $# -gt 0 ]]; do
         --extract=*)      EXTRACT_PATH="${1#--extract=}" ;;
         --partition)      shift; EXTRACT_PARTITION="${1:-}" ;;
         --partition=*)    EXTRACT_PARTITION="${1#--partition=}" ;;
+        --host)           shift; HOST_FILTER="${1:-}" ;;
+        --host=*)         HOST_FILTER="${1#--host=}" ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--list] [--date YYYY-MM-DD] [--device /dev/...] [--yes] [--verify /dev/...] [--extract <path>] [--partition <name>]"
+            echo "Usage: $0 [--list] [--date YYYY-MM-DD] [--device /dev/...] [--yes] [--verify /dev/...] [--extract <path>] [--partition <name>] [--host <hostname>]"
             exit 1
             ;;
     esac
@@ -358,6 +363,68 @@ for p in m.get('partitions', []):
     log "  Extracted path: ${EXTRACT_PATH}"
     log "========================================================"
 }
+
+# ── Resolve S3 prefix (per-host namespacing) ──────────────────────────────────
+resolve_s3_prefix() {
+    local hosts
+    hosts=$(aws_cmd s3 ls "s3://${S3_BUCKET}/${S3_BASE}/" 2>/dev/null \
+        | grep PRE | awk '{print $2}' | tr -d '/' | sort || true)
+
+    [[ -z "${hosts}" ]] && die "No backups found in s3://${S3_BUCKET}/${S3_BASE}/"
+
+    local host_count
+    host_count=$(echo "${hosts}" | grep -c . || echo 0)
+
+    if [[ -n "${HOST_FILTER}" ]]; then
+        echo "${hosts}" | grep -qxF "${HOST_FILTER}" \
+            || die "Host '${HOST_FILTER}' not found. Available: $(echo "${hosts}" | tr '\n' ' ')"
+        S3_PREFIX="${S3_BASE}/${HOST_FILTER}"
+        log "Host: ${HOST_FILTER}"
+        return
+    fi
+
+    if [[ "${host_count}" -eq 1 ]]; then
+        local only
+        only=$(echo "${hosts}" | head -1)
+        S3_PREFIX="${S3_BASE}/${only}"
+        log "Host: ${only}"
+        return
+    fi
+
+    # Multiple hosts
+    echo "Available Pi hosts:"
+    echo ""
+    declare -a _host_arr=()
+    local _i=1
+    while IFS= read -r _h; do
+        [[ -z "${_h}" ]] && continue
+        _host_arr+=("${_h}")
+        printf "  [%d] %s\n" "${_i}" "${_h}"
+        (( _i++ )) || true
+    done <<< "${hosts}"
+    echo ""
+
+    if [[ "${YES}" == "true" ]]; then
+        local best="" best_date=""
+        for _h in "${_host_arr[@]}"; do
+            local _latest
+            _latest=$(aws_cmd s3 ls "s3://${S3_BUCKET}/${S3_BASE}/${_h}/" 2>/dev/null \
+                | grep PRE | awk '{print $2}' | tr -d '/' | sort -r | head -1 || true)
+            [[ "${_latest}" > "${best_date}" ]] && { best_date="${_latest}"; best="${_h}"; }
+        done
+        [[ -z "${best}" ]] && die "Could not auto-select a host."
+        log "Auto-selected host (most recent backup): ${best} (${best_date})"
+        S3_PREFIX="${S3_BASE}/${best}"
+    else
+        read -r -p "Select host (Enter = [1]): " _choice
+        _choice="${_choice:-1}"
+        local _chosen="${_host_arr[$(( _choice - 1 ))]:-}"
+        [[ -z "${_chosen}" ]] && die "Invalid selection."
+        S3_PREFIX="${S3_BASE}/${_chosen}"
+    fi
+}
+
+resolve_s3_prefix
 
 if [[ "${LIST_ONLY}" == "true" ]]; then
     list_backups

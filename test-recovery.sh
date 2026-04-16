@@ -88,7 +88,7 @@ summary() {
 AWS_PROFILE=""
 S3_BUCKET=""
 S3_REGION=""
-S3_PREFIX="pi-image-backup"
+S3_PREFIX="pi-image-backup/$(hostname -s)"
 
 if [[ -f "${CONFIG_FILE}" ]]; then
     # shellcheck disable=SC1090
