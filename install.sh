@@ -40,6 +40,7 @@ HEARTBEAT_SCRIPT="${SCRIPT_DIR}/pi2s3-heartbeat.sh"
 HEARTBEAT_CRON_MARKER="pi2s3-heartbeat.sh"
 POST_CHECK_SCRIPT="${SCRIPT_DIR}/pi2s3-post-backup-check.sh"
 POST_CHECK_CRON_MARKER="pi2s3-post-backup-check.sh"
+STALE_CHECK_CRON_MARKER="--stale-check"
 
 log()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 ok()   { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ $*"; }
@@ -130,6 +131,14 @@ upgrade() {
         ok "Backup cron refreshed: ${CRON_SCHEDULE}"
     fi
 
+    # Update stale-check cron schedule if it changed
+    STALE_CHECK_SCHEDULE="${STALE_CHECK_SCHEDULE:-0 6 * * *}"
+    if crontab -l 2>/dev/null | grep -qF "${STALE_CHECK_CRON_MARKER}"; then
+        STALE_CHECK_CRON_LINE="${STALE_CHECK_SCHEDULE} bash ${BACKUP_SCRIPT} --stale-check >> ${LOG_FILE} 2>&1"
+        ( crontab -l 2>/dev/null | grep -vF "${STALE_CHECK_CRON_MARKER}"; echo "${STALE_CHECK_CRON_LINE}" ) | crontab -
+        ok "Stale-check cron refreshed: ${STALE_CHECK_SCHEDULE}"
+    fi
+
     # Update post-backup check cron if schedule changed
     POST_BACKUP_CHECK_ENABLED="${POST_BACKUP_CHECK_ENABLED:-true}"
     POST_BACKUP_CHECK_SCHEDULE="${POST_BACKUP_CHECK_SCHEDULE:-30 2 * * *}"
@@ -165,6 +174,11 @@ uninstall() {
     if crontab -l 2>/dev/null | grep -qF "${POST_CHECK_CRON_MARKER}"; then
         ( crontab -l 2>/dev/null | grep -vF "${POST_CHECK_CRON_MARKER}" ) | crontab -
         ok "Post-backup check cron removed."
+    fi
+
+    if crontab -l 2>/dev/null | grep -qF "${STALE_CHECK_CRON_MARKER}"; then
+        ( crontab -l 2>/dev/null | grep -vF "${STALE_CHECK_CRON_MARKER}" ) | crontab -
+        ok "Stale-check cron removed."
     fi
 
     if [[ -f "${WATCHDOG_BIN}" ]]; then
@@ -231,6 +245,14 @@ status() {
         crontab -l 2>/dev/null | grep "${POST_CHECK_CRON_MARKER}" | sed 's/^/  /'
     else
         echo "  (not installed — set POST_BACKUP_CHECK_ENABLED=true to enable)"
+    fi
+
+    echo ""
+    echo "Stale-check cron:"
+    if crontab -l 2>/dev/null | grep -qF "${STALE_CHECK_CRON_MARKER}"; then
+        crontab -l 2>/dev/null | grep "${STALE_CHECK_CRON_MARKER}" | sed 's/^/  /'
+    else
+        echo "  (not installed — set STALE_CHECK_ENABLED=true to enable)"
     fi
 
     echo ""
@@ -490,6 +512,25 @@ if [[ "${POST_BACKUP_CHECK_ENABLED}" == "true" ]]; then
 else
     log "  Post-backup check disabled (POST_BACKUP_CHECK_ENABLED=false in config.env)."
     log "  To enable: set POST_BACKUP_CHECK_ENABLED=true then re-run install.sh"
+fi
+
+# ── Step 6d: Missed backup stale-check cron (optional) ───────────────────────
+STALE_CHECK_ENABLED="${STALE_CHECK_ENABLED:-true}"
+STALE_CHECK_SCHEDULE="${STALE_CHECK_SCHEDULE:-0 6 * * *}"
+
+if [[ "${STALE_CHECK_ENABLED}" == "true" ]]; then
+    STALE_CHECK_CRON_LINE="${STALE_CHECK_SCHEDULE} bash ${BACKUP_SCRIPT} --stale-check >> ${LOG_FILE} 2>&1"
+    if crontab -l 2>/dev/null | grep -qF "${STALE_CHECK_CRON_MARKER}"; then
+        ( crontab -l 2>/dev/null | grep -vF "${STALE_CHECK_CRON_MARKER}"
+          echo "${STALE_CHECK_CRON_LINE}" ) | crontab -
+        ok "Stale-check cron updated: ${STALE_CHECK_SCHEDULE}"
+    else
+        ( crontab -l 2>/dev/null; echo "${STALE_CHECK_CRON_LINE}" ) | crontab -
+        ok "Stale-check cron installed: ${STALE_CHECK_SCHEDULE}"
+    fi
+    log "  Alerts via ntfy if no backup seen in ${STALE_BACKUP_HOURS:-25}h."
+else
+    log "  Stale-check disabled (STALE_CHECK_ENABLED=false in config.env)."
 fi
 
 # ── Step 7: Log rotation ──────────────────────────────────────────────────────
