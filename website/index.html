@@ -149,6 +149,21 @@
       box-shadow: 0 20px 40px rgba(0,0,0,0.5), 0 0 0 1px var(--accent), 0 8px 32px rgba(124,106,247,0.2);
     }
 
+    .hero-logo {
+      width: 108px;
+      height: 108px;
+      border-radius: 24px;
+      margin-bottom: 1.75rem;
+      transition: transform 0.2s ease, filter 0.2s ease;
+      will-change: transform;
+      cursor: default;
+    }
+
+    .hero-logo:hover {
+      transform: translateY(-6px) scale(1.02);
+      filter: drop-shadow(0 0 36px rgba(124,106,247,0.6));
+    }
+
     .badge::before {
       content: '';
       width: 6px; height: 6px;
@@ -583,6 +598,7 @@
 
 <!-- HERO -->
 <div class="hero">
+  <img src="pi2s3.png" alt="pi2s3 logo" class="hero-logo" />
   <div class="badge">Open Source &nbsp;·&nbsp; MIT License</div>
   <h1>The <span class="gradient">AMI</span> for your<br>Raspberry Pi</h1>
   <p class="hero-sub">Block level nightly backup of your Pi to AWS S3. Restore a complete bootable system to new hardware. Recover a single file from any backup. One command, no manual setup.</p>
