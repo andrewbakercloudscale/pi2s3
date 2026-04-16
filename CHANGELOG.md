@@ -4,21 +4,29 @@ All notable changes to pi2s3 are documented here.
 
 ---
 
-## [Unreleased]
+## [1.2.0] — 2026-04-16
 
 ### Added
 
-- **SHA-256 checksums in-flight** — each partition's compressed stream is forked via `tee >(sha256sum ...)` and uploaded simultaneously; no re-download required. Checksums stored per partition in the manifest JSON. `--verify` now prints stored checksums for manual spot-checking.
-- **Partial / file-level restore** (`--extract`) — new flag on `pi-image-restore.sh`. Streams the partition from S3, restores it into a sparse temp file via a loop device, mounts it read-only, and copies the requested path to `./pi2s3-extract-<date>/`. No physical target device needed. Useful for recovering individual files, directories, or configs. Options:
-  - `--extract <path>` — path within the filesystem to extract (e.g. `/home/pi`, `/etc`)
-  - `--partition <name>` — which partition to mount (default: largest non-vfat partition = root fs)
-  - `--date <YYYY-MM-DD>` — backup date (default: latest)
-- **Failure ntfy alerts include last 10 log lines** — diagnose backup failures directly from the push notification without needing to SSH in.
-- **Website** — new Prerequisites section with IAM least-privilege policy; Troubleshooting section; partial-restore usage examples; footer links to andrewbaker.ninja and cloudtorepo.com.
+- **SHA-256 checksums in-flight** — each partition's compressed stream is forked via `tee >(sha256sum ...)` and hashed simultaneously with upload; no re-download required. Checksums stored per partition in the manifest JSON. `--verify` prints stored checksums for spot-checking.
+- **Partial / file-level restore** (`--extract`) — streams a partition from S3, restores into a sparse temp file via loop device, mounts read-only, and copies the requested path to `./pi2s3-extract-<date>/`. No target device needed. Options: `--extract <path>`, `--partition <name>`, `--date <YYYY-MM-DD>`.
+- **Cross-device restore** (`--resize`) — after restore, runs `growpart` + `resize2fs` (ext4) to expand the last partition to fill a larger device. Advisory message for xfs/btrfs.
+- **Per-host S3 namespacing** — backups stored under `pi-image-backup/<hostname>/<date>/`. `pi-image-restore.sh` auto-discovers host prefixes; prompts if multiple exist. `--host` flag for explicit selection.
+- **Stale backup alert** — `--stale-check` mode ntfys if the latest backup is older than `STALE_BACKUP_HOURS` (default: 25h). Installed as a daily cron by `install.sh` (`STALE_CHECK_ENABLED=true`). Catches silent cron failures.
+- **Preflight health checks** — `preflight_health()` runs before Docker stop: checks for unhealthy/exited containers, free disk space (`PREFLIGHT_MIN_FREE_MB`), and recent I/O errors via `dmesg`. `PREFLIGHT_ABORT_ON_WARN=true` to abort on warnings (default: proceed).
+- **Bandwidth throttle** — `AWS_TRANSFER_RATE_LIMIT` in `config.env` caps S3 upload speed via `pv -q -L <rate>` (e.g. `2m` = 2 MB/s). Gracefully skips if `pv` not installed or var unset.
+- **Per-host retention** — `MAX_IMAGES_<hostname>=N` in `config.env` overrides `MAX_IMAGES` for a specific host (hyphens → underscores). Enables different retention windows per Pi in multi-Pi setups.
+- **Failure ntfy alerts include last 10 log lines** — diagnose failures from the push notification without SSH.
+- **Post-backup container safety check** — separate cron job ~30 min after backup verifies Docker came back up. Guards against mid-imaging crashes leaving containers stopped.
+- **Website** — pi2s3 logo in hero; Prerequisites section with IAM policy; Troubleshooting section; partial-restore and --resize usage; andrewbaker.ninja nav link.
 
 ### Changed
 
-- `test-recovery.sh --pre-flash` now checks for per-partition SHA-256 checksums in the manifest (replacing the old single `device_sha256` field). Warns gracefully for backups that predate checksum support.
+- `test-recovery.sh --pre-flash` checks per-partition SHA-256 fields in manifest (replaces old single `device_sha256` field). Warns gracefully for backups that predate checksum support.
+
+### Removed
+
+- Dropped planned TODO(7) incremental backup — restore complexity outweighs cost savings at 3–5 GB/day compressed. Full images restore in one command with no history dependency.
 
 ---
 
