@@ -68,6 +68,11 @@
 #   DONE(10-auto-verify): BACKUP_AUTO_VERIFY=true runs a post-upload S3 check
 #     after every backup. Verifies all partition files and manifest are non-zero
 #     in S3. Result included in ntfy success notification.
+#
+#   DONE(11-client-side-encryption): BACKUP_ENCRYPTION_PASSPHRASE in config.env.
+#     gpg --symmetric AES-256 encrypts each partition image before S3 upload.
+#     Passphrase stored only in config.env, never in S3. Restore detects
+#     encryption from manifest "encryption" field and decrypts inline.
 # =============================================================
 set -euo pipefail
 
@@ -105,6 +110,7 @@ PREFLIGHT_MIN_FREE_MB="${PREFLIGHT_MIN_FREE_MB:-500}"
 PREFLIGHT_ABORT_ON_WARN="${PREFLIGHT_ABORT_ON_WARN:-false}"
 AWS_TRANSFER_RATE_LIMIT="${AWS_TRANSFER_RATE_LIMIT:-}"
 BACKUP_AUTO_VERIFY="${BACKUP_AUTO_VERIFY:-true}"
+BACKUP_ENCRYPTION_PASSPHRASE="${BACKUP_ENCRYPTION_PASSPHRASE:-}"
 # ─────────────────────────────────────────────────────────────────────────────
 
 DATE=$(date +%Y-%m-%d)
@@ -145,6 +151,7 @@ _BACKUP_SUCCEEDED=false
 _CONTAINERS_STOPPED=false
 _STOPPED_IDS=""
 _START_TIME=$(date +%s)
+_GPG_PASS_FILE=""
 
 log()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 die()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $*" >&2; exit 1; }
@@ -288,6 +295,7 @@ partclone_tool() {
 
 on_exit() {
     local rc=$?
+    [[ -n "${_GPG_PASS_FILE}" ]] && rm -f "${_GPG_PASS_FILE}"
     # Safety net: if the script crashes mid-imaging, ensure Docker comes back up.
     if [[ "${_CONTAINERS_STOPPED}" == "true" && -n "${_STOPPED_IDS}" ]]; then
         log "Restarting Docker containers (crash recovery)..."
@@ -515,6 +523,22 @@ if [[ -n "${AWS_TRANSFER_RATE_LIMIT}" ]]; then
     fi
 fi
 
+# Client-side encryption via gpg (optional)
+ENCRYPT_CMD="cat"
+ENCRYPT_SUFFIX=""
+ENCRYPTION_METHOD="none"
+if [[ -n "${BACKUP_ENCRYPTION_PASSPHRASE}" ]]; then
+    command -v gpg &>/dev/null \
+        || die "BACKUP_ENCRYPTION_PASSPHRASE is set but gpg is not installed. Run: sudo apt install gpg"
+    _GPG_PASS_FILE=$(mktemp)
+    chmod 600 "${_GPG_PASS_FILE}"
+    printf '%s' "${BACKUP_ENCRYPTION_PASSPHRASE}" > "${_GPG_PASS_FILE}"
+    ENCRYPT_CMD="gpg --batch --yes --passphrase-file ${_GPG_PASS_FILE} --symmetric --cipher-algo AES256 --compress-algo none -o -"
+    ENCRYPT_SUFFIX=".gpg"
+    ENCRYPTION_METHOD="gpg-aes256"
+    log "  Encryption:   gpg AES-256 (client-side)"
+fi
+
 PI_MODEL=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || echo "unknown")
 OS_PRETTY=$(grep PRETTY_NAME /etc/os-release 2>/dev/null | cut -d'"' -f2 || echo "unknown")
 KERNEL=$(uname -r)
@@ -529,6 +553,7 @@ mapfile -t BOOT_PARTITIONS < <(
 log "  Boot device:  ${BOOT_DEV} (${DEV_SIZE_HUMAN})"
 log "  Partitions:   ${BOOT_PARTITIONS[*]}"
 log "  Compressor:   ${COMPRESSOR_NAME}"
+[[ -n "${BACKUP_ENCRYPTION_PASSPHRASE}" ]] && log "  Encryption:   gpg AES-256"
 log "  Pi model:     ${PI_MODEL}"
 log "  OS:           ${OS_PRETTY}"
 log "  Retention:    ${MAX_IMAGES} images"
@@ -638,7 +663,7 @@ for PART in "${BOOT_PARTITIONS[@]}"; do
     PART_NAME=$(basename "${PART}")
     FSTYPE=$(lsblk -no FSTYPE "${PART}" 2>/dev/null | tr -d '[:space:]' || echo "")
     TOOL=$(partclone_tool "${FSTYPE}")
-    PART_KEY="${S3_DATE_PREFIX}/${PART_NAME}-${TIMESTAMP}.img.gz"
+    PART_KEY="${S3_DATE_PREFIX}/${PART_NAME}-${TIMESTAMP}.img.gz${ENCRYPT_SUFFIX}"
 
     PART_SIZE_BYTES=$(lsblk -bdno SIZE "${PART}" 2>/dev/null || echo "0")
     PART_SIZE_HUMAN=$(numfmt --to=iec "${PART_SIZE_BYTES}" 2>/dev/null || echo "?")
@@ -658,7 +683,7 @@ for PART in "${BOOT_PARTITIONS[@]}"; do
 
     PART_SHA256=""
     if [[ "${DRY_RUN}" == "true" ]]; then
-        log "  [DRY RUN] ${TOOL} -c -s ${PART} | ${COMPRESSOR} | tee >(sha256sum) | aws s3 cp - s3://${S3_BUCKET}/${PART_KEY}"
+        log "  [DRY RUN] ${TOOL} -c -s ${PART} | ${COMPRESSOR_NAME}${ENCRYPT_SUFFIX:+ | gpg-aes256} | aws s3 cp - s3://${S3_BUCKET}/${PART_KEY}"
         PART_COMPRESSED_BYTES=0
     else
         # -F: allow cloning mounted partitions (all NVMe partitions remain mounted)
@@ -670,6 +695,7 @@ for PART in "${BOOT_PARTITIONS[@]}"; do
         sudo "${TOOL}" -c -F -s "${PART}" -o - \
             | ${COMPRESSOR} \
             | tee >(sha256sum | awk '{print $1}' > "${_SHA_TMP}") \
+            | ${ENCRYPT_CMD} \
             | ${PV_THROTTLE} \
             | aws_cmd s3 cp - "s3://${S3_BUCKET}/${PART_KEY}" \
                 --storage-class "${S3_STORAGE_CLASS}" \
@@ -697,7 +723,7 @@ done
 BOOT_FW_JSON=""
 if [[ -n "${BOOT_FW_PART}" ]]; then
     FW_NAME=$(basename "${BOOT_FW_PART}")
-    FW_KEY="${S3_DATE_PREFIX}/${FW_NAME}-boot-fw-${TIMESTAMP}.img.gz"
+    FW_KEY="${S3_DATE_PREFIX}/${FW_NAME}-boot-fw-${TIMESTAMP}.img.gz${ENCRYPT_SUFFIX}"
     FW_FSTYPE=$(lsblk -no FSTYPE "${BOOT_FW_PART}" 2>/dev/null | tr -d '[:space:]' || echo "vfat")
 
     log ""
@@ -710,6 +736,7 @@ if [[ -n "${BOOT_FW_PART}" ]]; then
         sudo partclone.vfat -c -F -s "${BOOT_FW_PART}" -o - \
             | ${COMPRESSOR} \
             | tee >(sha256sum | awk '{print $1}' > "${_SHA_TMP}") \
+            | ${ENCRYPT_CMD} \
             | ${PV_THROTTLE} \
             | aws_cmd s3 cp - "s3://${S3_BUCKET}/${FW_KEY}" \
                 --storage-class "${S3_STORAGE_CLASS}" \
@@ -803,7 +830,8 @@ ${PARTITIONS_JSON_CLEAN}
   "s3_bucket": "${S3_BUCKET}",
   "manifest_key": "${MANIFEST_S3_KEY}",
   "compressor": "${COMPRESSOR_NAME}",
-  "storage_class": "${S3_STORAGE_CLASS}"
+  "storage_class": "${S3_STORAGE_CLASS}",
+  "encryption": "${ENCRYPTION_METHOD}"
 }
 EOF
 )

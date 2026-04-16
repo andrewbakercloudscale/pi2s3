@@ -68,6 +68,7 @@ source "${CONFIG_FILE}"
 [[ -z "${S3_REGION:-}" ]] && { echo "ERROR: S3_REGION is not set in config.env"; exit 1; }
 
 AWS_PROFILE="${AWS_PROFILE:-}"
+BACKUP_ENCRYPTION_PASSPHRASE="${BACKUP_ENCRYPTION_PASSPHRASE:-}"
 S3_BASE="pi-image-backup"
 S3_PREFIX=""   # set by resolve_s3_prefix()
 
@@ -81,6 +82,7 @@ VERIFY_DATE_FOR_VERIFY=""
 EXTRACT_PATH=""
 EXTRACT_PARTITION=""
 HOST_FILTER=""
+_GPG_PASS_FILE=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -307,6 +309,26 @@ for p in m.get('partitions', []):
     _loop=$(sudo losetup --find --show "${_img}")
     log "Loop device: ${_loop}"
 
+    # ── Detect and set up decryption (extract-local) ──────────────────────────
+    local _decrypt_cmd="cat" _extract_gpg_pass_file=""
+    local _extract_encrypt_method
+    _extract_encrypt_method=$(python3 -c \
+        "import json,sys; d=json.load(sys.stdin); print(d.get('encryption','none'))" \
+        <<< "${manifest}" 2>/dev/null || echo "none")
+
+    if [[ "${_extract_encrypt_method}" == "gpg-aes256" ]]; then
+        log "Backup is encrypted (gpg AES-256). Passphrase required."
+        command -v gpg &>/dev/null || die "gpg not found. Install: sudo apt install gpg"
+        if [[ -z "${BACKUP_ENCRYPTION_PASSPHRASE}" ]]; then
+            read -s -r -p "  Enter decryption passphrase: " BACKUP_ENCRYPTION_PASSPHRASE
+            echo
+        fi
+        _extract_gpg_pass_file=$(mktemp)
+        chmod 600 "${_extract_gpg_pass_file}"
+        printf '%s' "${BACKUP_ENCRYPTION_PASSPHRASE}" > "${_extract_gpg_pass_file}"
+        _decrypt_cmd="gpg --batch --yes --passphrase-file ${_extract_gpg_pass_file} --decrypt"
+    fi
+
     # ── Stream restore from S3 ────────────────────────────────────────────────
     echo ""
     log "Streaming partition from S3 → loop device..."
@@ -316,14 +338,18 @@ for p in m.get('partitions', []):
     if command -v pv &>/dev/null; then
         aws_cmd s3 cp "s3://${S3_BUCKET}/${sel_key}" - \
             | pv -s "${sel_csize}" \
+            | ${_decrypt_cmd} \
             | gunzip \
             | sudo "${sel_tool}" -r -s - -o "${_loop}"
     else
         log "  (Install pv for a progress bar: sudo apt install pv)"
         aws_cmd s3 cp "s3://${S3_BUCKET}/${sel_key}" - \
+            | ${_decrypt_cmd} \
             | gunzip \
             | sudo "${sel_tool}" -r -s - -o "${_loop}"
     fi
+
+    [[ -n "${_extract_gpg_pass_file}" ]] && rm -f "${_extract_gpg_pass_file}"
 
     echo ""
     log "Partition restored to loop device."
@@ -720,6 +746,26 @@ if [[ "${BACKUP_TYPE}" == "partclone" ]]; then
     sleep 2
     log "  Partition table restored."
 
+    # ── Detect and set up decryption ─────────────────────────────────────────────
+    DECRYPT_CMD="cat"
+    _ENCRYPT_METHOD=$(python3 -c \
+        "import json,sys; d=json.load(sys.stdin); print(d.get('encryption','none'))" \
+        <<< "${MANIFEST}" 2>/dev/null || echo "none")
+
+    if [[ "${_ENCRYPT_METHOD}" == "gpg-aes256" ]]; then
+        log "Backup is encrypted (gpg AES-256). Passphrase required."
+        command -v gpg &>/dev/null || die "gpg not found. Install: sudo apt install gpg"
+        if [[ -z "${BACKUP_ENCRYPTION_PASSPHRASE}" ]]; then
+            read -s -r -p "  Enter decryption passphrase: " BACKUP_ENCRYPTION_PASSPHRASE
+            echo
+        fi
+        _GPG_PASS_FILE=$(mktemp)
+        chmod 600 "${_GPG_PASS_FILE}"
+        printf '%s' "${BACKUP_ENCRYPTION_PASSPHRASE}" > "${_GPG_PASS_FILE}"
+        DECRYPT_CMD="gpg --batch --yes --passphrase-file ${_GPG_PASS_FILE} --decrypt"
+        trap 'rm -f "${_GPG_PASS_FILE}"' EXIT
+    fi
+
     # 2. Parse partitions from manifest
     PART_DATA=$(echo "${MANIFEST}" | python3 -c "
 import json, sys
@@ -764,10 +810,12 @@ for p in m.get('partitions', []):
         if command -v pv &>/dev/null; then
             aws_cmd s3 cp "s3://${S3_BUCKET}/${PART_KEY}" - \
                 | pv -s "${PART_CSIZE}" \
+                | ${DECRYPT_CMD} \
                 | gunzip \
                 | sudo "${PART_TOOL}" -r -s - -o "${TARGET_PART}"
         else
             aws_cmd s3 cp "s3://${S3_BUCKET}/${PART_KEY}" - \
+                | ${DECRYPT_CMD} \
                 | gunzip \
                 | sudo "${PART_TOOL}" -r -s - -o "${TARGET_PART}"
         fi
@@ -866,10 +914,12 @@ if fw and fw.get('key'):
                 if command -v pv &>/dev/null; then
                     aws_cmd s3 cp "s3://${S3_BUCKET}/${FW_KEY}" - \
                         | pv -s "${FW_CSIZE}" \
+                        | ${DECRYPT_CMD} \
                         | gunzip \
                         | sudo "${FW_TOOL}" -r -s - -o "${FW_TARGET}"
                 else
                     aws_cmd s3 cp "s3://${S3_BUCKET}/${FW_KEY}" - \
+                        | ${DECRYPT_CMD} \
                         | gunzip \
                         | sudo "${FW_TOOL}" -r -s - -o "${FW_TARGET}"
                 fi
