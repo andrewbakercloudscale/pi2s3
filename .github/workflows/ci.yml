@@ -19,7 +19,7 @@ jobs:
             pi-image-backup.sh
             pi-image-restore.sh
             install.sh
-            pi2s3-watchdog.sh
+            cf-tunnel-watchdog.sh
             test-recovery.sh
             deploy-website.sh
           )
