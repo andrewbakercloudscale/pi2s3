@@ -1,4 +1,4 @@
-# Pi MI — Pi Machine Image
+# pi2s3 — Pi to S3
 
 Block-level nightly backup of a Raspberry Pi to AWS S3. Restore a complete, bootable Pi to new hardware in one command — no manual setup, no secrets to re-enter, no git clones.
 
@@ -108,8 +108,8 @@ This is far better than the old `dd` approach (60–90 minutes on a full NVMe), 
 ### 1. Clone on the Pi
 
 ```bash
-git clone https://github.com/andrewbakercloudscale/pi-mi.git ~/pi-mi
-cd ~/pi-mi
+git clone https://github.com/andrewbakercloudscale/pi2s3.git ~/pi2s3
+cd ~/pi2s3
 ```
 
 ### 2. Install
@@ -130,7 +130,7 @@ bash install.sh
 ### 3. First backup
 
 ```bash
-bash ~/pi-mi/pi-image-backup.sh --force
+bash ~/pi2s3/pi-image-backup.sh --force
 ```
 
 Takes 3–10 minutes depending on how full the device is and your network speed. You'll get an ntfy push notification when done.
@@ -219,7 +219,7 @@ Old images beyond `MAX_IMAGES` are deleted automatically.
 Before touching anything, confirm the S3 image is ready:
 
 ```bash
-bash ~/pi-mi/test-recovery.sh --pre-flash
+bash ~/pi2s3/test-recovery.sh --pre-flash
 ```
 
 Checks AWS access, confirms image exists and is non-zero, reads the manifest, estimates flash time, prints the restore command.
@@ -232,14 +232,14 @@ Checks AWS access, confirms image exists and is non-zero, reads the manifest, es
 > SSH in, clone the repo, and run from there.
 
 ```bash
-bash ~/pi-mi/pi-image-restore.sh
+bash ~/pi2s3/pi-image-restore.sh
 ```
 
 Interactive prompts let you pick the backup date and target device. Streams directly from S3 — no local download needed.
 
 Or restore a specific date non-interactively:
 ```bash
-bash ~/pi-mi/pi-image-restore.sh --date 2026-04-13 --device /dev/nvme0n1 --yes
+bash ~/pi2s3/pi-image-restore.sh --date 2026-04-13 --device /dev/nvme0n1 --yes
 ```
 
 Install `pv` for a live progress bar:
@@ -266,7 +266,7 @@ ssh pi@raspberrypi.local
 ### Step 4 — Validate (new Pi)
 
 ```bash
-bash ~/pi-mi/test-recovery.sh --post-boot
+bash ~/pi2s3/test-recovery.sh --post-boot
 ```
 
 Checks: `config.env` present and configured, filesystem expansion, NVMe mount, Docker + all containers, Cloudflare tunnel, cron jobs, MariaDB tables, memory, load. PASS/FAIL/WARN per check.
@@ -274,7 +274,7 @@ Checks: `config.env` present and configured, filesystem expansion, NVMe mount, D
 ### Full walkthrough
 
 ```bash
-bash ~/pi-mi/test-recovery.sh --guide
+bash ~/pi2s3/test-recovery.sh --guide
 ```
 
 Prints the complete step-by-step recovery guide.
@@ -303,7 +303,7 @@ test-recovery.sh --guide
 - Docker daemon + all containers running
 - Docker data-root on correct device
 - Cloudflare tunnel active
-- Cron jobs present (pi-mi backup + app-layer backup)
+- Cron jobs present (pi2s3 backup + app-layer backup)
 - MariaDB responding + has tables
 - HTTP check on localhost
 - Memory and load
@@ -358,7 +358,7 @@ Phase 2 (attempts 5–8, 20–40 min)
   → verify, notify recovery or continue
 
 Phase 3 (attempt 9+, 40+ min)
-  → dump diagnostics to /var/log/pi-mi-watchdog-prediag.log
+  → dump diagnostics to /var/log/pi2s3-watchdog-prediag.log
   → reboot Pi (max once per 6 hours — rate-limited)
   → if rate-limited: "manual needed" alert sent, exit without reboot
 ```
@@ -377,7 +377,7 @@ CF_COMPOSE_DIR=""                  # auto-detected, or set explicitly
 
 Then install:
 ```bash
-bash ~/pi-mi/install.sh --watchdog
+bash ~/pi2s3/install.sh --watchdog
 ```
 
 Or set `CF_WATCHDOG_ENABLED=true` before running the initial `install.sh` and it installs automatically as part of setup.
@@ -402,19 +402,19 @@ Or set `CF_WATCHDOG_ENABLED=true` before running the initial `install.sh` and it
 
 ```bash
 # Install / reinstall watchdog
-bash ~/pi-mi/install.sh --watchdog
+bash ~/pi2s3/install.sh --watchdog
 
 # Manual test run
-sudo /usr/local/bin/pi-mi-watchdog.sh
+sudo /usr/local/bin/pi2s3-watchdog.sh
 
 # Live log tail
-sudo journalctl -t pi-mi-watchdog -f
+sudo journalctl -t pi2s3-watchdog -f
 
 # View today's watchdog activity
-sudo journalctl -t pi-mi-watchdog --since today
+sudo journalctl -t pi2s3-watchdog --since today
 
 # View pre-reboot diagnostics (if a watchdog reboot occurred)
-sudo cat /var/log/pi-mi-watchdog-prediag.log
+sudo cat /var/log/pi2s3-watchdog-prediag.log
 ```
 
 ---
@@ -431,7 +431,7 @@ NTFY_HEARTBEAT_SCHEDULE="0 8 * * *"   # 8:00am daily
 
 Then install (or re-run install):
 ```bash
-bash ~/pi-mi/install.sh
+bash ~/pi2s3/install.sh
 ```
 
 Each heartbeat includes: uptime, RAM usage, disk usage, Docker container count.
@@ -443,24 +443,24 @@ Each heartbeat includes: uptime, RAM usage, disk usage, Docker container count.
 Pull the latest code and redeploy:
 
 ```bash
-bash ~/pi-mi/install.sh --upgrade
+bash ~/pi2s3/install.sh --upgrade
 ```
 
 This:
 - Runs `git pull` in the repo directory
-- Redeploys the watchdog binary to `/usr/local/bin/pi-mi-watchdog.sh` (if installed)
+- Redeploys the watchdog binary to `/usr/local/bin/pi2s3-watchdog.sh` (if installed)
 - Refreshes the backup cron schedule in case `CRON_SCHEDULE` changed
 
 The `--status` command also detects if the watchdog binary is stale (source updated but binary not redeployed):
 ```bash
-bash ~/pi-mi/install.sh --status
+bash ~/pi2s3/install.sh --status
 ```
 
 ---
 
 ## Complement with app-layer backups
 
-Pi MI captures the full machine state but is large (~3–5 GB/image). For cheap, fast, granular data recovery (restore just the database, single-file recovery, cross-version migrations), run an app-layer backup alongside:
+pi2s3 captures the full machine state but is large (~3–5 GB/image). For cheap, fast, granular data recovery (restore just the database, single-file recovery, cross-version migrations), run an app-layer backup alongside:
 
 | | Pi MI | App-layer backup |
 |---|---|---|
@@ -529,9 +529,9 @@ ssh-keygen -R <ip-address>
 ## Manage status
 
 ```bash
-bash ~/pi-mi/install.sh --status     # show cron, log tail, dependency versions, stale binary check
-bash ~/pi-mi/install.sh --uninstall  # remove all cron jobs and logrotate config
-bash ~/pi-mi/install.sh --upgrade    # git pull + redeploy watchdog binary + refresh cron
+bash ~/pi2s3/install.sh --status     # show cron, log tail, dependency versions, stale binary check
+bash ~/pi2s3/install.sh --uninstall  # remove all cron jobs and logrotate config
+bash ~/pi2s3/install.sh --upgrade    # git pull + redeploy watchdog binary + refresh cron
 ```
 
 ---

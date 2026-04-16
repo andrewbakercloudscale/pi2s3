@@ -191,7 +191,7 @@ if [[ -n "${VERIFY_DEVICE}" ]]; then
         log "Post-flash SHA256 verification is not available for partclone backups."
         log ""
         log "To verify S3 objects are intact, run on the Pi:"
-        log "  bash ~/pi-mi/pi-image-backup.sh --verify"
+        log "  bash ~/pi2s3/pi-image-backup.sh --verify"
         exit 0
     fi
 
@@ -408,7 +408,7 @@ if [[ "${BACKUP_TYPE}" == "partclone" ]]; then
         echo "    1. Boot the new Pi from a minimal SD card (Raspberry Pi OS Lite)"
         echo "    2. Attach the target NVMe via USB enclosure or directly"
         echo "    3. SSH into the Pi, clone the repo, then run:"
-        echo "       bash ~/pi-mi/pi-image-restore.sh"
+        echo "       bash ~/pi2s3/pi-image-restore.sh"
         echo ""
         exit 1
     fi

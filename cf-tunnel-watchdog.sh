@@ -20,20 +20,20 @@
 # escalation, recovery, and stuck-down alerts.
 #
 # State files (all cleared on reboot except the reboot timestamp):
-#   /var/run/pi-mi-watchdog.state     — attempt counter
-#   /var/run/pi-mi-watchdog.lock      — prevents concurrent runs
-#   /var/log/pi-mi-watchdog-reboot.ts — reboot rate-limit (survives reboots)
-#   /var/log/pi-mi-watchdog-prediag.log — pre-reboot diagnostics
+#   /var/run/pi2s3-watchdog.state     — attempt counter
+#   /var/run/pi2s3-watchdog.lock      — prevents concurrent runs
+#   /var/log/pi2s3-watchdog-reboot.ts — reboot rate-limit (survives reboots)
+#   /var/log/pi2s3-watchdog-prediag.log — pre-reboot diagnostics
 #
 # Install:
 #   bash install.sh --watchdog      (or set CF_WATCHDOG_ENABLED=true in config.env)
 #
 # Manual test run:
-#   sudo bash ~/pi-mi/cf-tunnel-watchdog.sh
+#   sudo bash ~/pi2s3/cf-tunnel-watchdog.sh
 #
 # Check logs:
-#   sudo journalctl -t pi-mi-watchdog --since today
-#   sudo journalctl -t pi-mi-watchdog -f
+#   sudo journalctl -t pi2s3-watchdog --since today
+#   sudo journalctl -t pi2s3-watchdog -f
 # =============================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -63,19 +63,19 @@ CF_PHASE2_MAX="${CF_PHASE2_MAX:-8}"
 CF_REBOOT_MIN_INTERVAL="${CF_REBOOT_MIN_INTERVAL:-21600}"
 # ─────────────────────────────────────────────────────────────────────────────
 
-STATE_FILE="/var/run/pi-mi-watchdog.state"
-LOCK_FILE="/var/run/pi-mi-watchdog.lock"
-REBOOT_TS_FILE="/var/log/pi-mi-watchdog-reboot.ts"
-PREDIAG_LOG="/var/log/pi-mi-watchdog-prediag.log"
-WATCHDOG_BIN="/usr/local/bin/pi-mi-watchdog.sh"
-LOG_TAG="pi-mi-watchdog"
+STATE_FILE="/var/run/pi2s3-watchdog.state"
+LOCK_FILE="/var/run/pi2s3-watchdog.lock"
+REBOOT_TS_FILE="/var/log/pi2s3-watchdog-reboot.ts"
+PREDIAG_LOG="/var/log/pi2s3-watchdog-prediag.log"
+WATCHDOG_BIN="/usr/local/bin/pi2s3-watchdog.sh"
+LOG_TAG="pi2s3-watchdog"
 
 # ── Stale binary check ────────────────────────────────────────────────────────
 # When install.sh --watchdog copies this script to /usr/local/bin, cron runs
 # the binary. If the source has been updated (git pull) but the binary hasn't
 # been redeployed, log a warning so the operator knows to re-run install.sh.
 if [[ "${BASH_SOURCE[0]}" == "${WATCHDOG_BIN}" ]]; then
-    SOURCE_SCRIPT="$(find /home -name 'cf-tunnel-watchdog.sh' -path '*/pi-mi/*' 2>/dev/null | head -1 || true)"
+    SOURCE_SCRIPT="$(find /home -name 'cf-tunnel-watchdog.sh' -path '*/pi2s3/*' 2>/dev/null | head -1 || true)"
     if [[ -n "${SOURCE_SCRIPT}" ]] \
        && ! diff -q "${SOURCE_SCRIPT}" "${WATCHDOG_BIN}" > /dev/null 2>&1; then
         logger -t "${LOG_TAG}" "WARNING: watchdog binary is stale — source has changed. Run: bash ${SOURCE_SCRIPT%/cf-tunnel-watchdog.sh}/install.sh --watchdog"

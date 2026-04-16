@@ -121,7 +121,7 @@ BEFORE YOU START
 STEP 1 — Validate the S3 image  (Mac)
 ────────────────────────────────────────────────────────────────
 
-  bash ~/pi-mi/test-recovery.sh --pre-flash
+  bash ~/pi2s3/test-recovery.sh --pre-flash
 
   Expected: all checks PASS, go/no-go = GO
   If FAIL: do NOT proceed until resolved.
@@ -130,7 +130,7 @@ STEP 1 — Validate the S3 image  (Mac)
 STEP 2 — Flash the image  (Mac)
 ────────────────────────────────────────────────────────────────
 
-  bash ~/pi-mi/pi-image-restore.sh
+  bash ~/pi2s3/pi-image-restore.sh
 
   What it does:
     1. Shows available backups from S3 (pick latest)
@@ -164,7 +164,7 @@ STEP 4 — Validate the restore  (new Pi)
 ────────────────────────────────────────────────────────────────
 
   On the new Pi:
-    bash ~/pi-mi/test-recovery.sh --post-boot
+    bash ~/pi2s3/test-recovery.sh --post-boot
 
   Expected: all checks PASS
   If FAIL: see remediation notes printed by the script.
@@ -331,7 +331,7 @@ if [[ "${PHASE}" == "pre-flash" ]]; then
                 echo "    Verify after flash: bash ${SCRIPT_DIR}/pi-image-restore.sh --verify /dev/diskN --date ${TARGET_DATE}"
             else
                 warn "No SHA256 in manifest — backup predates integrity support"
-                echo "         Run a new backup to get a verified image: bash ~/pi-mi/pi-image-backup.sh --force"
+                echo "         Run a new backup to get a verified image: bash ~/pi2s3/pi-image-backup.sh --force"
             fi
         fi
     else
@@ -363,7 +363,7 @@ if [[ "${PHASE}" == "pre-flash" ]]; then
     fi
     echo ""
     echo "  Then SSH into the new Pi and run:"
-    echo "    bash ~/pi-mi/test-recovery.sh --post-boot"
+    echo "    bash ~/pi2s3/test-recovery.sh --post-boot"
     echo ""
 
     summary
@@ -405,7 +405,7 @@ if [[ "${PHASE}" == "post-boot" ]]; then
         fail "config.env not found at ${CONFIG_FILE}"
         echo "         The backup cron will silently fail without this file."
         echo "         Restore it from your original Pi or re-run install.sh:"
-        echo "           bash ~/pi-mi/install.sh"
+        echo "           bash ~/pi2s3/install.sh"
     fi
 
     # ── OS & hardware ─────────────────────────────────────────────────────────
@@ -590,7 +590,7 @@ if [[ "${PHASE}" == "post-boot" ]]; then
         pass "Crontab exists ($(echo "${CRONTAB}" | grep -c . || true) line(s))"
     else
         warn "No crontab entries found — backup cron may be missing"
-        echo "         Re-install: bash ~/pi-mi/install.sh"
+        echo "         Re-install: bash ~/pi2s3/install.sh"
     fi
 
     if echo "${CRONTAB}" | grep -q "pi-image-backup" 2>/dev/null; then
@@ -598,7 +598,7 @@ if [[ "${PHASE}" == "post-boot" ]]; then
         pass "Pi MI backup cron: ${BACKUP_SCHED}"
     else
         warn "Pi MI backup cron not found in crontab"
-        echo "         Re-install: bash ~/pi-mi/install.sh"
+        echo "         Re-install: bash ~/pi2s3/install.sh"
     fi
 
     if echo "${CRONTAB}" | grep -q "backup-to-s3" 2>/dev/null; then

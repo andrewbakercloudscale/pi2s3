@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # =============================================================
-# install.sh — Set up Pi MI on a Raspberry Pi
+# install.sh — Set up pi2s3 on a Raspberry Pi
 #
 # Run once on the Pi after cloning this repo:
-#   git clone https://github.com/andrewbakercloudscale/pi-mi.git ~/pi-mi
-#   cd ~/pi-mi
+#   git clone https://github.com/andrewbakercloudscale/pi2s3.git ~/pi2s3
+#   cd ~/pi2s3
 #   bash install.sh
 #
 # What this does:
@@ -30,16 +30,16 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKUP_SCRIPT="${SCRIPT_DIR}/pi-image-backup.sh"
 WATCHDOG_SCRIPT="${SCRIPT_DIR}/cf-tunnel-watchdog.sh"
-WATCHDOG_BIN="/usr/local/bin/pi-mi-watchdog.sh"
+WATCHDOG_BIN="/usr/local/bin/pi2s3-watchdog.sh"
 CONFIG_FILE="${SCRIPT_DIR}/config.env"
 CONFIG_EXAMPLE="${SCRIPT_DIR}/config.env.example"
-LOG_FILE="/var/log/pi-mi-backup.log"
+LOG_FILE="/var/log/pi2s3-backup.log"
 CRON_MARKER="pi-image-backup.sh"
-WATCHDOG_CRON_MARKER="pi-mi-watchdog.sh"
-HEARTBEAT_SCRIPT="${SCRIPT_DIR}/pi-mi-heartbeat.sh"
-HEARTBEAT_CRON_MARKER="pi-mi-heartbeat.sh"
-POST_CHECK_SCRIPT="${SCRIPT_DIR}/pi-mi-post-backup-check.sh"
-POST_CHECK_CRON_MARKER="pi-mi-post-backup-check.sh"
+WATCHDOG_CRON_MARKER="pi2s3-watchdog.sh"
+HEARTBEAT_SCRIPT="${SCRIPT_DIR}/pi2s3-heartbeat.sh"
+HEARTBEAT_CRON_MARKER="pi2s3-heartbeat.sh"
+POST_CHECK_SCRIPT="${SCRIPT_DIR}/pi2s3-post-backup-check.sh"
+POST_CHECK_CRON_MARKER="pi2s3-post-backup-check.sh"
 
 log()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 ok()   { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ $*"; }
@@ -72,7 +72,7 @@ install_watchdog() {
 
     # Enable persistent journal so watchdog logs survive reboots
     sudo mkdir -p /var/log/journal /etc/systemd/journald.conf.d
-    cat | sudo tee /etc/systemd/journald.conf.d/99-pi-mi-persistent.conf > /dev/null <<'JOURNALEOF'
+    cat | sudo tee /etc/systemd/journald.conf.d/99-pi2s3-persistent.conf > /dev/null <<'JOURNALEOF'
 [Journal]
 Storage=persistent
 SystemMaxUse=300M
@@ -83,7 +83,7 @@ JOURNALEOF
 
     log ""
     log "  Test run:    sudo ${WATCHDOG_BIN}"
-    log "  Check logs:  sudo journalctl -t pi-mi-watchdog --since today"
+    log "  Check logs:  sudo journalctl -t pi2s3-watchdog --since today"
     log "  Site hostname: ${CF_SITE_HOSTNAME:-$(hostname)}"
     log "  HTTP probe:  http://localhost:${CF_HTTP_PORT:-80}${CF_HTTP_PROBE_PATH:-/}"
     log "  CF metrics:  ${CF_METRICS_URL:-http://127.0.0.1:20241/metrics}"
@@ -91,7 +91,7 @@ JOURNALEOF
 
 # ── Upgrade ───────────────────────────────────────────────────────────────────
 upgrade() {
-    log "Upgrading Pi MI..."
+    log "Upgrading pi2s3..."
 
     # Pull latest code
     if git -C "${SCRIPT_DIR}" rev-parse --is-inside-work-tree > /dev/null 2>&1; then
@@ -147,7 +147,7 @@ upgrade() {
 
 # ── Uninstall ─────────────────────────────────────────────────────────────────
 uninstall() {
-    log "Uninstalling Pi MI..."
+    log "Uninstalling pi2s3..."
 
     if crontab -l 2>/dev/null | grep -qF "${CRON_MARKER}"; then
         ( crontab -l 2>/dev/null | grep -vF "${CRON_MARKER}" ) | crontab -
@@ -177,8 +177,8 @@ uninstall() {
         ok "Heartbeat cron removed."
     fi
 
-    if [[ -f /etc/logrotate.d/pi-mi-backup ]]; then
-        sudo rm -f /etc/logrotate.d/pi-mi-backup
+    if [[ -f /etc/logrotate.d/pi2s3-backup ]]; then
+        sudo rm -f /etc/logrotate.d/pi2s3-backup
         ok "Log rotation config removed."
     fi
     log "Done. config.env, backup scripts, and S3 data are untouched."
@@ -187,7 +187,7 @@ uninstall() {
 # ── Status ────────────────────────────────────────────────────────────────────
 status() {
     echo ""
-    echo "=== Pi MI status ==="
+    echo "=== pi2s3 status ==="
     echo ""
 
     echo "Config (${CONFIG_FILE}):"
@@ -259,7 +259,7 @@ status() {
 
     echo ""
     echo "Watchdog log (last 5 lines):"
-    sudo journalctl -t pi-mi-watchdog -n 5 --no-pager 2>/dev/null \
+    sudo journalctl -t pi2s3-watchdog -n 5 --no-pager 2>/dev/null \
         | sed 's/^/  /' || echo "  (no watchdog log yet)"
 
     echo ""
@@ -288,7 +288,7 @@ esac
 
 # ── Install ───────────────────────────────────────────────────────────────────
 log "============================================================"
-log "  Pi MI — installation"
+log "  pi2s3 — installation"
 log "  Host: $(hostname) | $(uname -m)"
 log "============================================================"
 echo ""
@@ -461,7 +461,7 @@ if [[ "${NTFY_HEARTBEAT_ENABLED}" == "true" ]]; then
             ok "Heartbeat cron installed: ${NTFY_HEARTBEAT_SCHEDULE}"
         fi
     else
-        warn "pi-mi-heartbeat.sh not found — skipping heartbeat cron"
+        warn "pi2s3-heartbeat.sh not found — skipping heartbeat cron"
     fi
 else
     log "  Heartbeat disabled (NTFY_HEARTBEAT_ENABLED=false in config.env)."
@@ -485,7 +485,7 @@ if [[ "${POST_BACKUP_CHECK_ENABLED}" == "true" ]]; then
         fi
         log "  Runs ${POST_BACKUP_CHECK_SCHEDULE} — restarts stopped containers after backup window."
     else
-        warn "pi-mi-post-backup-check.sh not found — skipping post-check cron"
+        warn "pi2s3-post-backup-check.sh not found — skipping post-check cron"
     fi
 else
     log "  Post-backup check disabled (POST_BACKUP_CHECK_ENABLED=false in config.env)."
@@ -496,7 +496,7 @@ fi
 log ""
 log "Step 7: Setting up log rotation..."
 
-cat > /tmp/pi-mi-logrotate << EOF
+cat > /tmp/pi2s3-logrotate << EOF
 ${LOG_FILE} {
     weekly
     rotate 4
@@ -506,7 +506,7 @@ ${LOG_FILE} {
     copytruncate
 }
 EOF
-sudo mv /tmp/pi-mi-logrotate /etc/logrotate.d/pi-mi-backup
+sudo mv /tmp/pi2s3-logrotate /etc/logrotate.d/pi2s3-backup
 ok "Log rotation configured: ${LOG_FILE} (weekly, 4 weeks retained)"
 
 # ── Step 8: Cloudflare tunnel watchdog (optional) ────────────────────────────
@@ -545,7 +545,7 @@ log "  Log:            ${LOG_FILE}"
 log ""
 if [[ "${CF_WATCHDOG_ENABLED}" == "true" ]]; then
     log "  CF watchdog:    every 5 min (root cron) → ${WATCHDOG_BIN}"
-    log "  Watchdog logs:  sudo journalctl -t pi-mi-watchdog --since today"
+    log "  Watchdog logs:  sudo journalctl -t pi2s3-watchdog --since today"
 fi
 log ""
 log "  Commands:"

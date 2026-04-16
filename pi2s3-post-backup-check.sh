@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================
-# pi-mi-post-backup-check.sh — Post-backup container safety net
+# pi2s3-post-backup-check.sh — Post-backup container safety net
 #
 # Runs ~30 minutes after the nightly backup cron to verify Docker
 # containers came back up after imaging. If any are still stopped,
@@ -14,7 +14,7 @@
 # POST_BACKUP_CHECK_ENABLED=true in config.env.
 #
 # Cron example (30 min after a 2:00 AM backup):
-#   30 2 * * * bash /home/pi/pi-mi/pi-mi-post-backup-check.sh >> /var/log/pi-mi-backup.log 2>&1
+#   30 2 * * * bash /home/pi/pi2s3/pi2s3-post-backup-check.sh >> /var/log/pi2s3-backup.log 2>&1
 # =============================================================
 set -euo pipefail
 
@@ -76,18 +76,18 @@ for container in ${STOPPED}; do
 done
 
 if [[ "${RESTART_OK}" == "true" ]]; then
-    ntfy_send "Pi MI post-backup alert — containers restarted" \
+    ntfy_send "pi2s3 post-backup alert — containers restarted" \
         "Containers were stopped after backup window on $(hostname) and have been restarted: ${STOPPED}
 
-Backup may have crashed mid-imaging. Check: /var/log/pi-mi-backup.log" \
+Backup may have crashed mid-imaging. Check: /var/log/pi2s3-backup.log" \
         "high" "warning,floppy_disk"
     log "Restart complete. Alert sent."
 else
-    ntfy_send "Pi MI ALERT — containers stuck down" \
+    ntfy_send "pi2s3 ALERT — containers stuck down" \
         "URGENT: Containers stopped after backup on $(hostname) and could NOT be restarted: ${STOPPED}
 
 Manual action required. Run: docker start ${STOPPED}
-Log: /var/log/pi-mi-backup.log" \
+Log: /var/log/pi2s3-backup.log" \
         "urgent" "sos,floppy_disk"
     log "ERROR: some containers could not be restarted. Alert sent."
     exit 1

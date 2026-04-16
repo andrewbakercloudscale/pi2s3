@@ -25,7 +25,7 @@
 #   bash pi-image-backup.sh --verify=DATE # verify specific date (YYYY-MM-DD)
 #
 # Cron (installed automatically by install.sh):
-#   0 2 * * * bash /home/pi/pi-mi/pi-image-backup.sh >> /var/log/pi-mi-backup.log 2>&1
+#   0 2 * * * bash /home/pi/pi2s3/pi-image-backup.sh >> /var/log/pi2s3-backup.log 2>&1
 #
 # Prerequisites on Pi:
 #   - config.env filled in (see config.env.example)
@@ -143,7 +143,7 @@ on_exit() {
             log "  Containers restarted."
         else
             log "  ERROR: docker start failed — containers may still be stopped!"
-            ntfy_send "Pi MI — containers NOT restarted" \
+            ntfy_send "pi2s3 — containers NOT restarted" \
                 "URGENT: backup crashed and container restart FAILED on $(hostname).
 Manual action required. Run: docker start ${_STOPPED_IDS}" \
                 "urgent" "sos,floppy_disk"
@@ -151,10 +151,10 @@ Manual action required. Run: docker start ${_STOPPED_IDS}" \
         _CONTAINERS_STOPPED=false
     fi
     if [[ "${_BACKUP_SUCCEEDED}" != "true" && $rc -ne 0 ]]; then
-        ntfy_send "Pi MI backup FAILED" \
+        ntfy_send "pi2s3 backup FAILED" \
             "Backup on $(hostname) failed (exit ${rc}).
 Bucket: s3://${S3_BUCKET}/
-Log: /var/log/pi-mi-backup.log" \
+Log: /var/log/pi2s3-backup.log" \
             "high" "warning,floppy_disk"
     fi
 }
@@ -169,7 +169,7 @@ if [[ "${SETUP}" == "true" ]]; then
         --bucket "${S3_BUCKET}" \
         --lifecycle-configuration "{
             \"Rules\": [{
-                \"ID\": \"pi-mi-backup-retention\",
+                \"ID\": \"pi2s3-backup-retention\",
                 \"Status\": \"Enabled\",
                 \"Filter\": {\"Prefix\": \"${S3_PREFIX}/\"},
                 \"Expiration\": {\"Days\": 90}
@@ -216,7 +216,7 @@ fi
 # ── Verify backup integrity ───────────────────────────────────────────────────
 if [[ "${VERIFY}" == "true" ]]; then
     log "========================================================"
-    log "  Pi MI — backup integrity verification"
+    log "  pi2s3 — backup integrity verification"
     log "========================================================"
 
     if [[ -z "${VERIFY_DATE}" ]]; then
@@ -299,7 +299,7 @@ detect_boot_device() {
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 log "========================================================"
-log "  Pi MI — partition image backup"
+log "  pi2s3 — partition image backup"
 log "  Host:      $(hostname)"
 log "  Date:      ${DATE}"
 log "  S3 target: s3://${S3_BUCKET}/${S3_DATE_PREFIX}/"
@@ -537,7 +537,7 @@ if [[ "${_CONTAINERS_STOPPED}" == "true" && -n "${_STOPPED_IDS}" ]]; then
             log "  Containers restarted."
         else
             log "  ERROR: docker start failed — containers may still be stopped!"
-            ntfy_send "Pi MI — containers NOT restarted" \
+            ntfy_send "pi2s3 — containers NOT restarted" \
                 "URGENT: post-imaging container restart FAILED on $(hostname).
 Manual action required. Run: docker start ${_STOPPED_IDS}" \
                 "urgent" "sos,floppy_disk"

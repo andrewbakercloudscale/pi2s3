@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================
-# pi-mi-heartbeat.sh — Daily "I'm alive" ping to ntfy
+# pi2s3-heartbeat.sh — Daily "I'm alive" ping to ntfy
 #
 # Runs once a day via cron (installed by install.sh if
 # NTFY_HEARTBEAT_ENABLED=true in config.env).
@@ -14,7 +14,7 @@
 #   bash install.sh  (or bash install.sh --watchdog to reinstall)
 #
 # Manual run:
-#   bash ~/pi-mi/pi-mi-heartbeat.sh
+#   bash ~/pi2s3/pi2s3-heartbeat.sh
 # =============================================================
 set -euo pipefail
 

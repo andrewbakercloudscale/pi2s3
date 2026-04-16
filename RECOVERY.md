@@ -103,12 +103,12 @@ rm -rf /tmp/awscliv2.zip /tmp/aws
 aws configure
 # Enter: Access Key ID, Secret Access Key, region (af-south-1), output format (json)
 
-# Clone pi-mi
-git clone https://github.com/andrewbakercloudscale/pi-mi.git ~/pi-mi
+# Clone pi2s3
+git clone https://github.com/andrewbakercloudscale/pi2s3.git ~/pi2s3
 
 # Create config.env
-cp ~/pi-mi/config.env.example ~/pi-mi/config.env
-nano ~/pi-mi/config.env
+cp ~/pi2s3/config.env.example ~/pi2s3/config.env
+nano ~/pi2s3/config.env
 # Set: S3_BUCKET, S3_REGION, NTFY_URL (minimum required values)
 ```
 
@@ -117,7 +117,7 @@ nano ~/pi-mi/config.env
 ## Step 5 — Run the restore (~20–30 min)
 
 ```bash
-bash ~/pi-mi/pi-image-restore.sh
+bash ~/pi2s3/pi-image-restore.sh
 ```
 
 The script will:
@@ -131,7 +131,7 @@ The NVMe restore takes ~20 minutes. Progress is shown per partition.
 
 **Non-interactive (if you know the date and device):**
 ```bash
-bash ~/pi-mi/pi-image-restore.sh \
+bash ~/pi2s3/pi-image-restore.sh \
   --date 2026-04-16 \
   --device /dev/nvme0n1
 ```
@@ -172,7 +172,7 @@ sudo journalctl -u cloudflared -n 20  # any tunnel errors?
 
 Run the full post-boot check:
 ```bash
-bash ~/pi-mi/test-recovery.sh --post-boot
+bash ~/pi2s3/test-recovery.sh --post-boot
 ```
 
 ---
