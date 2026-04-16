@@ -53,9 +53,9 @@
 #     Checks: stopped/unhealthy containers, free disk space (<PREFLIGHT_MIN_FREE_MB),
 #     recent I/O errors in dmesg. PREFLIGHT_ABORT_ON_WARN=true to abort on warnings.
 #
-#   TODO(7-incremental): Manifest-diffing incremental backup. Compare used-block bitmap
-#     of current image against last manifest; only upload changed extents. Significant
-#     complexity — revisit once per-host namespacing is in place.
+#   DROPPED(7-incremental): Incremental backup adds restore complexity with little
+#     cost benefit at 3-5 GB/day compressed. Full images restore in one command
+#     with no history dependency. Keeping full images only.
 #
 #   DONE(8-cross-device-restore): --resize flag on pi-image-restore.sh.
 #     growpart expands the last partition entry; resize2fs/xfs_growfs expands the
