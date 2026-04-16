@@ -32,6 +32,41 @@
 #   - AWS CLI v2 with s3:PutObject, s3:GetObject, s3:ListBucket, s3:DeleteObject
 #   - partclone: sudo apt install partclone
 #   - pigz recommended (falls back to gzip): sudo apt install pigz
+#
+# TODO — planned features (priority order):
+#   TODO(1-missed-backup-alert): Alert if no backup has been seen for this host in S3
+#     in over 25 hours. Options: cron job on Pi that checks S3 and ntfys if missing,
+#     or S3 EventBridge + Lambda. Closes the silent-failure gap where a broken cron
+#     goes undetected for days.
+#
+#   TODO(3-partial-restore): File-level restore from a compressed partition image.
+#     Mount the .img.gz non-destructively: partclone.restore → nbdfuse/nbd → mount.
+#     Let the user copy individual files/dirs out without flashing a second device.
+#     See design notes in RECOVERY.md. Highest-impact missing capability.
+#
+#   TODO(4-per-host-namespacing): Prefix S3 keys with hostname/
+#     (pi-image-backup/<hostname>/<date>/). Breaking change — needs migration helper
+#     and --host flag on --list and --restore for multi-Pi shared-bucket deployments.
+#
+#   TODO(5-bandwidth-throttle): Add AWS_TRANSFER_RATE_LIMIT option in config.env.
+#     Implement via: | pv -L "${AWS_TRANSFER_RATE_LIMIT}" | aws s3 cp -
+#     pv is already listed as an optional dependency. Gracefully skip if unset.
+#
+#   TODO(6-preflight-health): Pre-backup Docker health check before stopping containers.
+#     Verify: all expected containers are Up+healthy, NVMe fsck clean, sufficient free
+#     space for pigz working buffers. Avoids imaging a degraded stack.
+#
+#   TODO(7-incremental): Manifest-diffing incremental backup. Compare used-block bitmap
+#     of current image against last manifest; only upload changed extents. Significant
+#     complexity — revisit once per-host namespacing is in place.
+#
+#   TODO(8-cross-device-restore): Document and handle sfdisk replay onto a device with
+#     different sector geometry. Add --resize flag to pi-image-restore.sh that adjusts
+#     the last partition to fill available space after sfdisk replay.
+#
+#   TODO(9-per-host-retention): Per-hostname MAX_IMAGES in config.env.
+#     e.g. MAX_IMAGES_andrew-pi-5=30. Required for multi-Pi deployments once
+#     TODO(4-per-host-namespacing) is done.
 # =============================================================
 set -euo pipefail
 
@@ -151,10 +186,17 @@ Manual action required. Run: docker start ${_STOPPED_IDS}" \
         _CONTAINERS_STOPPED=false
     fi
     if [[ "${_BACKUP_SUCCEEDED}" != "true" && $rc -ne 0 ]]; then
+        _LOG_TAIL=""
+        if [[ -f "/var/log/pi2s3-backup.log" ]]; then
+            _LOG_TAIL=$(tail -10 "/var/log/pi2s3-backup.log" 2>/dev/null || true)
+        fi
         ntfy_send "pi2s3 backup FAILED" \
             "Backup on $(hostname) failed (exit ${rc}).
 Bucket: s3://${S3_BUCKET}/
-Log: /var/log/pi2s3-backup.log" \
+Log: /var/log/pi2s3-backup.log${_LOG_TAIL:+
+
+Last 10 log lines:
+${_LOG_TAIL}}" \
             "high" "warning,floppy_disk"
     fi
 }
@@ -265,6 +307,19 @@ if [[ "${VERIFY}" == "true" ]]; then
             log "  MISSING: partition-table"
             VERIFY_PASS=false
         fi
+    fi
+
+    # Show SHA-256 checksums recorded at upload time
+    log ""
+    log "Checksums (SHA-256 of compressed upload, computed in-flight):"
+    _HAS_CHECKSUMS=false
+    while IFS= read -r sha; do
+        [[ -z "${sha}" ]] && continue
+        log "  ${sha}"
+        _HAS_CHECKSUMS=true
+    done < <(echo "${V_MANIFEST}" | grep -o '"sha256": *"[^"]*"' | cut -d'"' -f4 | grep -v '^$')
+    if [[ "${_HAS_CHECKSUMS}" == "false" ]]; then
+        log "  (none — backup predates checksum support; run a new backup)"
     fi
 
     log ""
@@ -465,19 +520,25 @@ for PART in "${BOOT_PARTITIONS[@]}"; do
     log "  ${PART}  (${FSTYPE:-unknown}, ${PART_SIZE_HUMAN} total, ${PART_USED_HUMAN} used)"
     log "  Tool: ${TOOL}"
 
+    PART_SHA256=""
     if [[ "${DRY_RUN}" == "true" ]]; then
-        log "  [DRY RUN] ${TOOL} -c -s ${PART} | ${COMPRESSOR} | aws s3 cp - s3://${S3_BUCKET}/${PART_KEY}"
+        log "  [DRY RUN] ${TOOL} -c -s ${PART} | ${COMPRESSOR} | tee >(sha256sum) | aws s3 cp - s3://${S3_BUCKET}/${PART_KEY}"
         PART_COMPRESSED_BYTES=0
     else
         # -F: allow cloning mounted partitions (all NVMe partitions remain mounted)
         # stderr is intentionally NOT suppressed so partclone errors/warnings land in the
         # backup log and can fail the pipeline via set -euo pipefail.
+        # SHA-256 is computed on the compressed stream in-flight via tee — no re-download needed.
+        _SHA_TMP=$(mktemp)
         # shellcheck disable=SC2086
         sudo "${TOOL}" -c -F -s "${PART}" -o - \
             | ${COMPRESSOR} \
+            | tee >(sha256sum | awk '{print $1}' > "${_SHA_TMP}") \
             | aws_cmd s3 cp - "s3://${S3_BUCKET}/${PART_KEY}" \
                 --storage-class "${S3_STORAGE_CLASS}" \
                 --no-progress
+        # sha256sum completes before the S3 upload (hashing is CPU-bound, upload is network-bound)
+        PART_SHA256=$(cat "${_SHA_TMP}"); rm -f "${_SHA_TMP}"
 
         PART_COMPRESSED_BYTES=$(aws_cmd s3 ls "s3://${S3_BUCKET}/${PART_KEY}" 2>/dev/null \
             | awk '{print $3}' | head -1 || echo "0")
@@ -487,10 +548,11 @@ for PART in "${BOOT_PARTITIONS[@]}"; do
         PART_COMPRESSED_HUMAN=$(numfmt --to=iec "${PART_COMPRESSED_BYTES}" 2>/dev/null || echo "?")
         TOTAL_COMPRESSED_BYTES=$(( TOTAL_COMPRESSED_BYTES + PART_COMPRESSED_BYTES ))
         log "  Done: ${PART_COMPRESSED_HUMAN} compressed → ${PART_KEY}"
+        log "  SHA256: ${PART_SHA256}"
     fi
 
     # Build partitions JSON array (newline-separated entries, joined later)
-    PARTITIONS_JSON+="    {\"name\":\"${PART_NAME}\",\"device\":\"${PART}\",\"fstype\":\"${FSTYPE}\",\"tool\":\"${TOOL}\",\"size_bytes\":${PART_SIZE_BYTES},\"size_human\":\"${PART_SIZE_HUMAN}\",\"used_bytes\":${PART_USED_BYTES},\"used_human\":\"${PART_USED_HUMAN}\",\"compressed_bytes\":${PART_COMPRESSED_BYTES:-0},\"key\":\"${PART_KEY}\"},"$'\n'
+    PARTITIONS_JSON+="    {\"name\":\"${PART_NAME}\",\"device\":\"${PART}\",\"fstype\":\"${FSTYPE}\",\"tool\":\"${TOOL}\",\"size_bytes\":${PART_SIZE_BYTES},\"size_human\":\"${PART_SIZE_HUMAN}\",\"used_bytes\":${PART_USED_BYTES},\"used_human\":\"${PART_USED_HUMAN}\",\"compressed_bytes\":${PART_COMPRESSED_BYTES:-0},\"sha256\":\"${PART_SHA256:-}\",\"key\":\"${PART_KEY}\"},"$'\n'
 done
 
 # ── Optional: separate boot firmware (e.g. SD card /boot/firmware) ────────────
@@ -504,13 +566,16 @@ if [[ -n "${BOOT_FW_PART}" ]]; then
     log "  ${BOOT_FW_PART}  (boot firmware, ${FW_SIZE_HUMAN})"
 
     if [[ "${DRY_RUN}" == "true" ]]; then
-        log "  [DRY RUN] partclone.vfat -c -s ${BOOT_FW_PART} | ${COMPRESSOR} | aws s3 cp -"
+        log "  [DRY RUN] partclone.vfat -c -s ${BOOT_FW_PART} | ${COMPRESSOR} | tee >(sha256sum) | aws s3 cp -"
     else
+        _SHA_TMP=$(mktemp)
         sudo partclone.vfat -c -F -s "${BOOT_FW_PART}" -o - \
             | ${COMPRESSOR} \
+            | tee >(sha256sum | awk '{print $1}' > "${_SHA_TMP}") \
             | aws_cmd s3 cp - "s3://${S3_BUCKET}/${FW_KEY}" \
                 --storage-class "${S3_STORAGE_CLASS}" \
                 --no-progress
+        FW_SHA256=$(cat "${_SHA_TMP}"); rm -f "${_SHA_TMP}"
 
         FW_COMPRESSED=$(aws_cmd s3 ls "s3://${S3_BUCKET}/${FW_KEY}" 2>/dev/null \
             | awk '{print $3}' | head -1 || echo "0")
@@ -520,7 +585,8 @@ if [[ -n "${BOOT_FW_PART}" ]]; then
         FW_COMPRESSED_HUMAN=$(numfmt --to=iec "${FW_COMPRESSED}" 2>/dev/null || echo "?")
         TOTAL_COMPRESSED_BYTES=$(( TOTAL_COMPRESSED_BYTES + FW_COMPRESSED ))
         log "  Done: ${FW_COMPRESSED_HUMAN} compressed → ${FW_KEY}"
-        BOOT_FW_JSON="{\"name\":\"${FW_NAME}\",\"device\":\"${BOOT_FW_PART}\",\"fstype\":\"${FW_FSTYPE}\",\"key\":\"${FW_KEY}\",\"compressed_bytes\":${FW_COMPRESSED}}"
+        log "  SHA256: ${FW_SHA256}"
+        BOOT_FW_JSON="{\"name\":\"${FW_NAME}\",\"device\":\"${BOOT_FW_PART}\",\"fstype\":\"${FW_FSTYPE}\",\"key\":\"${FW_KEY}\",\"compressed_bytes\":${FW_COMPRESSED},\"sha256\":\"${FW_SHA256:-}\"}"
     fi
 fi
 

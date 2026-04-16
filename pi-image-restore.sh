@@ -19,12 +19,20 @@
 # card connected. Streams directly from S3 — no local download.
 #
 # Usage:
-#   bash pi-image-restore.sh                       # interactive
-#   bash pi-image-restore.sh --list                # list available backups
-#   bash pi-image-restore.sh --date 2026-04-12     # restore specific date
-#   bash pi-image-restore.sh --device /dev/sda     # specify target device
-#   bash pi-image-restore.sh --yes                 # skip confirmation prompts
-#   bash pi-image-restore.sh --verify /dev/sda     # verify after flash (dd format only)
+#   bash pi-image-restore.sh                             # interactive full restore
+#   bash pi-image-restore.sh --list                      # list available backups
+#   bash pi-image-restore.sh --date 2026-04-12           # restore specific date
+#   bash pi-image-restore.sh --device /dev/sda           # specify target device
+#   bash pi-image-restore.sh --yes                       # skip confirmation prompts
+#   bash pi-image-restore.sh --verify /dev/sda           # verify after flash (dd only)
+#   bash pi-image-restore.sh --extract /home/pi          # extract a path from backup
+#   bash pi-image-restore.sh --extract /etc --date DATE  # extract from specific date
+#   bash pi-image-restore.sh --extract /var/lib/docker \
+#        --partition nvme0n1p2                           # specify which partition
+#
+# --extract mounts the backup in a loop device (Linux only) and copies
+# the requested path to ./pi2s3-extract-<date>/ — no physical target
+# device needed. Useful for recovering individual files or directories.
 #
 # Requirements (partclone format):
 #   - Linux with sfdisk (util-linux) and partclone installed
@@ -66,20 +74,26 @@ YES=false
 LIST_ONLY=false
 VERIFY_DEVICE=""
 VERIFY_DATE_FOR_VERIFY=""
+EXTRACT_PATH=""
+EXTRACT_PARTITION=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --list)       LIST_ONLY=true ;;
-        --yes|-y)     YES=true ;;
-        --date)       shift; TARGET_DATE="${1:-}" ;;
-        --date=*)     TARGET_DATE="${1#--date=}" ;;
-        --device)     shift; TARGET_DEVICE="${1:-}" ;;
-        --device=*)   TARGET_DEVICE="${1#--device=}" ;;
-        --verify)     shift; VERIFY_DEVICE="${1:-}" ;;
-        --verify=*)   VERIFY_DEVICE="${1#--verify=}" ;;
+        --list)           LIST_ONLY=true ;;
+        --yes|-y)         YES=true ;;
+        --date)           shift; TARGET_DATE="${1:-}" ;;
+        --date=*)         TARGET_DATE="${1#--date=}" ;;
+        --device)         shift; TARGET_DEVICE="${1:-}" ;;
+        --device=*)       TARGET_DEVICE="${1#--device=}" ;;
+        --verify)         shift; VERIFY_DEVICE="${1:-}" ;;
+        --verify=*)       VERIFY_DEVICE="${1#--verify=}" ;;
+        --extract)        shift; EXTRACT_PATH="${1:-}" ;;
+        --extract=*)      EXTRACT_PATH="${1#--extract=}" ;;
+        --partition)      shift; EXTRACT_PARTITION="${1:-}" ;;
+        --partition=*)    EXTRACT_PARTITION="${1#--partition=}" ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--list] [--date YYYY-MM-DD] [--device /dev/...] [--yes] [--verify /dev/...]"
+            echo "Usage: $0 [--list] [--date YYYY-MM-DD] [--device /dev/...] [--yes] [--verify /dev/...] [--extract <path>] [--partition <name>]"
             exit 1
             ;;
     esac
@@ -148,8 +162,210 @@ list_backups() {
     echo "  Total: $(echo "${dates}" | grep -c . || true) backup(s)"
 }
 
+# ── Extract: partial/file-level restore ──────────────────────────────────────
+# Streams a single partition from S3, restores it into a loop-device-backed
+# temp file, mounts it read-only, then copies the requested path out.
+# Linux only — requires losetup + mount (not available on macOS).
+do_extract() {
+    log "========================================================"
+    log "  Pi MI — partial/file-level restore from S3"
+    log "========================================================"
+    echo ""
+
+    [[ "${OS_TYPE}" != "Linux" ]] \
+        && die "--extract requires Linux (losetup + mount are not available on macOS)"
+
+    command -v losetup &>/dev/null || die "losetup not found (install: sudo apt install util-linux)"
+    command -v mount   &>/dev/null || die "mount not found"
+    command -v python3 &>/dev/null || die "python3 not found (required for manifest parsing)"
+
+    # ── Pick backup date ──────────────────────────────────────────────────────
+    if [[ -z "${TARGET_DATE}" ]]; then
+        TARGET_DATE=$(aws_cmd s3 ls "s3://${S3_BUCKET}/${S3_PREFIX}/" 2>/dev/null \
+            | grep PRE | awk '{print $2}' | tr -d '/' | sort -r | head -1 || true)
+        [[ -z "${TARGET_DATE}" ]] && die "No backups found in s3://${S3_BUCKET}/${S3_PREFIX}/"
+        log "Using latest backup: ${TARGET_DATE}"
+    fi
+
+    S3_DATE_PATH="s3://${S3_BUCKET}/${S3_PREFIX}/${TARGET_DATE}"
+
+    # ── Read manifest ─────────────────────────────────────────────────────────
+    local mfile
+    mfile=$(aws_cmd s3 ls "${S3_DATE_PATH}/" 2>/dev/null \
+        | grep manifest | awk '{print $4}' | head -1 || true)
+    [[ -z "${mfile}" ]] && die "No manifest found for ${TARGET_DATE}"
+
+    local manifest
+    manifest=$(aws_cmd s3 cp "${S3_DATE_PATH}/${mfile}" - 2>/dev/null) \
+        || die "Failed to read manifest"
+
+    local btype
+    btype=$(get_manifest_field "${manifest}" "backup_type")
+    [[ "${btype}" != "partclone" ]] \
+        && die "--extract only works with partclone-format backups (this backup type: ${btype:-dd})"
+
+    # ── Parse partition list from manifest ────────────────────────────────────
+    local part_info
+    part_info=$(echo "${manifest}" | python3 -c "
+import json, sys
+m = json.load(sys.stdin)
+for p in m.get('partitions', []):
+    print('\t'.join([
+        p.get('name',''),
+        p.get('fstype',''),
+        p.get('tool','partclone.dd'),
+        p.get('key',''),
+        str(p.get('compressed_bytes', 0)),
+        str(p.get('size_bytes', 0))
+    ]))
+") || die "Failed to parse manifest partitions (python3 error)"
+
+    # ── Select partition ──────────────────────────────────────────────────────
+    local sel_name="" sel_fstype="" sel_tool="" sel_key="" sel_csize=0 sel_size=0
+
+    if [[ -n "${EXTRACT_PARTITION}" ]]; then
+        while IFS=$'\t' read -r p_name p_fstype p_tool p_key p_csize p_size; do
+            [[ -z "${p_name}" ]] && continue
+            # Accept bare name (nvme0n1p2) or /dev/ prefix
+            if [[ "${p_name}" == "${EXTRACT_PARTITION}" \
+               || "/dev/${p_name}" == "${EXTRACT_PARTITION}" ]]; then
+                sel_name="${p_name}" sel_fstype="${p_fstype}" sel_tool="${p_tool}"
+                sel_key="${p_key}"   sel_csize="${p_csize}"   sel_size="${p_size}"
+                break
+            fi
+        done <<< "${part_info}"
+        [[ -z "${sel_name}" ]] && die "Partition '${EXTRACT_PARTITION}' not found in manifest. Available: $(echo "${part_info}" | awk -F$'\t' '{print $1}' | tr '\n' ' ')"
+    else
+        # Auto-select: largest non-vfat partition (typically the root filesystem)
+        local largest=0
+        while IFS=$'\t' read -r p_name p_fstype p_tool p_key p_csize p_size; do
+            [[ -z "${p_name}" ]] && continue
+            [[ "${p_fstype}" == "vfat" ]] && continue   # skip boot/EFI partitions
+            if (( p_size > largest )); then
+                largest="${p_size}"
+                sel_name="${p_name}" sel_fstype="${p_fstype}" sel_tool="${p_tool}"
+                sel_key="${p_key}"   sel_csize="${p_csize}"   sel_size="${p_size}"
+            fi
+        done <<< "${part_info}"
+        [[ -z "${sel_name}" ]] && die "Could not auto-select a partition. Use --partition <name>."
+        log "Auto-selected partition: ${sel_name} (${sel_fstype}, $(numfmt --to=iec "${sel_size}" 2>/dev/null || echo "${sel_size} B") raw)"
+    fi
+
+    { command -v "${sel_tool}" &>/dev/null || [[ -x "/usr/sbin/${sel_tool}" ]]; } \
+        || die "${sel_tool} not found. Install: sudo apt install partclone"
+
+    local sel_size_h sel_csize_h
+    sel_size_h=$(numfmt --to=iec "${sel_size}" 2>/dev/null || echo "${sel_size} B")
+    sel_csize_h=$(numfmt --to=iec "${sel_csize}" 2>/dev/null || echo "${sel_csize} B")
+
+    # ── Output directory ──────────────────────────────────────────────────────
+    local out_dir
+    out_dir="$(pwd)/pi2s3-extract-${TARGET_DATE}"
+    mkdir -p "${out_dir}"
+
+    # ── Summary + confirmation ────────────────────────────────────────────────
+    echo ""
+    log "  Backup date:   ${TARGET_DATE}"
+    log "  Partition:     ${sel_name} (${sel_fstype})"
+    log "  Partition size:${sel_size_h} raw  /  ${sel_csize_h} compressed"
+    log "  Extract path:  ${EXTRACT_PATH}"
+    log "  Output:        ${out_dir}/"
+    echo ""
+    if [[ "${EXTRACT_PATH}" == "/" ]]; then
+        log "  WARNING: --extract / will copy the entire root filesystem."
+        log "           This may use several GB of disk space."
+    fi
+    confirm "Download partition and extract '${EXTRACT_PATH}'?" \
+        || { echo "Aborted."; exit 0; }
+
+    # ── Cleanup trap ──────────────────────────────────────────────────────────
+    local _loop="" _mnt="" _img=""
+
+    _extract_cleanup() {
+        [[ -n "${_mnt}"  ]] && sudo umount  "${_mnt}"  2>/dev/null || true
+        [[ -n "${_loop}" ]] && sudo losetup -d "${_loop}" 2>/dev/null || true
+        [[ -n "${_img}"  && -f "${_img}" ]] && rm -f "${_img}"
+        [[ -n "${_mnt}"  && -d "${_mnt}" ]] && rmdir "${_mnt}" 2>/dev/null || true
+    }
+    trap _extract_cleanup EXIT
+
+    # ── Create sparse temp image ──────────────────────────────────────────────
+    _img=$(mktemp --suffix=.img --tmpdir="/tmp" "pi2s3-extract-XXXXXX")
+    log ""
+    log "Creating sparse image (${sel_size_h}) at ${_img}..."
+    truncate -s "${sel_size}" "${_img}"
+
+    # ── Attach loop device ────────────────────────────────────────────────────
+    _loop=$(sudo losetup --find --show "${_img}")
+    log "Loop device: ${_loop}"
+
+    # ── Stream restore from S3 ────────────────────────────────────────────────
+    echo ""
+    log "Streaming partition from S3 → loop device..."
+    log "  (${sel_csize_h} to download — may take several minutes)"
+    echo ""
+
+    if command -v pv &>/dev/null; then
+        aws_cmd s3 cp "s3://${S3_BUCKET}/${sel_key}" - \
+            | pv -s "${sel_csize}" \
+            | gunzip \
+            | sudo "${sel_tool}" -r -s - -o "${_loop}"
+    else
+        log "  (Install pv for a progress bar: sudo apt install pv)"
+        aws_cmd s3 cp "s3://${S3_BUCKET}/${sel_key}" - \
+            | gunzip \
+            | sudo "${sel_tool}" -r -s - -o "${_loop}"
+    fi
+
+    echo ""
+    log "Partition restored to loop device."
+
+    # ── Mount read-only ───────────────────────────────────────────────────────
+    _mnt=$(mktemp -d --tmpdir="/tmp" "pi2s3-mnt-XXXXXX")
+    log "Mounting ${_loop} at ${_mnt} (read-only)..."
+    sudo mount -o ro "${_loop}" "${_mnt}" \
+        || die "mount failed — the filesystem type (${sel_fstype}) may not be supported by this kernel"
+
+    # ── Verify path exists ────────────────────────────────────────────────────
+    local src_path="${_mnt}${EXTRACT_PATH}"
+    [[ ! -e "${src_path}" ]] \
+        && die "Path '${EXTRACT_PATH}' not found in this backup partition"
+
+    # ── Copy files out ────────────────────────────────────────────────────────
+    log ""
+    log "Copying '${EXTRACT_PATH}' → ${out_dir}/..."
+    sudo cp -a "${src_path}" "${out_dir}/"
+    sudo chown -R "$(id -u):$(id -g)" "${out_dir}/" 2>/dev/null || true
+
+    # ── Explicit cleanup (reset trap vars so trap no-ops) ─────────────────────
+    local _c_mnt="${_mnt}" _c_loop="${_loop}" _c_img="${_img}"
+    _mnt=""; _loop=""; _img=""
+    trap - EXIT
+
+    log "Unmounting and cleaning up..."
+    sudo umount  "${_c_mnt}"  2>/dev/null || true
+    sudo losetup -d "${_c_loop}" 2>/dev/null || true
+    rm -f "${_c_img}"
+    rmdir "${_c_mnt}" 2>/dev/null || true
+
+    # ── Done ─────────────────────────────────────────────────────────────────
+    echo ""
+    log "========================================================"
+    log "  Extract complete!"
+    log ""
+    log "  Files saved to: ${out_dir}/"
+    log "  Backup date:    ${TARGET_DATE}"
+    log "  Extracted path: ${EXTRACT_PATH}"
+    log "========================================================"
+}
+
 if [[ "${LIST_ONLY}" == "true" ]]; then
     list_backups
+    exit 0
+fi
+
+if [[ -n "${EXTRACT_PATH}" ]]; then
+    do_extract
     exit 0
 fi
 

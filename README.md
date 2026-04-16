@@ -98,6 +98,7 @@ This is far better than the old `dd` approach (60–90 minutes on a full NVMe), 
 - AWS CLI v2 with read access to your bucket
 - `python3` (for manifest parsing — standard on all modern Linux distros)
 - `pv` optional for a live progress bar: `sudo apt install pv`
+- `losetup` (util-linux) — required for `--extract` partial restores (standard on all Linux distros)
 
 > **macOS note**: The restore script requires Linux because `sfdisk` and `partclone` are not available on macOS. The easiest approach: boot the new Pi from a minimal SD card, attach the target NVMe, SSH in, and run `pi-image-restore.sh` from there.
 
@@ -193,6 +194,10 @@ pi-image-backup.sh [--force] [--dry-run] [--setup] [--list] [--verify[=DATE]]
   --verify=DATE     Verify specific date (YYYY-MM-DD)
 ```
 
+SHA-256 checksums are computed in-flight during upload via `tee >(sha256sum ...)` — the compressed stream forks to the hash and S3 simultaneously with no re-download. Stored per partition in the manifest.
+
+Failure ntfy alerts include the last 10 lines of the backup log for immediate triage without needing to SSH in.
+
 Each backup creates a dated folder in S3:
 ```
 s3://your-bucket/pi-image-backup/
@@ -204,9 +209,38 @@ s3://your-bucket/pi-image-backup/
     manifest-20260414_020045.json            ← metadata
 ```
 
-The manifest records hostname, Pi model, OS, partition layout, sizes, duration, and storage class. The `--verify` flag checks all files listed in the manifest exist and are non-zero in S3.
+The manifest records hostname, Pi model, OS, partition layout, sizes, duration, storage class, and **SHA-256 checksums** computed in-flight during upload (no re-download needed). The `--verify` flag checks all files listed in the manifest exist and are non-zero in S3, and prints the stored checksums.
+
+Each partition entry in the manifest includes:
+```json
+{
+  "name": "nvme0n1p2",
+  "fstype": "ext4",
+  "tool": "partclone.ext4",
+  "size_bytes": 127363883008,
+  "compressed_bytes": 2987654321,
+  "sha256": "e3b0c44298fc1c149afb...",
+  "key": "pi-image-backup/2026-04-16/nvme0n1p2-20260416_020045.img.gz"
+}
+```
 
 Old images beyond `MAX_IMAGES` are deleted automatically.
+
+---
+
+## Restore script
+
+```
+pi-image-restore.sh [options]
+
+  --list                      List all available backups
+  --date YYYY-MM-DD           Use a specific backup (default: latest)
+  --device /dev/...           Target device for full restore
+  --yes                       Skip confirmation prompts
+  --verify /dev/...           Verify a flashed device against S3 manifest (dd format)
+  --extract <path>            Extract a file or directory from a backup (Linux only)
+  --partition <name>          Partition to mount for --extract (default: largest non-boot)
+```
 
 ---
 
@@ -251,6 +285,23 @@ What happens during restore:
 1. Partition table downloaded from S3 and applied to target device with `sfdisk`
 2. Each partition streamed from S3 → `gunzip` → `partclone.restore` with inline checksum verification
 3. Boot firmware partition restored separately (if it was on a separate device)
+
+### Step 2b — Partial restore (recover a single file or directory)
+
+No target device needed. Streams the partition from S3, mounts it via a loop device (Linux kernel feature: treats a regular file as a block device), and copies the requested path to `./pi2s3-extract-<date>/`.
+
+```bash
+# Recover /home/pi from the latest backup
+bash ~/pi2s3/pi-image-restore.sh --extract /home/pi
+
+# Recover /etc from a specific date
+bash ~/pi2s3/pi-image-restore.sh --extract /etc --date 2026-04-16
+
+# Specify which partition (default: largest non-boot partition = root fs)
+bash ~/pi2s3/pi-image-restore.sh --extract /var/lib/docker --partition nvme0n1p2
+```
+
+**Linux only** — requires `losetup` (standard in `util-linux`) and `mount`. Only works with partclone-format backups (all backups since v1.1).
 
 ### Step 3 — Boot
 
