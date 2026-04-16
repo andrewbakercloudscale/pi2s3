@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  syntax-check:
+    name: Bash syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check all shell scripts
+        run: |
+          scripts=(
+            pi-image-backup.sh
+            pi-image-restore.sh
+            install.sh
+            pi2s3-watchdog.sh
+            test-recovery.sh
+            deploy-website.sh
+          )
+          failed=0
+          for f in "${scripts[@]}"; do
+            if bash -n "$f"; then
+              echo "  OK  $f"
+            else
+              echo "  FAIL  $f"
+              failed=1
+            fi
+          done
+          exit $failed
