@@ -111,6 +111,8 @@ PREFLIGHT_ABORT_ON_WARN="${PREFLIGHT_ABORT_ON_WARN:-false}"
 AWS_TRANSFER_RATE_LIMIT="${AWS_TRANSFER_RATE_LIMIT:-}"
 BACKUP_AUTO_VERIFY="${BACKUP_AUTO_VERIFY:-true}"
 BACKUP_ENCRYPTION_PASSPHRASE="${BACKUP_ENCRYPTION_PASSPHRASE:-}"
+PRE_BACKUP_CMD="${PRE_BACKUP_CMD:-}"
+POST_BACKUP_CMD="${POST_BACKUP_CMD:-}"
 # ─────────────────────────────────────────────────────────────────────────────
 
 DATE=$(date +%Y-%m-%d)
@@ -167,6 +169,8 @@ done
 _BACKUP_SUCCEEDED=false
 _CONTAINERS_STOPPED=false
 _STOPPED_IDS=""
+_PRE_BACKUP_RAN=false
+_POST_BACKUP_RAN=false
 _START_TIME=$(date +%s)
 _GPG_PASS_FILE=""
 
@@ -313,6 +317,21 @@ partclone_tool() {
 on_exit() {
     local rc=$?
     [[ -n "${_GPG_PASS_FILE}" ]] && rm -f "${_GPG_PASS_FILE}"
+    # Safety net: if PRE_BACKUP_CMD ran but POST_BACKUP_CMD didn't (crash), run it now.
+    if [[ "${_PRE_BACKUP_RAN}" == "true" && "${_POST_BACKUP_RAN}" == "false" \
+          && -n "${POST_BACKUP_CMD}" ]]; then
+        log "Running POST_BACKUP_CMD (crash recovery): ${POST_BACKUP_CMD}"
+        if eval "${POST_BACKUP_CMD}" 2>&1; then
+            log "  POST_BACKUP_CMD complete."
+            _POST_BACKUP_RAN=true
+        else
+            log "  ERROR: POST_BACKUP_CMD failed during crash recovery!"
+            ntfy_send "pi2s3 — POST_BACKUP_CMD failed" \
+                "URGENT: backup crashed and POST_BACKUP_CMD failed on $(hostname).
+Manual action required. Command was: ${POST_BACKUP_CMD}" \
+                "urgent" "sos,floppy_disk"
+        fi
+    fi
     # Safety net: if the script crashes mid-imaging, ensure Docker comes back up.
     if [[ "${_CONTAINERS_STOPPED}" == "true" && -n "${_STOPPED_IDS}" ]]; then
         log "Restarting Docker containers (crash recovery)..."
@@ -696,6 +715,22 @@ if [[ "${STOP_DOCKER}" == "true" ]] \
     fi
 fi
 
+# ── PRE_BACKUP_CMD: stop non-Docker services (MySQL, nginx, etc.) ─────────────
+if [[ -n "${PRE_BACKUP_CMD}" ]]; then
+    log ""
+    log "Running PRE_BACKUP_CMD: ${PRE_BACKUP_CMD}"
+    if [[ "${DRY_RUN}" != "true" ]]; then
+        if eval "${PRE_BACKUP_CMD}" 2>&1; then
+            _PRE_BACKUP_RAN=true
+            log "  PRE_BACKUP_CMD complete."
+        else
+            die "PRE_BACKUP_CMD failed — aborting backup to avoid inconsistent image."
+        fi
+    else
+        log "  [DRY RUN] skipping PRE_BACKUP_CMD"
+    fi
+fi
+
 # ── Flush filesystem ─────────────────────────────────────────────────────────
 log ""
 log "Syncing filesystem..."
@@ -846,6 +881,27 @@ Manual action required. Run: docker start ${_STOPPED_IDS}" \
         log "  [DRY RUN] docker start ${_STOPPED_IDS}"
     fi
     _CONTAINERS_STOPPED=false
+fi
+
+# ── POST_BACKUP_CMD: restart non-Docker services ──────────────────────────────
+if [[ "${_PRE_BACKUP_RAN}" == "true" && -n "${POST_BACKUP_CMD}" ]]; then
+    log ""
+    log "Running POST_BACKUP_CMD: ${POST_BACKUP_CMD}"
+    if [[ "${DRY_RUN}" != "true" ]]; then
+        if eval "${POST_BACKUP_CMD}" 2>&1; then
+            _POST_BACKUP_RAN=true
+            log "  POST_BACKUP_CMD complete."
+        else
+            log "  ERROR: POST_BACKUP_CMD failed — services may still be stopped!"
+            ntfy_send "pi2s3 — POST_BACKUP_CMD failed" \
+                "URGENT: POST_BACKUP_CMD failed on $(hostname).
+Manual action required. Command was: ${POST_BACKUP_CMD}" \
+                "urgent" "sos,floppy_disk"
+        fi
+    else
+        log "  [DRY RUN] skipping POST_BACKUP_CMD"
+        _POST_BACKUP_RAN=true
+    fi
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────

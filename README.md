@@ -170,6 +170,10 @@ AWS_TRANSFER_RATE_LIMIT=""     # e.g. "2m" = 2 MB/s, "500k" = 500 KB/s. blank = 
 # Client-side encryption (requires: sudo apt install gpg)
 BACKUP_ENCRYPTION_PASSPHRASE="" # blank = S3 SSE only. Set to encrypt before upload.
 
+# Pre/post backup hooks — stop/start non-Docker services around imaging
+PRE_BACKUP_CMD=""              # e.g. "systemctl stop nginx php8.2-fpm mariadb"
+POST_BACKUP_CMD=""             # e.g. "systemctl start mariadb php8.2-fpm nginx"
+
 # Split-device (advanced)
 BACKUP_EXTRA_DEVICE=""         # image a second device alongside boot (see below)
 
@@ -396,6 +400,36 @@ BACKUP_EXTRA_DEVICE="/dev/sda"
 ```
 
 The script will then image both devices, storing the second as `pi-image-extra-sda-<timestamp>.img.gz` alongside the boot image.
+
+---
+
+## Pre/post backup hooks
+
+If you run services **outside of Docker** — native MySQL, MariaDB, nginx, php-fpm, or any other systemd service — use `PRE_BACKUP_CMD` and `POST_BACKUP_CMD` to stop them before imaging and restart them after.
+
+### Native WordPress example
+
+```bash
+# config.env
+STOP_DOCKER=false   # no Docker on this Pi
+PRE_BACKUP_CMD="systemctl stop nginx php8.2-fpm mariadb"
+POST_BACKUP_CMD="systemctl start mariadb php8.2-fpm nginx"
+```
+
+Imaging takes 5–15 minutes. MariaDB/nginx are down only for that window.
+
+### How it works
+
+- `PRE_BACKUP_CMD` runs **after preflight, before imaging**. If it exits non-zero the backup is aborted immediately — no partial image is taken.
+- `POST_BACKUP_CMD` runs **after imaging completes**. The `on_exit` crash trap also calls it if the script dies mid-imaging, so your services always come back up even on failure.
+- `STOP_DOCKER=true` and hooks can coexist: Docker stops first, then `PRE_BACKUP_CMD`, then imaging, then `POST_BACKUP_CMD`, then Docker restarts.
+
+Any shell command or script path works:
+
+```bash
+PRE_BACKUP_CMD="/usr/local/bin/my-pre-backup.sh"
+POST_BACKUP_CMD="/usr/local/bin/my-post-backup.sh"
+```
 
 ---
 

@@ -17,6 +17,7 @@
   <meta property="og:image:alt" content="pi2s3 — AMI for your Raspberry Pi" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:image" content="https://pi2s3.com/pi2s3.jpg" />
+  <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-1534132340710618" crossorigin="anonymous"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -603,6 +604,18 @@
   </div>
 </nav>
 
+<!-- ADSENSE TOP -->
+<div style="text-align:center; padding: 0.25rem 1rem; background: var(--bg); border-bottom: 1px solid var(--border);">
+  <ins class="adsbygoogle"
+       style="display:block"
+       data-ad-client="ca-pub-1534132340710618"
+       data-ad-slot="7720587852"
+       data-ad-format="auto"
+       data-full-width-responsive="true"
+       data-adtest="on"></ins>
+  <script>(adsbygoogle = window.adsbygoogle || []).push({});</script>
+</div>
+
 <!-- HERO -->
 <div class="hero">
   <img src="pi2s3.jpg" alt="pi2s3 logo" class="hero-logo" />
@@ -1132,6 +1145,13 @@
       <p>An <code>on_exit</code> trap guarantees containers are restarted even if the backup script crashes mid-imaging. A separate post-backup cron job (30 min after backup) runs a second check to confirm containers came back up.</p>
       <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="cmt"># config.env (default: true)</span>
 <span class="val">POST_BACKUP_CHECK_ENABLED</span>=<span class="str">true</span></pre>
+    </div>
+    <div class="card">
+      <h3>Pre/post backup hooks</h3>
+      <p>Not running Docker? Stop any service — MariaDB, nginx, php-fpm — before imaging and restart it after. Works for native WordPress, Samba, or any systemd service. The crash trap also runs <code>POST_BACKUP_CMD</code> on failure, so services always come back up.</p>
+      <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="cmt"># native WordPress example</span>
+<span class="val">PRE_BACKUP_CMD</span>=<span class="str">"systemctl stop nginx php8.2-fpm mariadb"</span>
+<span class="val">POST_BACKUP_CMD</span>=<span class="str">"systemctl start mariadb php8.2-fpm nginx"</span></pre>
     </div>
   </div>
 </section>
