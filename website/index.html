@@ -595,6 +595,7 @@
     <a href="#quickstart" class="hide-sm">Quick start</a>
     <a href="#restore" class="hide-sm">Restore</a>
     <a href="#security" class="hide-sm">Security</a>
+    <a href="#watchdog" class="hide-sm">Watchdog</a>
     <a href="#troubleshooting" class="hide-sm">Troubleshooting</a>
     <a href="https://andrewbaker.ninja" target="_blank" class="hide-sm">andrewbaker.ninja</a>
     <a href="https://github.com/andrewbakercloudscale/pi2s3" target="_blank" class="btn-gh">
@@ -605,15 +606,23 @@
 </nav>
 
 <!-- ADSENSE TOP -->
-<div style="text-align:center; padding: 0.25rem 1rem; background: var(--bg); border-bottom: 1px solid var(--border);">
+<div id="ad-top" style="display:none; text-align:center; background: var(--bg); border-bottom: 1px solid var(--border);">
   <ins class="adsbygoogle"
        style="display:block"
        data-ad-client="ca-pub-1534132340710618"
        data-ad-slot="7720587852"
        data-ad-format="auto"
-       data-full-width-responsive="true"
-       data-adtest="on"></ins>
-  <script>(adsbygoogle = window.adsbygoogle || []).push({});</script>
+       data-full-width-responsive="true"></ins>
+  <script>
+    (adsbygoogle = window.adsbygoogle || []).push({});
+    new MutationObserver(function(mutations, obs) {
+      var ins = document.querySelector('#ad-top ins');
+      if (ins && ins.getAttribute('data-ad-status') === 'filled') {
+        document.getElementById('ad-top').style.display = 'block';
+        obs.disconnect();
+      }
+    }).observe(document.querySelector('#ad-top ins'), { attributes: true, attributeFilter: ['data-ad-status'] });
+  </script>
 </div>
 
 <!-- HERO -->
@@ -1154,6 +1163,39 @@
 <span class="val">POST_BACKUP_CMD</span>=<span class="str">"systemctl start mariadb php8.2-fpm nginx"</span></pre>
     </div>
   </div>
+</section>
+
+<!-- WATCHDOG -->
+<hr class="divider" />
+<section id="watchdog">
+  <div class="section-label">Watchdog</div>
+  <h2>Self-healing tunnel monitor</h2>
+  <p class="section-intro">Optional. Runs every 5 minutes as root. If your site or Cloudflare tunnel goes down, it recovers automatically through three escalating phases — no SSH needed.</p>
+
+  <div class="table-wrap" style="margin-bottom:2rem;">
+    <table>
+      <thead>
+        <tr><th>Phase</th><th>Trigger</th><th>Action</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Phase 1 (0–20 min)</td><td>First failure detected</td><td>Restart cloudflared + start stopped containers</td></tr>
+        <tr><td>Phase 2 (20–40 min)</td><td>Still down after 4 attempts</td><td>Full <code>docker compose down/up</code> + cloudflared restart</td></tr>
+        <tr><td>Phase 3 (40+ min)</td><td>Still down after 8 attempts</td><td>Reboot Pi (rate-limited: max once per 6 hours)</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p style="margin-bottom:1.5rem;">Three checks run every cycle: Docker containers stopped? Local HTTP probe returning 5xx or connection failure? cloudflared <code>ha_connections</code> &gt; 0? Any failure starts the escalation ladder. Recovery is confirmed by re-running all checks after each action.</p>
+
+  <p style="margin-bottom:1.5rem; color: var(--muted); font-size:0.9rem;">Push notifications via ntfy at every stage: first failure, each phase escalation, recovery, and stuck-down alert. Pre-reboot diagnostics dumped to <code>/var/log/pi2s3-watchdog-prediag.log</code>.</p>
+
+  <pre><span class="cmt"># config.env</span>
+<span class="val">CF_WATCHDOG_ENABLED</span>=<span class="str">true</span>
+<span class="val">CF_SITE_HOSTNAME</span>=<span class="str">"yoursite.com"</span>
+<span class="val">CF_HTTP_PORT</span>=<span class="str">80</span>
+
+<span class="cmt"># Then install:</span>
+<span class="kw">bash</span> ~/pi2s3/install.sh --watchdog</pre>
 </section>
 
 <!-- TROUBLESHOOTING -->

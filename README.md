@@ -181,6 +181,21 @@ BACKUP_EXTRA_DEVICE=""         # image a second device alongside boot (see below
 NTFY_LEVEL="all"               # "all" | "failure"
 ```
 
+### Client-side encryption
+
+Set `BACKUP_ENCRYPTION_PASSPHRASE` to encrypt every partition image with GPG AES-256 before upload. Even full S3 bucket access is useless without the passphrase.
+
+```bash
+# config.env
+BACKUP_ENCRYPTION_PASSPHRASE="my-strong-passphrase"
+```
+
+Requires: `sudo apt install gpg`
+
+The restore script reads the `encryption` field in the manifest and decrypts inline. If the passphrase is not in `config.env`, it prompts interactively.
+
+> **Keep the passphrase safe.** If your Pi dies and you lose `config.env`, you cannot restore your backups. Store the passphrase in a password manager (1Password, Bitwarden, etc.) or write it down and store it offline — somewhere independent of the Pi. `config.env` also contains your AWS credentials; treat it like a secrets file.
+
 ### Cost estimate
 
 At ~3–5 GB compressed per image (128 GB NVMe, ~25% full):
@@ -243,6 +258,50 @@ Each partition entry in the manifest includes:
 ```
 
 Old images beyond `MAX_IMAGES` are deleted automatically.
+
+### List backups
+
+See what's in S3 with sizes and hostnames:
+
+```bash
+bash ~/pi2s3/pi-image-backup.sh --list
+```
+
+Output:
+```
+  [1] 2026-04-16 — 4.2G compressed (my-pi-5)
+  [2] 2026-04-15 — 4.1G compressed (my-pi-5)
+  [3] 2026-04-14 — 4.0G compressed (my-pi-5)
+
+  Total: 3 backup(s)
+```
+
+### Verify a backup
+
+Check that all files listed in the manifest exist and are non-zero in S3. Prints the stored SHA-256 checksums. Runs against the latest backup unless a date is specified:
+
+```bash
+# Verify latest
+bash ~/pi2s3/pi-image-backup.sh --verify
+
+# Verify a specific date
+bash ~/pi2s3/pi-image-backup.sh --verify=2026-04-15
+```
+
+Output:
+```
+  OK  nvme0n1p1-20260415_020045.img.gz (512M)
+  OK  nvme0n1p2-20260415_020045.img.gz (3.7G)
+  OK  partition-table (1234 bytes)
+
+Checksums (SHA-256 of compressed upload):
+  e3b0c44298fc1c149afb4c8996fb92427ae41e4649b934ca495991b7852b855
+  a87ff679a2f3e71d9181a67b7542122c04521ead5f5a64afe10c2b7d64dd5c6
+
+VERIFY OK — all backup files present in S3.
+```
+
+This is the same check `BACKUP_AUTO_VERIFY=true` runs automatically after each backup. Use `--verify` to re-check at any time — after a suspected S3 issue, before a planned restore, or as part of a monthly audit.
 
 ---
 
@@ -599,7 +658,7 @@ bash ~/pi2s3/install.sh --status
 
 pi2s3 captures the full machine state but is large (~3–5 GB/image). For cheap, fast, granular data recovery (restore just the database, single-file recovery, cross-version migrations), run an app-layer backup alongside:
 
-| | Pi MI | App-layer backup |
+| | pi2s3 | App-layer backup |
 |---|---|---|
 | What's backed up | Entire disk | DB + uploads + config files |
 | Compressed size | ~3–5 GB | ~500 MB |
@@ -608,7 +667,7 @@ pi2s3 captures the full machine state but is large (~3–5 GB/image). For cheap,
 | Knowledge needed | None | Some |
 | Cost (60 days) | ~$3/month | <$1/month |
 
-Both are complementary. Pi MI for disaster recovery; app-layer for day-to-day data safety.
+Both are complementary. pi2s3 for disaster recovery; app-layer for day-to-day data safety.
 
 ---
 
