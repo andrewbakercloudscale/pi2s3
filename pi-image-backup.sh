@@ -64,6 +64,10 @@
 #   DONE(9-per-host-retention): Per-hostname MAX_IMAGES_<hostname> in config.env.
 #     Hyphens in hostname replaced with underscores (bash var name constraint).
 #     e.g. MAX_IMAGES_my_pi_5=30 overrides the global MAX_IMAGES for that host.
+#
+#   DONE(10-auto-verify): BACKUP_AUTO_VERIFY=true runs a post-upload S3 check
+#     after every backup. Verifies all partition files and manifest are non-zero
+#     in S3. Result included in ntfy success notification.
 # =============================================================
 set -euo pipefail
 
@@ -100,6 +104,7 @@ PREFLIGHT_ENABLED="${PREFLIGHT_ENABLED:-true}"
 PREFLIGHT_MIN_FREE_MB="${PREFLIGHT_MIN_FREE_MB:-500}"
 PREFLIGHT_ABORT_ON_WARN="${PREFLIGHT_ABORT_ON_WARN:-false}"
 AWS_TRANSFER_RATE_LIMIT="${AWS_TRANSFER_RATE_LIMIT:-}"
+BACKUP_AUTO_VERIFY="${BACKUP_AUTO_VERIFY:-true}"
 # ─────────────────────────────────────────────────────────────────────────────
 
 DATE=$(date +%Y-%m-%d)
@@ -628,6 +633,7 @@ PARTITIONS_JSON=""
 log ""
 log "Imaging ${#BOOT_PARTITIONS[@]} partition(s) with partclone..."
 
+UPLOADED_KEYS=()
 for PART in "${BOOT_PARTITIONS[@]}"; do
     PART_NAME=$(basename "${PART}")
     FSTYPE=$(lsblk -no FSTYPE "${PART}" 2>/dev/null | tr -d '[:space:]' || echo "")
@@ -676,6 +682,7 @@ for PART in "${BOOT_PARTITIONS[@]}"; do
         if [[ "${PART_COMPRESSED_BYTES:-0}" -eq 0 ]]; then
             die "Upload of ${PART_KEY} appears empty (0 bytes in S3). Backup aborted."
         fi
+        UPLOADED_KEYS+=("${PART_KEY}")
         PART_COMPRESSED_HUMAN=$(numfmt --to=iec "${PART_COMPRESSED_BYTES}" 2>/dev/null || echo "?")
         TOTAL_COMPRESSED_BYTES=$(( TOTAL_COMPRESSED_BYTES + PART_COMPRESSED_BYTES ))
         log "  Done: ${PART_COMPRESSED_HUMAN} compressed → ${PART_KEY}"
@@ -857,10 +864,52 @@ log "========================================================"
 
 _BACKUP_SUCCEEDED=true
 
+# ── Auto-verify ───────────────────────────────────────────────────────────────
+_VERIFY_STATUS="skipped"
+if [[ "${BACKUP_AUTO_VERIFY}" == "true" && "${DRY_RUN}" != "true" ]]; then
+    log ""
+    log "Auto-verifying uploaded files in S3..."
+    _verify_ok=true
+    for _vkey in "${UPLOADED_KEYS[@]}"; do
+        _vsz=$(aws_cmd s3 ls "s3://${S3_BUCKET}/${_vkey}" 2>/dev/null \
+            | awk '{print $3}' | head -1 || echo "0")
+        if [[ "${_vsz:-0}" -gt 0 ]]; then
+            log "  OK  $(basename "${_vkey}")"
+        else
+            log "  FAIL  $(basename "${_vkey}") — missing or empty in S3"
+            _verify_ok=false
+        fi
+    done
+    # Check manifest
+    _msz=$(aws_cmd s3 ls "s3://${S3_BUCKET}/${MANIFEST_S3_KEY}" 2>/dev/null \
+        | awk '{print $3}' | head -1 || echo "0")
+    if [[ "${_msz:-0}" -gt 0 ]]; then
+        log "  OK  $(basename "${MANIFEST_S3_KEY}")"
+    else
+        log "  FAIL  manifest — missing or empty"
+        _verify_ok=false
+    fi
+    if [[ "${_verify_ok}" == "true" ]]; then
+        log "  All files verified in S3."
+        _VERIFY_STATUS="passed"
+    else
+        log "  VERIFY FAILED — one or more files missing from S3!"
+        _VERIFY_STATUS="failed"
+        ntfy_send "pi2s3 backup — VERIFY FAILED" \
+            "Backup on $(hostname) uploaded but S3 verify FAILED for ${DATE}.
+Check: bash pi-image-backup.sh --verify=${DATE}
+Log: /var/log/pi2s3-backup.log" \
+            "high" "warning,floppy_disk"
+    fi
+fi
+
 if [[ "${NTFY_LEVEL}" != "failure" && "${DRY_RUN}" != "true" ]]; then
+    _VERIFY_LINE=""
+    [[ "${_VERIFY_STATUS}" == "passed" ]] && _VERIFY_LINE=$'\nVerify: all files confirmed in S3'
+    [[ "${_VERIFY_STATUS}" == "failed" ]] && _VERIFY_LINE=$'\nVerify: FAILED — check log'
     _NTFY_MSG="$(hostname) — ${DATE}
 Bucket: s3://${S3_BUCKET}/${S3_DATE_PREFIX}/
 Size:  ${TOTAL_COMPRESSED_HUMAN} compressed (from ${TOTAL_USED_HUMAN} used)
-Time:  ${TOTAL_ELAPSED}s"
+Time:  ${TOTAL_ELAPSED}s${_VERIFY_LINE}"
     ntfy_send "Pi MI backup complete" "${_NTFY_MSG}" "low" "white_check_mark,floppy_disk"
 fi
