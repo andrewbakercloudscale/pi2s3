@@ -3,11 +3,11 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>pi2s3 — AMI for your Raspberry Pi</title>
+  <title>pi2s3 - AMI for your Raspberry Pi</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg" />
-  <meta name="description" content="Block-level nightly backup of a Raspberry Pi to AWS S3. Restore a complete, bootable system to new hardware — or recover a single file — in one command." />
-  <meta property="og:title" content="pi2s3 — AMI for your Raspberry Pi" />
-  <meta property="og:description" content="Block-level nightly backup of a Raspberry Pi to AWS S3. Restore a complete, bootable system to new hardware — or recover a single file — in one command." />
+  <meta name="description" content="Block-level nightly backup of a Raspberry Pi to AWS S3. Restore a complete, bootable system to new hardware - or recover a single file - in one command." />
+  <meta property="og:title" content="pi2s3 - AMI for your Raspberry Pi" />
+  <meta property="og:description" content="Block-level nightly backup of a Raspberry Pi to AWS S3. Restore a complete, bootable system to new hardware - or recover a single file - in one command." />
   <meta property="og:url" content="https://pi2s3.com" />
   <meta property="og:type" content="website" />
   <meta name="twitter:card" content="summary_large_image" />
@@ -458,6 +458,14 @@
       margin-top: 0.1rem;
     }
 
+    .qs-num--alt {
+      background: rgba(34, 197, 94, 0.12);
+      border-color: rgba(34, 197, 94, 0.4);
+      color: #22c55e;
+      font-size: 0.7rem;
+      letter-spacing: 0.03em;
+    }
+
     .qs-content h3 { font-size: 1.05rem; font-weight: 600; margin-bottom: 0.4rem; }
     .qs-content p { font-size: 0.9rem; color: var(--muted); margin-bottom: 0.75rem; }
 
@@ -574,7 +582,7 @@
 <div class="hero">
   <div class="badge">Open Source &nbsp;·&nbsp; MIT License</div>
   <h1>The <span class="gradient">AMI</span> for your<br>Raspberry Pi</h1>
-  <p class="hero-sub">Block-level nightly backup of your Pi to AWS S3. Restore a complete, bootable system to new hardware — or recover a single file — in one command. No manual setup, no secrets to re-enter.</p>
+  <p class="hero-sub">Block-level nightly backup of your Pi to AWS S3. Restore a complete, bootable system to new hardware - or recover a single file - in one command. No manual setup, no secrets to re-enter.</p>
   <div class="hero-actions">
     <a href="https://github.com/andrewbakercloudscale/pi2s3" target="_blank" class="btn-primary">
       <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
@@ -622,12 +630,12 @@
     <div class="step">
       <div class="step-num">BACKUP · STEP 02</div>
       <h3>Image with partclone</h3>
-      <p>Reads only <em>used</em> blocks from each partition — not empty sectors. 954 GB NVMe at 28% full: partclone reads 267 GB, dd would read 954 GB.</p>
+      <p>Reads only <em>used</em> blocks from each partition - not empty sectors. 954 GB NVMe at 28% full: partclone reads 267 GB, dd would read 954 GB.</p>
     </div>
     <div class="step">
       <div class="step-num">BACKUP · STEP 03</div>
       <h3>Compress &amp; stream</h3>
-      <p>pigz compresses in parallel using all Pi 5 cores. Output streams directly to S3 — no local temp file needed, no second disk required.</p>
+      <p>pigz compresses in parallel using all Pi 5 cores. Output streams directly to S3 - no local temp file needed, no second disk required.</p>
     </div>
     <div class="step">
       <div class="step-num">BACKUP · STEP 04</div>
@@ -641,7 +649,7 @@
       <div class="step">
         <div class="step-num">RESTORE · STEP 01</div>
         <h3>Replay partition table</h3>
-        <p>sfdisk restores the saved GPT layout to the new device. Partitions are recreated exactly — same sizes, same order.</p>
+        <p>sfdisk restores the saved GPT layout to the new device. Partitions are recreated exactly - same sizes, same order.</p>
       </div>
       <div class="step">
         <div class="step-num">RESTORE · STEP 02</div>
@@ -656,7 +664,7 @@
       <div class="step">
         <div class="step-num">RESTORE · STEP 04</div>
         <h3>Verify</h3>
-        <p>test-recovery.sh --post-boot checks OS, NVMe, Docker containers, Cloudflare tunnel, cron jobs, MariaDB, and HTTP — PASS/FAIL per check.</p>
+        <p>test-recovery.sh --post-boot checks OS, NVMe, Docker containers, Cloudflare tunnel, cron jobs, MariaDB, and HTTP - PASS/FAIL per check.</p>
       </div>
     </div>
   </div>
@@ -733,20 +741,20 @@
 <section id="coverage">
   <div class="section-label">Coverage</div>
   <h2>Everything. Block-level.</h2>
-  <p class="section-intro">Because it's a block-level image of the full device, there's nothing to configure. Every file, database, container, service, and SSH key is included automatically. Works on both NVMe and SD card — boot media is auto-detected.</p>
+  <p class="section-intro">Because it's a block-level image of the full device, there's nothing to configure. Every file, database, container, service, and SSH key is included automatically. Works on both NVMe and SD card - boot media is auto-detected.</p>
 
   <div class="card-grid">
     <div class="card">
       <h3>Operating System</h3>
-      <p>OS, kernel, packages, systemd services — including cloudflared, custom watchdogs, and any compiled binaries.</p>
+      <p>OS, kernel, packages, systemd services - including cloudflared, custom watchdogs, and any compiled binaries.</p>
     </div>
     <div class="card">
       <h3>Docker Runtime</h3>
-      <p>All images, volumes, networks, and compose configs. MariaDB data, WordPress uploads, application files — everything in /var/lib/docker.</p>
+      <p>All images, volumes, networks, and compose configs. MariaDB data, WordPress uploads, application files - everything in /var/lib/docker.</p>
     </div>
     <div class="card">
       <h3>Configuration &amp; Secrets</h3>
-      <p>.env files, config.env, credentials, authorized_keys, cron jobs, logrotate rules — all restored exactly as-is.</p>
+      <p>.env files, config.env, credentials, authorized_keys, cron jobs, logrotate rules - all restored exactly as-is.</p>
     </div>
     <div class="card">
       <h3>Boot Firmware</h3>
@@ -783,7 +791,7 @@
     <div class="qs-num">2</div>
     <div class="qs-content">
       <h3>IAM credentials on the Pi</h3>
-      <p>Configure AWS credentials on the Pi. Use the minimum required permissions — create an IAM user or role with this policy:</p>
+      <p>Configure AWS credentials on the Pi. Use the minimum required permissions - create an IAM user or role with this policy:</p>
       <pre>{
   <span class="str">"Version"</span>: <span class="str">"2012-10-17"</span>,
   <span class="str">"Statement"</span>: [{
@@ -809,12 +817,12 @@
     <div class="qs-num">3</div>
     <div class="qs-content">
       <h3>Enable S3 bucket encryption</h3>
-      <p>Your backup contains secrets: <code>.env</code> files, SSH keys, database data, API tokens. Enable default encryption before the first backup — it costs nothing and takes 30 seconds.</p>
+      <p>Your backup contains secrets: <code>.env</code> files, SSH keys, database data, API tokens. Enable default encryption before the first backup - it costs nothing and takes 30 seconds.</p>
       <pre><span class="kw">aws</span> s3api put-bucket-encryption \
   <span class="flag">--bucket</span> <span class="val">your-bucket-name</span> \
   <span class="flag">--server-side-encryption-configuration</span> \
   <span class="str">'{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'</span></pre>
-      <p style="margin-top:0.75rem; color:var(--muted); font-size:0.9rem;">Use SSE-KMS instead of AES256 if you need CloudTrail audit trails or cross-account key management. The backup does not encrypt client-side — S3-managed encryption is the recommended baseline.</p>
+      <p style="margin-top:0.75rem; color:var(--muted); font-size:0.9rem;">Use SSE-KMS instead of AES256 if you need CloudTrail audit trails or cross-account key management. The backup does not encrypt client-side - S3-managed encryption is the recommended baseline.</p>
     </div>
   </div>
 </section>
@@ -843,7 +851,7 @@
       <p>Copy the example config and fill in your values. All available options are documented inline:</p>
       <pre><span class="kw">cp</span> config.env.example config.env
 <span class="kw">nano</span> config.env   <span class="cmt"># required: S3_BUCKET, S3_REGION, NTFY_URL</span></pre>
-      <p style="margin-top:0.75rem;">Then run the installer — it handles dependencies, AWS verification, lifecycle policy, cron scheduling, and a dry-run test:</p>
+      <p style="margin-top:0.75rem;">Then run the installer - it handles dependencies, AWS verification, lifecycle policy, cron scheduling, and a dry-run test:</p>
       <pre><span class="kw">bash</span> install.sh</pre>
     </div>
   </div>
@@ -914,7 +922,7 @@
     <div class="qs-num">2</div>
     <div class="qs-content">
       <h3>Restore (on Linux / new Pi)</h3>
-      <p>Interactive: pick backup date and target device. Or non-interactive for scripted recovery. Streams directly from S3 — no local storage needed.</p>
+      <p>Interactive: pick backup date and target device. Or non-interactive for scripted recovery. Streams directly from S3 - no local storage needed.</p>
       <pre><span class="kw">bash</span> ~/pi2s3/pi-image-restore.sh
 
 <span class="cmt"># Or non-interactively:</span>
@@ -923,17 +931,17 @@
   </div>
 
   <div class="qs-step">
-    <div class="qs-num">alt</div>
+    <div class="qs-num qs-num--alt">or</div>
     <div class="qs-content">
-      <h3>Partial restore — recover a single file or directory</h3>
-      <p>No target device needed. Streams the partition from S3, mounts it via a loop device, and copies the requested path to <code>./pi2s3-extract-&lt;date&gt;/</code>. Linux only (requires <code>losetup</code>).</p>
+      <h3>Partial restore: recover a single file or directory</h3>
+      <p>No target device needed. Streams the partition from S3, mounts it via a loop device, and copies the requested path to <code>./pi2s3-extract-&lt;date&gt;/</code>. Linux only.</p>
       <pre><span class="cmt"># Recover /home/pi from the latest backup</span>
 <span class="kw">bash</span> ~/pi2s3/pi-image-restore.sh <span class="kw">--extract</span> /home/pi
 
 <span class="cmt"># Recover /etc from a specific date</span>
 <span class="kw">bash</span> ~/pi2s3/pi-image-restore.sh <span class="kw">--extract</span> /etc <span class="kw">--date</span> <span class="num">2026-04-16</span>
 
-<span class="cmt"># Specify a partition explicitly (default: largest non-boot partition)</span>
+<span class="cmt"># Specify partition (default: largest non-boot = root fs)</span>
 <span class="kw">bash</span> ~/pi2s3/pi-image-restore.sh <span class="kw">--extract</span> /var/lib/docker <span class="kw">--partition</span> nvme0n1p2</pre>
     </div>
   </div>
@@ -967,7 +975,7 @@
   </div>
 
   <p style="margin-top:2rem; color:var(--muted); font-size:0.9rem; border-left:3px solid var(--border); padding-left:1rem;">
-    <strong style="color:var(--text);">If a restore is interrupted mid-way</strong> — network cut, power loss, wrong device — it is safe to rerun. partclone.restore writes blocks independently; rerunning overwrites the partial work cleanly. Re-apply the partition table with <code>sfdisk</code> before restarting the restore.
+    <strong style="color:var(--text);">If a restore is interrupted mid-way</strong> - network cut, power loss, wrong device - it is safe to rerun. partclone.restore writes blocks independently; rerunning overwrites the partial work cleanly. Re-apply the partition table with <code>sfdisk</code> before restarting the restore.
   </p>
 </section>
 
@@ -987,7 +995,7 @@
     </div>
     <div class="terminal-body">
       <div><span class="comment">Check 1: Any Docker containers stopped?</span></div>
-      <div><span class="comment">Check 2: HTTP probe on localhost — 5xx or connection failure?</span></div>
+      <div><span class="comment">Check 2: HTTP probe on localhost - 5xx or connection failure?</span></div>
       <div><span class="comment">Check 3: cloudflared ha_connections > 0?</span></div>
       <div>&nbsp;</div>
       <div><span class="out">All OK → log and exit</span></div>
@@ -1019,7 +1027,7 @@
 <section id="cost">
   <div class="section-label">Cost</div>
   <h2>~$3/month for 60 days of history</h2>
-  <p class="section-intro">At 3–5 GB per compressed image using S3 STANDARD_IA. Costs vary by region — af-south-1 (Cape Town) is slightly higher than us-east-1.</p>
+  <p class="section-intro">At 3–5 GB per compressed image using S3 STANDARD_IA. Costs vary by region - af-south-1 (Cape Town) is slightly higher than us-east-1.</p>
 
   <div class="table-wrap">
     <table>
@@ -1053,7 +1061,7 @@
       <h3>pigz not found</h3>
       <p>The installer tries to install pigz automatically. If it fails, install manually:</p>
       <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="kw">sudo apt install pigz</span></pre>
-      <p style="margin-top:0.5rem;">The backup falls back to single-threaded <code>gzip</code> if pigz is absent — it will still work, just slower.</p>
+      <p style="margin-top:0.5rem;">The backup falls back to single-threaded <code>gzip</code> if pigz is absent - it will still work, just slower.</p>
     </div>
     <div class="card">
       <h3>AWS credential failure</h3>
