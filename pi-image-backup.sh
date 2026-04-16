@@ -45,9 +45,9 @@
 #   DONE(4-per-host-namespacing): S3 keys now pi-image-backup/<hostname>/<date>/.
 #     pi-image-restore.sh auto-discovers host or prompts when multiple exist.
 #
-#   TODO(5-bandwidth-throttle): Add AWS_TRANSFER_RATE_LIMIT option in config.env.
-#     Implement via: | pv -L "${AWS_TRANSFER_RATE_LIMIT}" | aws s3 cp -
-#     pv is already listed as an optional dependency. Gracefully skip if unset.
+#   DONE(5-bandwidth-throttle): AWS_TRANSFER_RATE_LIMIT in config.env caps upload speed.
+#     Uses pv -q -L to throttle the compressed stream before aws s3 cp.
+#     Gracefully falls back to cat if unset or pv not installed.
 #
 #   DONE(6-preflight-health): preflight_health() runs before Docker stop.
 #     Checks: stopped/unhealthy containers, free disk space (<PREFLIGHT_MIN_FREE_MB),
@@ -61,9 +61,9 @@
 #     growpart expands the last partition entry; resize2fs/xfs_growfs expands the
 #     filesystem. Works for ext2/3/4 (online). XFS and btrfs: manual step noted.
 #
-#   TODO(9-per-host-retention): Per-hostname MAX_IMAGES in config.env.
-#     e.g. MAX_IMAGES_andrew-pi-5=30. Required for multi-Pi deployments once
-#     TODO(4-per-host-namespacing) is done.
+#   DONE(9-per-host-retention): Per-hostname MAX_IMAGES_<hostname> in config.env.
+#     Hyphens in hostname replaced with underscores (bash var name constraint).
+#     e.g. MAX_IMAGES_my_pi_5=30 overrides the global MAX_IMAGES for that host.
 # =============================================================
 set -euo pipefail
 
@@ -99,11 +99,17 @@ STALE_BACKUP_HOURS="${STALE_BACKUP_HOURS:-25}"
 PREFLIGHT_ENABLED="${PREFLIGHT_ENABLED:-true}"
 PREFLIGHT_MIN_FREE_MB="${PREFLIGHT_MIN_FREE_MB:-500}"
 PREFLIGHT_ABORT_ON_WARN="${PREFLIGHT_ABORT_ON_WARN:-false}"
+AWS_TRANSFER_RATE_LIMIT="${AWS_TRANSFER_RATE_LIMIT:-}"
 # ─────────────────────────────────────────────────────────────────────────────
 
 DATE=$(date +%Y-%m-%d)
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 HOST_SHORT=$(hostname -s)
+# Per-host retention override: MAX_IMAGES_<hostname> (hyphens → underscores)
+_HOST_MAX_VAR="MAX_IMAGES_${HOST_SHORT//-/_}"
+if [[ -n "${!_HOST_MAX_VAR:-}" ]]; then
+    MAX_IMAGES="${!_HOST_MAX_VAR}"
+fi
 S3_PREFIX="pi-image-backup/${HOST_SHORT}"
 MANIFEST_FILENAME="manifest-${TIMESTAMP}.json"
 S3_DATE_PREFIX="${S3_PREFIX}/${DATE}"
@@ -492,6 +498,18 @@ else
     COMPRESSOR_NAME="gzip (install pigz for faster backups: sudo apt install pigz)"
 fi
 
+# Bandwidth throttle via pv (optional)
+PV_THROTTLE="cat"
+if [[ -n "${AWS_TRANSFER_RATE_LIMIT}" ]]; then
+    if command -v pv &>/dev/null; then
+        PV_THROTTLE="pv -q -L ${AWS_TRANSFER_RATE_LIMIT}"
+        log "  Bandwidth limit: ${AWS_TRANSFER_RATE_LIMIT}/s (via pv)"
+    else
+        log "  WARN: AWS_TRANSFER_RATE_LIMIT set but pv not installed — throttling disabled."
+        log "        Install with: sudo apt install pv"
+    fi
+fi
+
 PI_MODEL=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || echo "unknown")
 OS_PRETTY=$(grep PRETTY_NAME /etc/os-release 2>/dev/null | cut -d'"' -f2 || echo "unknown")
 KERNEL=$(uname -r)
@@ -646,6 +664,7 @@ for PART in "${BOOT_PARTITIONS[@]}"; do
         sudo "${TOOL}" -c -F -s "${PART}" -o - \
             | ${COMPRESSOR} \
             | tee >(sha256sum | awk '{print $1}' > "${_SHA_TMP}") \
+            | ${PV_THROTTLE} \
             | aws_cmd s3 cp - "s3://${S3_BUCKET}/${PART_KEY}" \
                 --storage-class "${S3_STORAGE_CLASS}" \
                 --no-progress
@@ -684,6 +703,7 @@ if [[ -n "${BOOT_FW_PART}" ]]; then
         sudo partclone.vfat -c -F -s "${BOOT_FW_PART}" -o - \
             | ${COMPRESSOR} \
             | tee >(sha256sum | awk '{print $1}' > "${_SHA_TMP}") \
+            | ${PV_THROTTLE} \
             | aws_cmd s3 cp - "s3://${S3_BUCKET}/${FW_KEY}" \
                 --storage-class "${S3_STORAGE_CLASS}" \
                 --no-progress
