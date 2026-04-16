@@ -150,6 +150,8 @@ NTFY_URL="https://ntfy.sh/your-topic"
 
 # Retention (default: 60 images)
 MAX_IMAGES=60
+# Per-host override (multi-Pi): hyphens → underscores in hostname
+# MAX_IMAGES_my_pi_5=30
 
 # AWS
 AWS_PROFILE=""                 # blank = default profile or instance role
@@ -159,6 +161,9 @@ S3_STORAGE_CLASS="STANDARD_IA" # ~40% cheaper than STANDARD for backups
 STOP_DOCKER=true               # stop Docker briefly for DB consistency (~10s)
 DOCKER_STOP_TIMEOUT=30         # seconds to wait for containers to stop
 CRON_SCHEDULE="0 2 * * *"     # 2:00am daily
+
+# Bandwidth throttle (requires: sudo apt install pv)
+AWS_TRANSFER_RATE_LIMIT=""     # e.g. "2m" = 2 MB/s, "500k" = 500 KB/s. blank = unlimited
 
 # Split-device (advanced)
 BACKUP_EXTRA_DEVICE=""         # image a second device alongside boot (see below)
@@ -184,7 +189,7 @@ Costs vary by region. `af-south-1` (Cape Town) is slightly higher than `us-east-
 ## Backup script
 
 ```
-pi-image-backup.sh [--force] [--dry-run] [--setup] [--list] [--verify[=DATE]]
+pi-image-backup.sh [--force] [--dry-run] [--setup] [--list] [--verify[=DATE]] [--stale-check]
 
   --force           Skip the duplicate-check (run even if today's backup exists)
   --dry-run         Show what would happen without uploading anything
@@ -192,6 +197,8 @@ pi-image-backup.sh [--force] [--dry-run] [--setup] [--list] [--verify[=DATE]]
   --list            List all backups in S3 with size and hostname
   --verify          Verify latest S3 backup files exist and are non-zero
   --verify=DATE     Verify specific date (YYYY-MM-DD)
+  --stale-check     Ntfy alert if latest backup is older than STALE_BACKUP_HOURS
+  --no-stop-docker  Skip Docker stop (for daytime test runs with no downtime)
 ```
 
 SHA-256 checksums are computed in-flight during upload via `tee >(sha256sum ...)` — the compressed stream forks to the hash and S3 simultaneously with no re-download. Stored per partition in the manifest.
@@ -237,9 +244,11 @@ pi-image-restore.sh [options]
   --date YYYY-MM-DD           Use a specific backup (default: latest)
   --device /dev/...           Target device for full restore
   --yes                       Skip confirmation prompts
-  --verify /dev/...           Verify a flashed device against S3 manifest (dd format)
+  --resize                    Expand last partition to fill device after restore
+  --host <hostname>           Select a specific host's backups (multi-Pi setups)
   --extract <path>            Extract a file or directory from a backup (Linux only)
   --partition <name>          Partition to mount for --extract (default: largest non-boot)
+  --verify /dev/...           Verify a flashed device against S3 manifest (dd format)
 ```
 
 ---
