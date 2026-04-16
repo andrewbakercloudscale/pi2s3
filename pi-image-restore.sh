@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================
-# pi-image-restore.sh — Flash a Pi MI image from S3 to new storage
+# pi-image-restore.sh — Restore a pi2s3 backup from S3 to new storage
 #
 # Supports two backup formats:
 #
@@ -101,6 +101,25 @@ while [[ $# -gt 0 ]]; do
         --host)           shift; HOST_FILTER="${1:-}" ;;
         --host=*)         HOST_FILTER="${1#--host=}" ;;
         --resize)         RESIZE=true ;;
+        --help)
+            echo "Usage: pi-image-restore.sh [options]
+
+  (no args)                  Interactive restore (prompts for date and device)
+  --list                     List all available backups
+  --date YYYY-MM-DD          Use a specific backup date (default: latest)
+  --device /dev/...          Target block device for full restore
+  --yes                      Skip all confirmation prompts
+  --resize                   Expand last partition to fill device after restore
+  --host <hostname>          Select a specific host's backups (multi-Pi setups)
+  --extract <path>           Extract a file or directory — no target device needed
+  --partition <name>         Partition to use for --extract (default: largest non-boot)
+  --verify /dev/...          Verify a flashed device against the S3 manifest
+  --help                     Show this help
+
+Requires: Linux with partclone, sfdisk, gunzip, AWS CLI v2
+Optional: pv (progress bar), gpg (if backup is encrypted)"
+            exit 0
+            ;;
         *)
             echo "Unknown option: $1"
             echo "Usage: $0 [--list] [--date YYYY-MM-DD] [--device /dev/...] [--yes] [--resize] [--verify /dev/...] [--extract <path>] [--partition <name>] [--host <hostname>]"
@@ -136,7 +155,7 @@ get_manifest_field() {
 
 # ── List backups ──────────────────────────────────────────────────────────────
 list_backups() {
-    log "Available Pi MI backups in s3://${S3_BUCKET}/${S3_PREFIX}/:"
+    log "Available pi2s3 backups in s3://${S3_BUCKET}/${S3_PREFIX}/:"
     echo ""
 
     local dates
@@ -178,7 +197,7 @@ list_backups() {
 # Linux only — requires losetup + mount (not available on macOS).
 do_extract() {
     log "========================================================"
-    log "  Pi MI — partial/file-level restore from S3"
+    log "  pi2s3 — partial/file-level restore from S3"
     log "========================================================"
     echo ""
 
@@ -470,7 +489,7 @@ fi
 # For partclone format, verification happens inline during restore.
 if [[ -n "${VERIFY_DEVICE}" ]]; then
     log "========================================================"
-    log "  Pi MI — post-flash device verification"
+    log "  pi2s3 — post-flash device verification"
     log "========================================================"
 
     [[ ! -b "${VERIFY_DEVICE}" ]] && die "Device not found: ${VERIFY_DEVICE}"
@@ -550,7 +569,7 @@ fi
 
 # ── Header ────────────────────────────────────────────────────────────────────
 log "========================================================"
-log "  Pi MI — restore from S3"
+log "  pi2s3 — restore from S3"
 log "========================================================"
 echo ""
 

@@ -133,6 +133,7 @@ LIST=false
 VERIFY=false
 VERIFY_DATE=""
 STALE_CHECK=false
+COST=false
 
 for arg in "$@"; do
     case "$arg" in
@@ -144,6 +145,22 @@ for arg in "$@"; do
         --verify=*)        VERIFY=true; VERIFY_DATE="${arg#--verify=}" ;;
         --no-stop-docker)  STOP_DOCKER=false ;;
         --stale-check)     STALE_CHECK=true ;;
+        --cost)            COST=true ;;
+        --help)            echo "Usage: pi-image-backup.sh [options]
+  (no args)          Run nightly backup
+  --force            Skip duplicate-check (run even if today's backup exists)
+  --dry-run          Show what would happen without uploading anything
+  --setup            Create S3 lifecycle policy (run once after install)
+  --list             List all backups in S3 with size and hostname
+  --verify           Verify latest backup files exist and are non-zero in S3
+  --verify=DATE      Verify a specific backup date (YYYY-MM-DD)
+  --stale-check      Alert via ntfy if latest backup is older than STALE_BACKUP_HOURS
+  --cost             Show S3 storage used and estimated monthly cost
+  --no-stop-docker   Skip Docker stop (for daytime test runs, no downtime)
+  --help             Show this help
+
+Config: ${SCRIPT_DIR}/config.env
+Log:    /var/log/pi2s3-backup.log"; exit 0 ;;
     esac
 done
 
@@ -327,6 +344,57 @@ ${_LOG_TAIL}}" \
     fi
 }
 [[ "${STALE_CHECK}" == "true" ]] && stale_check
+
+# ── Cost estimate ─────────────────────────────────────────────────────────────
+cost_estimate() {
+    log "========================================================"
+    log "  pi2s3 — S3 storage & cost estimate"
+    log "  Host:   ${HOST_SHORT}"
+    log "  Bucket: s3://${S3_BUCKET}/${S3_PREFIX}/"
+    log "========================================================"
+
+    local _dates _total_bytes=0 _count=0
+    _dates=$(aws_cmd s3 ls "s3://${S3_BUCKET}/${S3_PREFIX}/" 2>/dev/null \
+        | grep PRE | awk '{print $2}' | tr -d '/' | sort || true)
+
+    if [[ -z "${_dates}" ]]; then
+        log "No backups found."
+        exit 0
+    fi
+
+    while IFS= read -r _d; do
+        [[ -z "${_d}" ]] && continue
+        _sz=$(aws_cmd s3 ls --recursive "s3://${S3_BUCKET}/${S3_PREFIX}/${_d}/" 2>/dev/null \
+            | awk '{sum+=$3} END{print sum+0}')
+        _sz_h=$(numfmt --to=iec "${_sz}" 2>/dev/null || echo "${_sz} B")
+        log "  ${_d}  ${_sz_h}"
+        _total_bytes=$(( _total_bytes + _sz ))
+        (( _count++ )) || true
+    done <<< "${_dates}"
+
+    local _total_gb _price_per_gb _monthly
+    _total_gb=$(awk "BEGIN {printf \"%.2f\", ${_total_bytes}/1073741824}")
+
+    case "${S3_STORAGE_CLASS}" in
+        STANDARD)    _price_per_gb=0.023 ;;
+        STANDARD_IA) _price_per_gb=0.0125 ;;
+        ONEZONE_IA)  _price_per_gb=0.01 ;;
+        GLACIER_IR)  _price_per_gb=0.004 ;;
+        *)           _price_per_gb=0.023 ;;
+    esac
+
+    _monthly=$(awk "BEGIN {printf \"%.2f\", ${_total_gb} * ${_price_per_gb}}")
+
+    log ""
+    log "  Backups:       ${_count}"
+    log "  Total stored:  $(numfmt --to=iec ${_total_bytes} 2>/dev/null || echo "${_total_bytes} B")"
+    log "  Storage class: ${S3_STORAGE_CLASS} (\$${_price_per_gb}/GB/month, us-east-1 rate)"
+    log "  Est. cost:     \$${_monthly}/month"
+    log "  (Actual cost varies by region — af-south-1 is ~10% higher)"
+    log "========================================================"
+    exit 0
+}
+[[ "${COST}" == "true" ]] && cost_estimate
 
 trap on_exit EXIT
 
@@ -939,5 +1007,5 @@ if [[ "${NTFY_LEVEL}" != "failure" && "${DRY_RUN}" != "true" ]]; then
 Bucket: s3://${S3_BUCKET}/${S3_DATE_PREFIX}/
 Size:  ${TOTAL_COMPRESSED_HUMAN} compressed (from ${TOTAL_USED_HUMAN} used)
 Time:  ${TOTAL_ELAPSED}s${_VERIFY_LINE}"
-    ntfy_send "Pi MI backup complete" "${_NTFY_MSG}" "low" "white_check_mark,floppy_disk"
+    ntfy_send "pi2s3 backup complete" "${_NTFY_MSG}" "low" "white_check_mark,floppy_disk"
 fi

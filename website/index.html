@@ -593,6 +593,7 @@
     <a href="#prerequisites" class="hide-sm">Prerequisites</a>
     <a href="#quickstart" class="hide-sm">Quick start</a>
     <a href="#restore" class="hide-sm">Restore</a>
+    <a href="#security" class="hide-sm">Security</a>
     <a href="#troubleshooting" class="hide-sm">Troubleshooting</a>
     <a href="https://andrewbaker.ninja" target="_blank" class="hide-sm">andrewbaker.ninja</a>
     <a href="https://github.com/andrewbakercloudscale/pi2s3" target="_blank" class="btn-gh">
@@ -1083,6 +1084,58 @@
   <p style="margin-top:1.5rem; color: var(--muted); font-size: 0.9rem;">S3 lifecycle policy is installed automatically by <code>install.sh --setup</code>. Images beyond <code>MAX_IMAGES</code> (default: 60) are deleted automatically. Switch to GLACIER_IR for long term cold storage at ~80% less cost.</p>
 </section>
 
+<!-- SECURITY & RELIABILITY -->
+<hr class="divider" />
+<section id="security">
+  <div class="section-label">Security &amp; Reliability</div>
+  <h2>Backups you can trust</h2>
+  <p class="section-intro">Five layers that catch failures before they become disasters.</p>
+
+  <div class="card-grid">
+    <div class="card">
+      <h3>Client-side encryption</h3>
+      <p>Each partition image is encrypted with GPG AES-256 <em>before</em> it leaves your Pi. Even full S3 bucket access is useless without the passphrase — which lives only in <code>config.env</code>, never in S3.</p>
+      <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="cmt"># config.env</span>
+<span class="val">BACKUP_ENCRYPTION_PASSPHRASE</span>=<span class="str">"my-strong-passphrase"</span></pre>
+      <p style="margin-top:0.5rem; color: var(--muted); font-size:0.85rem;">Requires: <code>sudo apt install gpg</code>. Restore script detects encryption automatically.</p>
+    </div>
+    <div class="card">
+      <h3>Bandwidth throttle</h3>
+      <p>Limit upload speed so nightly backups don't saturate your home or office connection. Uses <code>pv</code> in the upload pipeline — no AWS config changes needed.</p>
+      <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="cmt"># config.env</span>
+<span class="val">AWS_TRANSFER_RATE_LIMIT</span>=<span class="str">"2m"</span>   <span class="cmt"># 2 MB/s</span></pre>
+      <p style="margin-top:0.5rem; color: var(--muted); font-size:0.85rem;">Requires: <code>sudo apt install pv</code>. Use <code>500k</code>, <code>2m</code>, or <code>1g</code> format.</p>
+    </div>
+    <div class="card">
+      <h3>Auto-verify after backup</h3>
+      <p>After every upload, the script re-lists S3 to confirm every uploaded file is non-zero bytes. Silent upload failures are caught immediately and reported via push notification.</p>
+      <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="cmt"># config.env (default: true)</span>
+<span class="val">BACKUP_AUTO_VERIFY</span>=<span class="str">true</span></pre>
+      <p style="margin-top:0.5rem; color: var(--muted); font-size:0.85rem;">Verification result is included in the ntfy success notification.</p>
+    </div>
+    <div class="card">
+      <h3>Preflight health checks</h3>
+      <p>Before stopping Docker, the script checks: all containers are healthy, free disk space exceeds the threshold, and no recent I/O errors in <code>dmesg</code>. Warns (or aborts) before touching your running stack.</p>
+      <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="cmt"># config.env</span>
+<span class="val">PREFLIGHT_MIN_FREE_MB</span>=<span class="str">500</span>
+<span class="val">PREFLIGHT_ABORT_ON_WARN</span>=<span class="str">false</span></pre>
+    </div>
+    <div class="card">
+      <h3>Stale backup alert</h3>
+      <p>A separate daily cron job checks S3 for a recent backup and sends a push alert if none is found within <code>STALE_BACKUP_HOURS</code>. Catches silent cron failures — including the Pi being offline.</p>
+      <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="cmt"># config.env (default: true)</span>
+<span class="val">STALE_CHECK_ENABLED</span>=<span class="str">true</span>
+<span class="val">STALE_BACKUP_HOURS</span>=<span class="str">25</span></pre>
+    </div>
+    <div class="card">
+      <h3>Crash-safe Docker restart</h3>
+      <p>An <code>on_exit</code> trap guarantees containers are restarted even if the backup script crashes mid-imaging. A separate post-backup cron job (30 min after backup) runs a second check to confirm containers came back up.</p>
+      <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="cmt"># config.env (default: true)</span>
+<span class="val">POST_BACKUP_CHECK_ENABLED</span>=<span class="str">true</span></pre>
+    </div>
+  </div>
+</section>
+
 <!-- TROUBLESHOOTING -->
 <hr class="divider" />
 <section id="troubleshooting">
@@ -1118,6 +1171,7 @@
   <div>
     <div class="footer-brand">pi<span>2</span>s3</div>
     <div class="footer-meta" style="margin-top:0.4rem;">Built by <a href="https://andrewbaker.ninja" target="_blank">Andrew Baker</a> · Group CIO, Capitec Bank</div>
+    <div style="margin-top:0.5rem;"><a href="https://github.com/andrewbakercloudscale/pi2s3/releases/tag/v1.2.0" target="_blank" style="display:inline-block; background: var(--surface2); border: 1px solid var(--border); border-radius:4px; padding:2px 8px; font-size:0.75rem; color: var(--accent); text-decoration:none; font-family: monospace;">v1.2.0</a></div>
   </div>
   <div class="footer-links">
     <a href="https://github.com/andrewbakercloudscale/pi2s3" target="_blank">GitHub</a>

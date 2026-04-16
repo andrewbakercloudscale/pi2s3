@@ -1,5 +1,7 @@
 # pi2s3 — Pi to S3
 
+[![CI](https://github.com/andrewbakercloudscale/pi2s3/actions/workflows/ci.yml/badge.svg)](https://github.com/andrewbakercloudscale/pi2s3/actions/workflows/ci.yml)
+
 Block-level nightly backup of a Raspberry Pi to AWS S3. Restore a complete, bootable Pi to new hardware in one command — no manual setup, no secrets to re-enter, no git clones.
 
 Think of it as an AMI for your Pi.
@@ -165,6 +167,9 @@ CRON_SCHEDULE="0 2 * * *"     # 2:00am daily
 # Bandwidth throttle (requires: sudo apt install pv)
 AWS_TRANSFER_RATE_LIMIT=""     # e.g. "2m" = 2 MB/s, "500k" = 500 KB/s. blank = unlimited
 
+# Client-side encryption (requires: sudo apt install gpg)
+BACKUP_ENCRYPTION_PASSPHRASE="" # blank = S3 SSE only. Set to encrypt before upload.
+
 # Split-device (advanced)
 BACKUP_EXTRA_DEVICE=""         # image a second device alongside boot (see below)
 
@@ -189,7 +194,7 @@ Costs vary by region. `af-south-1` (Cape Town) is slightly higher than `us-east-
 ## Backup script
 
 ```
-pi-image-backup.sh [--force] [--dry-run] [--setup] [--list] [--verify[=DATE]] [--stale-check]
+pi-image-backup.sh [options]
 
   --force           Skip the duplicate-check (run even if today's backup exists)
   --dry-run         Show what would happen without uploading anything
@@ -198,7 +203,9 @@ pi-image-backup.sh [--force] [--dry-run] [--setup] [--list] [--verify[=DATE]] [-
   --verify          Verify latest S3 backup files exist and are non-zero
   --verify=DATE     Verify specific date (YYYY-MM-DD)
   --stale-check     Ntfy alert if latest backup is older than STALE_BACKUP_HOURS
+  --cost            Show S3 storage used and estimated monthly cost
   --no-stop-docker  Skip Docker stop (for daytime test runs with no downtime)
+  --help            Show usage
 ```
 
 SHA-256 checksums are computed in-flight during upload via `tee >(sha256sum ...)` — the compressed stream forks to the hash and S3 simultaneously with no re-download. Stored per partition in the manifest.
@@ -389,6 +396,42 @@ BACKUP_EXTRA_DEVICE="/dev/sda"
 ```
 
 The script will then image both devices, storing the second as `pi-image-extra-sda-<timestamp>.img.gz` alongside the boot image.
+
+---
+
+## Multi-Pi setups
+
+pi2s3 supports multiple Pis sharing a single S3 bucket. Each Pi stores its backups under `pi-image-backup/<hostname>/` automatically — no config needed.
+
+### Per-host retention
+
+Add per-host retention overrides in `config.env` (replace hyphens in hostname with underscores):
+
+```bash
+MAX_IMAGES=60           # global default
+MAX_IMAGES_my_pi_5=30  # override for host "my-pi-5"
+MAX_IMAGES_pi_zero=7   # override for host "pi-zero"
+```
+
+### Restoring from a specific Pi
+
+If multiple Pi hostnames exist in the bucket, `pi-image-restore.sh` prompts you to choose. Or specify directly:
+
+```bash
+bash ~/pi2s3/pi-image-restore.sh --host my-pi-5
+```
+
+### Stale check per Pi
+
+The `--stale-check` cron runs on each Pi independently and checks only that Pi's own backups under its hostname prefix.
+
+### Cost estimate
+
+See actual S3 usage and estimated monthly cost for the current host:
+
+```bash
+bash ~/pi2s3/pi-image-backup.sh --cost
+```
 
 ---
 
