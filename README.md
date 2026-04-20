@@ -181,6 +181,7 @@ DB_CONTAINER="auto"            # "auto" | "container-name" | "" (native)
 DB_ROOT_PASSWORD=""            # blank = auto-read from container env
 
 # Site availability probe (used with DB lock)
+PROBE_URL=""                   # blank = auto-detect from CF_SITE_HOSTNAME
 PROBE_LATEST_POST=true         # probe latest WP post via REST API instead of homepage
 PROBE_INTERVAL=60              # seconds between probes
 
@@ -201,6 +202,23 @@ POST_BACKUP_CMD=""             # e.g. "systemctl start mariadb php8.2-fpm nginx"
 
 # Split-device (advanced)
 BACKUP_EXTRA_DEVICE=""         # image a second device alongside boot (see below)
+
+# Post-backup auto-verify
+BACKUP_AUTO_VERIFY=true        # re-check S3 after every backup; result in ntfy notification
+
+# Post-backup container safety check
+POST_BACKUP_CHECK_ENABLED=true   # separate cron ~30 min after backup confirms containers came back up
+POST_BACKUP_CHECK_SCHEDULE="30 2 * * *"  # adjust if backup typically runs longer than 30 min
+
+# Pre-backup health checks
+PREFLIGHT_ENABLED=true         # check container health, free disk, I/O errors before imaging
+PREFLIGHT_MIN_FREE_MB=500      # abort if less than this much free disk space (MB)
+PREFLIGHT_ABORT_ON_WARN=false  # false = warn but proceed; true = abort on any preflight warning
+
+# Missed backup alert
+STALE_CHECK_ENABLED=true       # daily cron checks S3 for a recent backup; ntfy if none found
+STALE_CHECK_SCHEDULE="0 6 * * *"  # run well after backup window (default: 6am)
+STALE_BACKUP_HOURS=25          # alert if no backup seen within this many hours
 
 # Notifications
 NTFY_LEVEL="all"               # "all" | "failure"
