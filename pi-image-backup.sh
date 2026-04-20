@@ -113,6 +113,11 @@ BACKUP_AUTO_VERIFY="${BACKUP_AUTO_VERIFY:-true}"
 BACKUP_ENCRYPTION_PASSPHRASE="${BACKUP_ENCRYPTION_PASSPHRASE:-}"
 PRE_BACKUP_CMD="${PRE_BACKUP_CMD:-}"
 POST_BACKUP_CMD="${POST_BACKUP_CMD:-}"
+DB_CONTAINER="${DB_CONTAINER:-auto}"
+DB_ROOT_PASSWORD="${DB_ROOT_PASSWORD:-}"
+PROBE_URL="${PROBE_URL:-}"
+PROBE_LATEST_POST="${PROBE_LATEST_POST:-true}"
+PROBE_INTERVAL="${PROBE_INTERVAL:-60}"
 # ─────────────────────────────────────────────────────────────────────────────
 
 DATE=$(date +%Y-%m-%d)
@@ -171,6 +176,16 @@ _CONTAINERS_STOPPED=false
 _STOPPED_IDS=""
 _PRE_BACKUP_RAN=false
 _POST_BACKUP_RAN=false
+_USE_DB_LOCK=false
+_DB_LOCKED=false
+_DB_CONTAINER=""
+_DB_ROOT_PASSWORD=""
+_DB_LOCK_PID=""
+_DB_CONN_ID=""
+_PROBE_PID=""
+_PROBE_LOG=""
+_PROBE_URL_USED=""
+_PROBE_RESULTS=""
 _START_TIME=$(date +%s)
 _GPG_PASS_FILE=""
 
@@ -195,6 +210,198 @@ ntfy_send() {
         "${extra[@]}" \
         -d "$msg" \
         "${NTFY_URL}" > /dev/null 2>&1 || true
+}
+
+# ── MariaDB/MySQL consistent-snapshot lock ───────────────────────────────────
+# Issues FLUSH TABLES WITH READ LOCK, keeping all containers/services running.
+# Reads and cached pages are served normally during imaging; only writes block.
+# The lock is held by a background connection using SELECT SLEEP(86400) as a
+# keepalive. db_unlock() kills that connection by its ID, releasing the lock.
+#
+# Supports three modes (set via DB_CONTAINER in config.env):
+#   "auto"          — scan running containers for any mariadb/mysql image
+#   "my_container"  — explicit container name
+#   ""              — no container; use native mariadb/mysql on localhost
+# DB_ROOT_PASSWORD: leave blank to auto-read from the container's environment.
+# If no DB is found/configured, falls back silently to STOP_DOCKER.
+db_lock() {
+    # ── Resolve container ────────────────────────────────────────────────────
+    if [[ "${DB_CONTAINER}" == "auto" ]] \
+       && command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
+        _DB_CONTAINER=$(docker ps --format '{{.Names}} {{.Image}}' 2>/dev/null \
+            | grep -iE '\bmariadb\b|\bmysql\b' | awk '{print $1}' | head -1 || true)
+        if [[ -z "${_DB_CONTAINER}" ]]; then
+            log "  DB lock: no MariaDB/MySQL container found — using STOP_DOCKER fallback"
+            return 0
+        fi
+    elif [[ -n "${DB_CONTAINER}" && "${DB_CONTAINER}" != "auto" ]]; then
+        _DB_CONTAINER="${DB_CONTAINER}"
+    fi
+    # Both blank → no DB lock configured; caller falls back to STOP_DOCKER
+    if [[ -z "${_DB_CONTAINER}" && -z "${DB_ROOT_PASSWORD}" ]]; then
+        return 0
+    fi
+
+    # ── Resolve password ─────────────────────────────────────────────────────
+    _DB_ROOT_PASSWORD="${DB_ROOT_PASSWORD:-}"
+    if [[ -z "${_DB_ROOT_PASSWORD}" && -n "${_DB_CONTAINER}" ]]; then
+        _DB_ROOT_PASSWORD=$(docker exec "${_DB_CONTAINER}" env 2>/dev/null \
+            | grep -E "^MYSQL_ROOT_PASSWORD=|^MARIADB_ROOT_PASSWORD=" \
+            | cut -d= -f2- | head -1 || true)
+        if [[ -z "${_DB_ROOT_PASSWORD}" ]]; then
+            log "  DB lock: could not read root password from container env — using STOP_DOCKER fallback"
+            _DB_CONTAINER=""
+            return 0
+        fi
+    fi
+
+    local _target="${_DB_CONTAINER:-localhost}"
+    log ""
+    log "Locking DB for consistent snapshot (${_target})..."
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        log "  [DRY RUN] FLUSH TABLES WITH READ LOCK — skipped"
+        _DB_LOCKED=true
+        return 0
+    fi
+
+    # Run FTWRL in background. The SLEEP(86400) keepalive holds the connection
+    # (and the global read lock) open until db_unlock() kills the connection ID.
+    # A unique comment allows processlist lookup even if multiple sleep queries exist.
+    if [[ -n "${_DB_CONTAINER}" ]]; then
+        docker exec -i "${_DB_CONTAINER}" \
+            mariadb -u root -p"${_DB_ROOT_PASSWORD}" --batch --silent \
+            -e "FLUSH TABLES WITH READ LOCK; FLUSH LOGS; SELECT /* pi2s3-lock */ SLEEP(86400);" \
+            2>/dev/null &
+    else
+        { mariadb -u root -p"${_DB_ROOT_PASSWORD}" --batch --silent \
+              -e "FLUSH TABLES WITH READ LOCK; FLUSH LOGS; SELECT /* pi2s3-lock */ SLEEP(86400);" \
+          || mysql -u root -p"${_DB_ROOT_PASSWORD}" --batch --silent \
+              -e "FLUSH TABLES WITH READ LOCK; FLUSH LOGS; SELECT /* pi2s3-lock */ SLEEP(86400);" ; } \
+          2>/dev/null &
+    fi
+    _DB_LOCK_PID=$!
+
+    sleep 3  # allow FTWRL to establish before imaging starts
+
+    if ! kill -0 "${_DB_LOCK_PID}" 2>/dev/null; then
+        log "  WARNING: DB lock process exited immediately — check DB_ROOT_PASSWORD / container name"
+        log "  Falling back to STOP_DOCKER"
+        _DB_CONTAINER=""; _DB_LOCK_PID=""; return 0
+    fi
+
+    # Find the connection ID so db_unlock() can KILL it cleanly via SQL
+    local _q="SELECT ID FROM information_schema.PROCESSLIST WHERE INFO LIKE '%pi2s3-lock%' LIMIT 1;"
+    if [[ -n "${_DB_CONTAINER}" ]]; then
+        _DB_CONN_ID=$(docker exec "${_DB_CONTAINER}" \
+            mariadb -u root -p"${_DB_ROOT_PASSWORD}" --batch --silent -e "${_q}" \
+            2>/dev/null | tail -1 || true)
+    else
+        _DB_CONN_ID=$(mariadb -u root -p"${_DB_ROOT_PASSWORD}" --batch --silent -e "${_q}" \
+            2>/dev/null | tail -1 || true)
+    fi
+
+    _DB_LOCKED=true
+    log "  LOCKED — FLUSH TABLES WITH READ LOCK active (conn ${_DB_CONN_ID:-?})"
+    log "  Site stays UP. Reads/cached pages served. Writes blocked during imaging."
+}
+
+db_unlock() {
+    [[ "${_DB_LOCKED}" != "true" ]] && return 0
+    log ""
+    log "Unlocking DB..."
+
+    if [[ "${DRY_RUN}" != "true" && -n "${_DB_CONN_ID:-}" ]]; then
+        # KILL the lock-holding connection by its ID — releases FTWRL server-side
+        local _q="KILL ${_DB_CONN_ID};"
+        if [[ -n "${_DB_CONTAINER}" ]]; then
+            docker exec "${_DB_CONTAINER}" \
+                mariadb -u root -p"${_DB_ROOT_PASSWORD}" --batch --silent -e "${_q}" \
+                2>/dev/null || true
+        else
+            mariadb -u root -p"${_DB_ROOT_PASSWORD}" --batch --silent -e "${_q}" \
+                2>/dev/null || true
+        fi
+    fi
+    wait "${_DB_LOCK_PID:-}" 2>/dev/null || true
+    _DB_LOCK_PID=""; _DB_CONN_ID=""; _DB_LOCKED=false
+    log "  DB unlocked — writes unblocked."
+}
+
+# ── Site availability probe ───────────────────────────────────────────────────
+# Pings the site every PROBE_INTERVAL seconds during partition imaging.
+# Cache-busted via query param + no-cache headers so every request hits PHP/DB.
+# For WordPress: auto-discovers the latest post URL via REST API (PROBE_LATEST_POST=true).
+# Results are logged and included in the ntfy success notification.
+probe_start() {
+    local url="${PROBE_URL:-}"
+
+    # Auto-discover latest WordPress post URL via REST API (cache-busts CDN + WP cache)
+    if [[ "${PROBE_LATEST_POST}" == "true" && -z "${url}" && -n "${CF_SITE_HOSTNAME:-}" ]]; then
+        local _api="https://${CF_SITE_HOSTNAME}/wp-json/wp/v2/posts?per_page=1&_fields=link"
+        local _latest
+        _latest=$(curl -sf --max-time 8 "${_api}" 2>/dev/null \
+            | python3 -c "import sys,json; posts=json.load(sys.stdin); print(posts[0]['link'])" \
+            2>/dev/null || true)
+        if [[ -n "${_latest}" ]]; then
+            url="${_latest%/}"  # strip trailing slash for clean ?param appending
+            log "  Probe URL (latest post): ${url}"
+        fi
+    fi
+
+    [[ -z "${url}" && -n "${CF_SITE_HOSTNAME:-}" ]] && url="https://${CF_SITE_HOSTNAME}/"
+    [[ -z "${url}" ]] && return 0
+
+    _PROBE_URL_USED="${url}"
+    _PROBE_LOG=$(mktemp)
+    log ""
+    log "Starting site probe: ${url} (every ${PROBE_INTERVAL}s)"
+    log "  Cache-busted via ?pi2s3t=<timestamp> + no-cache headers"
+
+    (
+        while true; do
+            local _t _code _elapsed
+            _t=$(date +%s)
+            read -r _code _elapsed < <(
+                curl -s -o /dev/null -w "%{http_code} %{time_total}" \
+                    -H "Cache-Control: no-cache, no-store, must-revalidate" \
+                    -H "Pragma: no-cache" \
+                    -H "X-pi2s3-probe: 1" \
+                    --max-time 15 \
+                    "${url}?pi2s3t=${_t}" 2>/dev/null || echo "ERR 0"
+            )
+            printf '[%s] HTTP %s (%ss)\n' "$(date '+%H:%M:%S')" "${_code}" "${_elapsed}" \
+                >> "${_PROBE_LOG}"
+            sleep "${PROBE_INTERVAL}"
+        done
+    ) &
+    _PROBE_PID=$!
+}
+
+probe_stop() {
+    [[ -z "${_PROBE_PID:-}" ]] && return 0
+    kill "${_PROBE_PID}" 2>/dev/null || true
+    wait "${_PROBE_PID}" 2>/dev/null || true
+    _PROBE_PID=""
+    [[ ! -f "${_PROBE_LOG:-}" ]] && return 0
+
+    local _total _ok _fail
+    _total=$(grep -c . "${_PROBE_LOG}" 2>/dev/null || echo 0)
+    _ok=$(grep -c " HTTP 200 " "${_PROBE_LOG}" 2>/dev/null || echo 0)
+    _fail=$(( _total - _ok ))
+
+    log ""
+    log "Site probe summary — ${_PROBE_URL_USED:-?} (${_total} check(s)):"
+    while IFS= read -r _line; do log "  ${_line}"; done < "${_PROBE_LOG}"
+
+    if [[ "${_fail}" -gt 0 ]]; then
+        _PROBE_RESULTS="Site probe: ${_ok}/${_total} OK — ${_fail} non-200 during imaging"
+        log "  WARNING: ${_fail} check(s) non-200 — site may have been partially unavailable"
+    else
+        _PROBE_RESULTS="Site probe: ${_total}/${_total} checks passed ✓"
+        log "  All checks passed — site stayed up throughout imaging"
+    fi
+    rm -f "${_PROBE_LOG}"
 }
 
 # ── Stale backup check ────────────────────────────────────────────────────────
@@ -317,6 +524,9 @@ partclone_tool() {
 on_exit() {
     local rc=$?
     [[ -n "${_GPG_PASS_FILE}" ]] && rm -f "${_GPG_PASS_FILE}"
+    # Safety net: ensure DB is unlocked and probe is stopped on crash
+    [[ "${_DB_LOCKED}" == "true" ]] && db_unlock
+    [[ -n "${_PROBE_PID:-}" ]] && { kill "${_PROBE_PID}" 2>/dev/null || true; wait "${_PROBE_PID}" 2>/dev/null || true; rm -f "${_PROBE_LOG:-}"; _PROBE_PID=""; }
     # Safety net: if PRE_BACKUP_CMD ran but POST_BACKUP_CMD didn't (crash), run it now.
     if [[ "${_PRE_BACKUP_RAN}" == "true" && "${_POST_BACKUP_RAN}" == "false" \
           && -n "${POST_BACKUP_CMD}" ]]; then
@@ -695,14 +905,24 @@ fi
 # ── Pre-backup health check ───────────────────────────────────────────────────
 preflight_health
 
-# ── Stop Docker for consistent snapshot ──────────────────────────────────────
-# Containers are stopped for the duration of partition imaging.
-# With partclone reading only used blocks (~10–30GB typical), downtime is
-# 5–15 minutes — far less than the old dd approach (60–90 min on a full NVMe).
-if [[ "${STOP_DOCKER}" == "true" ]] \
+# ── Consistent snapshot: DB lock (preferred) or Docker stop (fallback) ────────
+# DB lock path: start probe + FLUSH TABLES WITH READ LOCK. All containers stay
+# running. Site serves reads/cached pages throughout imaging (~5-15 min).
+# Docker stop path: used only when no DB is configured (STOP_DOCKER=true).
+if [[ -n "${DB_CONTAINER}" || -n "${DB_ROOT_PASSWORD}" ]]; then
+    probe_start
+    db_lock
+    if [[ "${_DB_LOCKED}" == "true" ]]; then
+        _USE_DB_LOCK=true
+    else
+        # db_lock fell back (no container found, bad credentials, etc.)
+        probe_stop
+    fi
+fi
+
+if [[ "${_USE_DB_LOCK}" != "true" && "${STOP_DOCKER}" == "true" ]] \
    && command -v docker &>/dev/null \
    && docker info &>/dev/null 2>&1; then
-
     _STOPPED_IDS=$(docker ps -q 2>/dev/null || true)
     if [[ -n "${_STOPPED_IDS}" ]]; then
         CONTAINER_COUNT=$(echo "${_STOPPED_IDS}" | wc -w | tr -d ' ')
@@ -861,6 +1081,12 @@ fi
 
 BACKUP_END=$(date +%s)
 BACKUP_DURATION=$(( BACKUP_END - BACKUP_START ))
+
+# ── Unlock DB and collect probe results ──────────────────────────────────────
+if [[ "${_USE_DB_LOCK}" == "true" ]]; then
+    db_unlock
+    probe_stop
+fi
 
 # ── Restart Docker after imaging ──────────────────────────────────────────────
 if [[ "${_CONTAINERS_STOPPED}" == "true" && -n "${_STOPPED_IDS}" ]]; then
@@ -1059,9 +1285,11 @@ if [[ "${NTFY_LEVEL}" != "failure" && "${DRY_RUN}" != "true" ]]; then
     _VERIFY_LINE=""
     [[ "${_VERIFY_STATUS}" == "passed" ]] && _VERIFY_LINE=$'\nVerify: all files confirmed in S3'
     [[ "${_VERIFY_STATUS}" == "failed" ]] && _VERIFY_LINE=$'\nVerify: FAILED — check log'
+    _PROBE_LINE=""
+    [[ -n "${_PROBE_RESULTS}" ]] && _PROBE_LINE=$'\n'"${_PROBE_RESULTS}"
     _NTFY_MSG="$(hostname) — ${DATE}
 Bucket: s3://${S3_BUCKET}/${S3_DATE_PREFIX}/
 Size:  ${TOTAL_COMPRESSED_HUMAN} compressed (from ${TOTAL_USED_HUMAN} used)
-Time:  ${TOTAL_ELAPSED}s${_VERIFY_LINE}"
+Time:  ${TOTAL_ELAPSED}s${_VERIFY_LINE}${_PROBE_LINE}"
     ntfy_send "pi2s3 backup complete" "${_NTFY_MSG}" "low" "white_check_mark,floppy_disk"
 fi
