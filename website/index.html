@@ -672,8 +672,8 @@
   <div class="steps">
     <div class="step">
       <div class="step-num">BACKUP · STEP 01</div>
-      <h3>Stop Docker</h3>
-      <p>Containers halt so databases flush all writes to disk. No dirty pages, no recovery needed on restore. Downtime: 5–15 min at 2am.</p>
+      <h3>Quiesce the database</h3>
+      <p>MariaDB/MySQL: <code>FLUSH TABLES WITH READ LOCK</code> — containers stay up, only writes are blocked. No Docker: Docker is stopped briefly. Either way, no dirty pages and no recovery needed on restore.</p>
     </div>
     <div class="step">
       <div class="step-num">BACKUP · STEP 02</div>
@@ -1162,12 +1162,20 @@
 <span class="val">PRE_BACKUP_CMD</span>=<span class="str">"systemctl stop nginx php8.2-fpm mariadb"</span>
 <span class="val">POST_BACKUP_CMD</span>=<span class="str">"systemctl start mariadb php8.2-fpm nginx"</span></pre>
     </div>
+    <div class="card">
+      <h3>Zero-downtime DB lock</h3>
+      <p>For MariaDB/MySQL setups, pi2s3 issues <code>FLUSH TABLES WITH READ LOCK</code> instead of stopping Docker. All containers stay running — only DB writes are blocked during the imaging window. A background probe pings your site every 60 seconds to confirm it stays up.</p>
+      <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="cmt"># config.env</span>
+<span class="val">DB_CONTAINER</span>=<span class="str">"auto"</span>        <span class="cmt"># auto-detect</span>
+<span class="val">PROBE_LATEST_POST</span>=<span class="str">true</span>   <span class="cmt"># probe latest WP post</span></pre>
+      <p style="margin-top:0.5rem; color: var(--muted); font-size:0.85rem;">Falls back to <code>STOP_DOCKER</code> automatically if no DB container is found or the lock fails.</p>
+    </div>
   </div>
 </section>
 
-<!-- WATCHDOG -->
+<!-- WATCHDOG CONFIG -->
 <hr class="divider" />
-<section id="watchdog">
+<section id="watchdog-config">
   <div class="section-label">Watchdog</div>
   <h2>Self-healing tunnel monitor</h2>
   <p class="section-intro">Optional. Runs every 5 minutes as root. If your site or Cloudflare tunnel goes down, it recovers automatically through three escalating phases — no SSH needed.</p>
@@ -1233,7 +1241,7 @@
   <div>
     <div class="footer-brand">pi<span>2</span>s3</div>
     <div class="footer-meta" style="margin-top:0.4rem;">Built by <a href="https://andrewbaker.ninja" target="_blank">Andrew Baker</a> · Group CIO, Capitec Bank</div>
-    <div style="margin-top:0.5rem;"><a href="https://github.com/andrewbakercloudscale/pi2s3/releases/tag/v1.2.0" target="_blank" style="display:inline-block; background: var(--surface2); border: 1px solid var(--border); border-radius:4px; padding:2px 8px; font-size:0.75rem; color: var(--accent); text-decoration:none; font-family: monospace;">v1.2.0</a></div>
+    <div style="margin-top:0.5rem;"><a href="https://github.com/andrewbakercloudscale/pi2s3/releases/tag/v1.4.0" target="_blank" style="display:inline-block; background: var(--surface2); border: 1px solid var(--border); border-radius:4px; padding:2px 8px; font-size:0.75rem; color: var(--accent); text-decoration:none; font-family: monospace;">v1.4.0</a></div>
   </div>
   <div class="footer-links">
     <a href="https://github.com/andrewbakercloudscale/pi2s3" target="_blank">GitHub</a>

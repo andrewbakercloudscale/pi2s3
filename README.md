@@ -59,9 +59,30 @@ RESTORE (run on a Linux machine or another Pi)
 | S3 upload size | ~10 GB (compressed zeros) | ~3–5 GB |
 | Restore | gunzip \| dd | partclone per partition |
 
-### Docker downtime
+### Zero-downtime mode (MariaDB/MySQL)
 
-Containers are stopped for the duration of partition imaging — typically **5–15 minutes** (depending on how much data is used) when scheduled at 2am. Docker is restarted immediately after all partitions are imaged.
+For MariaDB or MySQL setups, pi2s3 can take a consistent snapshot with **zero container downtime** using `FLUSH TABLES WITH READ LOCK` (FTWRL). All containers keep running — only DB writes are blocked during the ~5–15 min imaging window. This is the same technique used by mariabackup and xtrabackup.
+
+```bash
+# config.env
+DB_CONTAINER="auto"   # auto-detect MariaDB/MySQL container (or use explicit name)
+```
+
+Set `DB_CONTAINER="auto"` and pi2s3 will:
+1. Scan running containers for any MariaDB/MySQL image
+2. Auto-read `MYSQL_ROOT_PASSWORD` / `MARIADB_ROOT_PASSWORD` from the container env
+3. Issue `FLUSH TABLES WITH READ LOCK` via a persistent background connection
+4. Run partclone on all partitions (containers stay up throughout)
+5. Kill the lock connection and release all locks
+6. Log and report probe results in the ntfy notification
+
+If auto-detection finds no MariaDB/MySQL container (or the lock fails for any reason), the script falls back to `STOP_DOCKER=true` automatically and logs why.
+
+A background **site availability probe** runs every `PROBE_INTERVAL` seconds (default: 60) during imaging, hitting your site with cache-busted requests to confirm it stays up. Set `PROBE_LATEST_POST=true` to auto-discover the latest WordPress post URL via REST API and probe real dynamic content instead of the homepage.
+
+### Docker downtime (default)
+
+If `DB_CONTAINER` is not set, containers are stopped for the duration of partition imaging — typically **5–15 minutes** when scheduled at 2am. Docker is restarted immediately after all partitions are imaged.
 
 This is far better than the old `dd` approach (60–90 minutes on a full NVMe), and gives a fully consistent image: databases like MariaDB/InnoDB have all writes flushed to disk and no new writes occur during the backup. On restore, no recovery step is needed.
 
@@ -159,7 +180,15 @@ MAX_IMAGES=60
 AWS_PROFILE=""                 # blank = default profile or instance role
 S3_STORAGE_CLASS="STANDARD_IA" # ~40% cheaper than STANDARD for backups
 
-# Backup behaviour
+# Zero-downtime DB lock (recommended for MariaDB/MySQL setups)
+DB_CONTAINER="auto"            # "auto" | "container-name" | "" (native)
+DB_ROOT_PASSWORD=""            # blank = auto-read from container env
+
+# Site availability probe (used with DB lock)
+PROBE_LATEST_POST=true         # probe latest WP post via REST API instead of homepage
+PROBE_INTERVAL=60              # seconds between probes
+
+# Backup behaviour (fallback if DB_CONTAINER not set)
 STOP_DOCKER=true               # stop Docker briefly for DB consistency (~10s)
 DOCKER_STOP_TIMEOUT=30         # seconds to wait for containers to stop
 CRON_SCHEDULE="0 2 * * *"     # 2:00am daily

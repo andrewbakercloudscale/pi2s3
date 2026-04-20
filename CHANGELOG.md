@@ -4,6 +4,27 @@ All notable changes to pi2s3 are documented here.
 
 ---
 
+## [1.4.0] — 2026-04-16
+
+### Added
+
+- **Zero-downtime DB lock** (`DB_CONTAINER`) — replaces `STOP_DOCKER` for MariaDB/MySQL setups. Issues `FLUSH TABLES WITH READ LOCK` before imaging and `UNLOCK TABLES` after. All containers stay running throughout — only DB writes are blocked during the imaging window (~5–15 min). Same technique used by mariabackup/xtrabackup.
+  - `DB_CONTAINER="auto"` — scans running containers for any image containing `mariadb` or `mysql`; falls back to `STOP_DOCKER` if none found
+  - `DB_CONTAINER="pi_mariadb"` — explicit container name for deterministic setups
+  - `DB_CONTAINER=""` with `DB_ROOT_PASSWORD` set — native (non-Docker) MariaDB/MySQL on localhost
+  - `DB_ROOT_PASSWORD` auto-read from container environment if not explicitly set (`MYSQL_ROOT_PASSWORD` / `MARIADB_ROOT_PASSWORD`)
+- **Site availability probe** — background curl loop that pings your site every `PROBE_INTERVAL` seconds (default: 60) while partclone runs. Each request is cache-busted (`?pi2s3t=<timestamp>`) and sent with `Cache-Control: no-cache` headers to bypass CDN and WP page cache.
+  - `PROBE_LATEST_POST=true` — auto-discovers the latest WordPress post via REST API and probes that URL instead of the homepage, testing real dynamic content
+  - Results logged and included in the ntfy success notification (e.g. `probe: 8/8 pass`)
+- **`DB_LOCK` → `STOP_DOCKER` fallback** — if `db_lock()` fails (wrong password, no DB, etc.) the script automatically falls back to the standard Docker stop and continues the backup
+
+### Changed
+
+- `STOP_DOCKER` is now the fallback path only; `DB_CONTAINER`-based lock is attempted first when configured
+- `config.env.example`: DB lock section added before `STOP_DOCKER` with inline documentation; probe section added
+
+---
+
 ## [1.3.0] — 2026-04-16
 
 ### Added

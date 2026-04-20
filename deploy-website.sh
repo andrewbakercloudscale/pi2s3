@@ -48,6 +48,13 @@ SYNC_ARGS=(
     s3 sync "${WEBSITE_DIR}/" "s3://${S3_BUCKET}/"
     --delete
     --cache-control "max-age=300, must-revalidate"
+    --exclude "node_modules/*"
+    --exclude "tests/*"
+    --exclude "test-results/*"
+    --exclude "playwright-report/*"
+    --exclude "*.spec.js"
+    --exclude "package.json"
+    --exclude "package-lock.json"
 )
 [[ "${DRY_RUN}" == "true" ]] && SYNC_ARGS+=(--dryrun)
 
