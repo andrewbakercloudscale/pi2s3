@@ -118,6 +118,7 @@ DB_ROOT_PASSWORD="${DB_ROOT_PASSWORD:-}"
 PROBE_URL="${PROBE_URL:-}"
 PROBE_LATEST_POST="${PROBE_LATEST_POST:-true}"
 PROBE_INTERVAL="${PROBE_INTERVAL:-60}"
+BACKUP_EXTRA_DEVICE="${BACKUP_EXTRA_DEVICE:-}"
 # ─────────────────────────────────────────────────────────────────────────────
 
 DATE=$(date +%Y-%m-%d)
@@ -188,6 +189,8 @@ _PROBE_URL_USED=""
 _PROBE_RESULTS=""
 _START_TIME=$(date +%s)
 _GPG_PASS_FILE=""
+_BG_PIDS=()
+_BG_RESULT_DIR=""
 
 log()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 die()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $*" >&2; exit 1; }
@@ -521,9 +524,48 @@ partclone_tool() {
     esac
 }
 
+# image_to_s3 <device> <s3_key> <tool> <result_file>
+# Runs: partclone | compress | [encrypt] | [throttle] | aws s3 cp
+# On success: writes "sha256=<hash>\ncompressed=<bytes>" to <result_file>.
+# Designed to run inline (sequential) or in a background subshell:
+#   image_to_s3 ... &  _BG_PIDS+=("$!")
+image_to_s3() {
+    local _part="$1" _key="$2" _tool="$3" _result_file="$4"
+    local _sha_tmp
+    _sha_tmp=$(mktemp)
+    # -F: allow cloning mounted partitions
+    # shellcheck disable=SC2086
+    sudo "${_tool}" -c -F -s "${_part}" -o - \
+        | ${COMPRESSOR} \
+        | tee >(sha256sum | awk '{print $1}' > "${_sha_tmp}") \
+        | ${ENCRYPT_CMD} \
+        | ${PV_THROTTLE} \
+        | aws_cmd s3 cp - "s3://${S3_BUCKET}/${_key}" \
+            --storage-class "${S3_STORAGE_CLASS}" \
+            --no-progress
+    local _sha _compressed _ch
+    _sha=$(cat "${_sha_tmp}"); rm -f "${_sha_tmp}"
+    _compressed=$(aws_cmd s3 ls "s3://${S3_BUCKET}/${_key}" 2>/dev/null \
+        | awk '{print $3}' | head -1 || echo "0")
+    if [[ "${_compressed:-0}" -eq 0 ]]; then
+        log "ERROR: ${_key} appears empty in S3 after upload"
+        return 1
+    fi
+    _ch=$(numfmt --to=iec "${_compressed}" 2>/dev/null || echo "?")
+    log "  Done: ${_ch} compressed → ${_key}"
+    log "  SHA256: ${_sha}"
+    printf 'sha256=%s\ncompressed=%s\n' "${_sha}" "${_compressed}" > "${_result_file}"
+}
+
 on_exit() {
     local rc=$?
     [[ -n "${_GPG_PASS_FILE}" ]] && rm -f "${_GPG_PASS_FILE}"
+    # Kill any parallel imaging background jobs still running
+    for _bg_pid in "${_BG_PIDS[@]:-}"; do
+        kill "${_bg_pid}" 2>/dev/null || true
+        wait "${_bg_pid}" 2>/dev/null || true
+    done
+    [[ -n "${_BG_RESULT_DIR}" ]] && rm -rf "${_BG_RESULT_DIR}"
     # Safety net: ensure DB is unlocked and probe is stopped on crash
     [[ "${_DB_LOCKED}" == "true" ]] && db_unlock
     [[ -n "${_PROBE_PID:-}" ]] && { kill "${_PROBE_PID}" 2>/dev/null || true; wait "${_PROBE_PID}" 2>/dev/null || true; rm -f "${_PROBE_LOG:-}"; _PROBE_PID=""; }
@@ -973,111 +1015,216 @@ else
 fi
 
 # ── Image each partition with partclone ───────────────────────────────────────
+# Parallelism strategy:
+#   • BACKUP_EXTRA_DEVICE partitions are launched in background at the very start,
+#     running concurrently with ALL boot-device partition imaging (separate physical
+#     bus — SD card / second NVMe / USB drive).
+#   • The boot firmware partition (SD card /boot/firmware) is launched in parallel
+#     with the LAST NVMe partition — two separate buses, same upload pipe.
+#   • All other boot-device partitions run sequentially (same NVMe, upload-bound).
 BACKUP_START=$(date +%s)
 TOTAL_USED_BYTES=0
 TOTAL_COMPRESSED_BYTES=0
 PARTITIONS_JSON=""
-
-log ""
-log "Imaging ${#BOOT_PARTITIONS[@]} partition(s) with partclone..."
-
+EXTRA_PARTS_JSON=""
 UPLOADED_KEYS=()
-for PART in "${BOOT_PARTITIONS[@]}"; do
-    PART_NAME=$(basename "${PART}")
-    FSTYPE=$(lsblk -no FSTYPE "${PART}" 2>/dev/null | tr -d '[:space:]' || echo "")
-    TOOL=$(partclone_tool "${FSTYPE}")
-    PART_KEY="${S3_DATE_PREFIX}/${PART_NAME}-${TIMESTAMP}.img.gz${ENCRYPT_SUFFIX}"
+_BG_RESULT_DIR=$(mktemp -d)
 
-    PART_SIZE_BYTES=$(lsblk -bdno SIZE "${PART}" 2>/dev/null || echo "0")
-    PART_SIZE_HUMAN=$(numfmt --to=iec "${PART_SIZE_BYTES}" 2>/dev/null || echo "?")
-
-    # Get used space (mounted partitions only)
-    PART_USED_BYTES=0
-    PART_USED_HUMAN="?"
-    if df "${PART}" &>/dev/null 2>&1; then
-        PART_USED_BYTES=$(df -B1 --output=used "${PART}" 2>/dev/null | tail -1 | tr -d ' ' || echo "0")
-        PART_USED_HUMAN=$(numfmt --to=iec "${PART_USED_BYTES}" 2>/dev/null || echo "?")
-        TOTAL_USED_BYTES=$(( TOTAL_USED_BYTES + PART_USED_BYTES ))
+# ── Helper: collect partition metadata into local vars ────────────────────────
+# Sets: _PNAME _FSTYPE _TOOL _SIZE_B _SIZE_H _USED_B _USED_H _KEY
+_part_meta() {
+    local _p="$1" _key_prefix="$2"
+    _PNAME=$(basename "${_p}")
+    _FSTYPE=$(lsblk -no FSTYPE "${_p}" 2>/dev/null | tr -d '[:space:]' || echo "")
+    _TOOL=$(partclone_tool "${_FSTYPE}")
+    _SIZE_B=$(lsblk -bdno SIZE "${_p}" 2>/dev/null || echo "0")
+    _SIZE_H=$(numfmt --to=iec "${_SIZE_B}" 2>/dev/null || echo "?")
+    _USED_B=0; _USED_H="?"
+    if df "${_p}" &>/dev/null 2>&1; then
+        _USED_B=$(df -B1 --output=used "${_p}" 2>/dev/null | tail -1 | tr -d ' ' || echo "0")
+        _USED_H=$(numfmt --to=iec "${_USED_B}" 2>/dev/null || echo "?")
     fi
+    _KEY="${_key_prefix}/${_PNAME}-${TIMESTAMP}.img.gz${ENCRYPT_SUFFIX}"
+}
+
+# ── Phase 0: launch BACKUP_EXTRA_DEVICE in background (parallel with all below)
+# Extra device runs on a completely separate bus (second NVMe / USB / SD).
+EXTRA_PART_NAMES=()
+EXTRA_PART_KEYS=()
+EXTRA_PART_FSTYPES=()
+EXTRA_PART_TOOLS=()
+EXTRA_PART_SIZE_B=()
+EXTRA_PART_SIZE_H=()
+EXTRA_PART_USED_B=()
+EXTRA_PART_USED_H=()
+if [[ -n "${BACKUP_EXTRA_DEVICE}" ]]; then
+    if [[ ! -b "${BACKUP_EXTRA_DEVICE}" ]]; then
+        die "BACKUP_EXTRA_DEVICE=${BACKUP_EXTRA_DEVICE} is not a block device."
+    fi
+    mapfile -t _EXTRA_PARTS < <(
+        lsblk -lno NAME,TYPE "${BACKUP_EXTRA_DEVICE}" \
+        | awk '$2=="part"{print "/dev/"$1}' | sort
+    )
+    if [[ ${#_EXTRA_PARTS[@]} -eq 0 ]]; then
+        log "  WARNING: BACKUP_EXTRA_DEVICE=${BACKUP_EXTRA_DEVICE} has no partitions — skipping."
+    else
+        log ""
+        log "Launching extra device ${BACKUP_EXTRA_DEVICE} in background (parallel with boot device)..."
+        for _EP in "${_EXTRA_PARTS[@]}"; do
+            _part_meta "${_EP}" "${S3_DATE_PREFIX}"
+            log "  [bg] ${_EP}  (${_FSTYPE:-unknown}, ${_SIZE_H} total, ${_USED_H} used)"
+            log "  [bg] Tool: ${_TOOL} → ${_KEY}"
+            EXTRA_PART_NAMES+=("${_PNAME}")
+            EXTRA_PART_KEYS+=("${_KEY}")
+            EXTRA_PART_FSTYPES+=("${_FSTYPE}")
+            EXTRA_PART_TOOLS+=("${_TOOL}")
+            EXTRA_PART_SIZE_B+=("${_SIZE_B}")
+            EXTRA_PART_SIZE_H+=("${_SIZE_H}")
+            EXTRA_PART_USED_B+=("${_USED_B}")
+            EXTRA_PART_USED_H+=("${_USED_H}")
+            if [[ "${DRY_RUN}" == "true" ]]; then
+                log "  [DRY RUN] ${_TOOL} -c -s ${_EP} | ${COMPRESSOR_NAME}${ENCRYPT_SUFFIX:+ | gpg} | aws s3 cp -"
+                printf 'sha256=\ncompressed=0\n' > "${_BG_RESULT_DIR}/extra_${_PNAME}"
+            else
+                image_to_s3 "${_EP}" "${_KEY}" "${_TOOL}" \
+                    "${_BG_RESULT_DIR}/extra_${_PNAME}" &
+                _BG_PIDS+=("$!")
+            fi
+        done
+    fi
+fi
+
+# ── Phase 1: boot-device partitions (sequential except the last) ──────────────
+log ""
+log "Imaging ${#BOOT_PARTITIONS[@]} partition(s) on ${BOOT_DEV}..."
+
+LAST_IDX=$(( ${#BOOT_PARTITIONS[@]} - 1 ))
+
+for (( _i=0; _i<LAST_IDX; _i++ )); do
+    PART="${BOOT_PARTITIONS[$_i]}"
+    _part_meta "${PART}" "${S3_DATE_PREFIX}"
+    TOTAL_USED_BYTES=$(( TOTAL_USED_BYTES + _USED_B ))
 
     log ""
-    log "  ${PART}  (${FSTYPE:-unknown}, ${PART_SIZE_HUMAN} total, ${PART_USED_HUMAN} used)"
-    log "  Tool: ${TOOL}"
+    log "  ${PART}  (${_FSTYPE:-unknown}, ${_SIZE_H} total, ${_USED_H} used)"
+    log "  Tool: ${_TOOL}"
 
-    PART_SHA256=""
+    _RFILE="${_BG_RESULT_DIR}/boot_${_PNAME}"
     if [[ "${DRY_RUN}" == "true" ]]; then
-        log "  [DRY RUN] ${TOOL} -c -s ${PART} | ${COMPRESSOR_NAME}${ENCRYPT_SUFFIX:+ | gpg-aes256} | aws s3 cp - s3://${S3_BUCKET}/${PART_KEY}"
-        PART_COMPRESSED_BYTES=0
+        log "  [DRY RUN] ${_TOOL} -c -s ${PART} | ${COMPRESSOR_NAME}${ENCRYPT_SUFFIX:+ | gpg} | aws s3 cp - s3://${S3_BUCKET}/${_KEY}"
+        printf 'sha256=\ncompressed=0\n' > "${_RFILE}"
     else
-        # -F: allow cloning mounted partitions (all NVMe partitions remain mounted)
-        # stderr is intentionally NOT suppressed so partclone errors/warnings land in the
-        # backup log and can fail the pipeline via set -euo pipefail.
-        # SHA-256 is computed on the compressed stream in-flight via tee — no re-download needed.
-        _SHA_TMP=$(mktemp)
-        # shellcheck disable=SC2086
-        sudo "${TOOL}" -c -F -s "${PART}" -o - \
-            | ${COMPRESSOR} \
-            | tee >(sha256sum | awk '{print $1}' > "${_SHA_TMP}") \
-            | ${ENCRYPT_CMD} \
-            | ${PV_THROTTLE} \
-            | aws_cmd s3 cp - "s3://${S3_BUCKET}/${PART_KEY}" \
-                --storage-class "${S3_STORAGE_CLASS}" \
-                --no-progress
-        # sha256sum completes before the S3 upload (hashing is CPU-bound, upload is network-bound)
-        PART_SHA256=$(cat "${_SHA_TMP}"); rm -f "${_SHA_TMP}"
-
-        PART_COMPRESSED_BYTES=$(aws_cmd s3 ls "s3://${S3_BUCKET}/${PART_KEY}" 2>/dev/null \
-            | awk '{print $3}' | head -1 || echo "0")
-        if [[ "${PART_COMPRESSED_BYTES:-0}" -eq 0 ]]; then
-            die "Upload of ${PART_KEY} appears empty (0 bytes in S3). Backup aborted."
-        fi
-        UPLOADED_KEYS+=("${PART_KEY}")
-        PART_COMPRESSED_HUMAN=$(numfmt --to=iec "${PART_COMPRESSED_BYTES}" 2>/dev/null || echo "?")
-        TOTAL_COMPRESSED_BYTES=$(( TOTAL_COMPRESSED_BYTES + PART_COMPRESSED_BYTES ))
-        log "  Done: ${PART_COMPRESSED_HUMAN} compressed → ${PART_KEY}"
-        log "  SHA256: ${PART_SHA256}"
+        image_to_s3 "${PART}" "${_KEY}" "${_TOOL}" "${_RFILE}"
     fi
 
-    # Build partitions JSON array (newline-separated entries, joined later)
-    PARTITIONS_JSON+="    {\"name\":\"${PART_NAME}\",\"device\":\"${PART}\",\"fstype\":\"${FSTYPE}\",\"tool\":\"${TOOL}\",\"size_bytes\":${PART_SIZE_BYTES},\"size_human\":\"${PART_SIZE_HUMAN}\",\"used_bytes\":${PART_USED_BYTES},\"used_human\":\"${PART_USED_HUMAN}\",\"compressed_bytes\":${PART_COMPRESSED_BYTES:-0},\"sha256\":\"${PART_SHA256:-}\",\"key\":\"${PART_KEY}\"},"$'\n'
+    PART_SHA256=$(grep '^sha256=' "${_RFILE}" | cut -d= -f2-)
+    PART_COMPRESSED_BYTES=$(grep '^compressed=' "${_RFILE}" | cut -d= -f2-)
+    UPLOADED_KEYS+=("${_KEY}")
+    TOTAL_COMPRESSED_BYTES=$(( TOTAL_COMPRESSED_BYTES + PART_COMPRESSED_BYTES ))
+    PARTITIONS_JSON+="    {\"name\":\"${_PNAME}\",\"device\":\"${PART}\",\"fstype\":\"${_FSTYPE}\",\"tool\":\"${_TOOL}\",\"size_bytes\":${_SIZE_B},\"size_human\":\"${_SIZE_H}\",\"used_bytes\":${_USED_B},\"used_human\":\"${_USED_H}\",\"compressed_bytes\":${PART_COMPRESSED_BYTES:-0},\"sha256\":\"${PART_SHA256:-}\",\"key\":\"${_KEY}\"},"$'\n'
 done
 
-# ── Optional: separate boot firmware (e.g. SD card /boot/firmware) ────────────
-BOOT_FW_JSON=""
+# ── Phase 2: last boot partition + boot firmware in parallel ──────────────────
+# The boot firmware lives on a separate physical device (SD card), so both reads
+# use independent buses. Launch both, then wait.
+LAST_PART="${BOOT_PARTITIONS[$LAST_IDX]}"
+_part_meta "${LAST_PART}" "${S3_DATE_PREFIX}"
+LAST_PNAME="${_PNAME}"; LAST_FSTYPE="${_FSTYPE}"; LAST_TOOL="${_TOOL}"
+LAST_KEY="${_KEY}"; LAST_SIZE_B="${_SIZE_B}"; LAST_SIZE_H="${_SIZE_H}"
+LAST_USED_B="${_USED_B}"; LAST_USED_H="${_USED_H}"
+TOTAL_USED_BYTES=$(( TOTAL_USED_BYTES + LAST_USED_B ))
+
+FW_NAME=""; FW_KEY=""; FW_FSTYPE=""; FW_SIZE_HUMAN="${FW_SIZE_HUMAN:-?}"
 if [[ -n "${BOOT_FW_PART}" ]]; then
     FW_NAME=$(basename "${BOOT_FW_PART}")
     FW_KEY="${S3_DATE_PREFIX}/${FW_NAME}-boot-fw-${TIMESTAMP}.img.gz${ENCRYPT_SUFFIX}"
     FW_FSTYPE=$(lsblk -no FSTYPE "${BOOT_FW_PART}" 2>/dev/null | tr -d '[:space:]' || echo "vfat")
+fi
 
-    log ""
-    log "  ${BOOT_FW_PART}  (boot firmware, ${FW_SIZE_HUMAN})"
+log ""
+log "  ${LAST_PART}  (${LAST_FSTYPE:-unknown}, ${LAST_SIZE_H} total, ${LAST_USED_H} used)"
+log "  Tool: ${LAST_TOOL}"
 
-    if [[ "${DRY_RUN}" == "true" ]]; then
-        log "  [DRY RUN] partclone.vfat -c -s ${BOOT_FW_PART} | ${COMPRESSOR} | tee >(sha256sum) | aws s3 cp -"
+_LAST_RFILE="${_BG_RESULT_DIR}/boot_${LAST_PNAME}"
+if [[ "${DRY_RUN}" == "true" ]]; then
+    log "  [DRY RUN] ${LAST_TOOL} -c -s ${LAST_PART} | ${COMPRESSOR_NAME}${ENCRYPT_SUFFIX:+ | gpg} | aws s3 cp -"
+    printf 'sha256=\ncompressed=0\n' > "${_LAST_RFILE}"
+else
+    if [[ -n "${BOOT_FW_PART}" ]]; then
+        log ""
+        log "  Launching last boot partition + boot firmware in parallel..."
+        log "  (separate physical buses — NVMe + SD card)"
+        image_to_s3 "${LAST_PART}" "${LAST_KEY}" "${LAST_TOOL}" "${_LAST_RFILE}" &
+        _BG_PIDS+=("$!")
     else
-        _SHA_TMP=$(mktemp)
-        sudo partclone.vfat -c -F -s "${BOOT_FW_PART}" -o - \
-            | ${COMPRESSOR} \
-            | tee >(sha256sum | awk '{print $1}' > "${_SHA_TMP}") \
-            | ${ENCRYPT_CMD} \
-            | ${PV_THROTTLE} \
-            | aws_cmd s3 cp - "s3://${S3_BUCKET}/${FW_KEY}" \
-                --storage-class "${S3_STORAGE_CLASS}" \
-                --no-progress
-        FW_SHA256=$(cat "${_SHA_TMP}"); rm -f "${_SHA_TMP}"
-
-        FW_COMPRESSED=$(aws_cmd s3 ls "s3://${S3_BUCKET}/${FW_KEY}" 2>/dev/null \
-            | awk '{print $3}' | head -1 || echo "0")
-        if [[ "${FW_COMPRESSED:-0}" -eq 0 ]]; then
-            die "Upload of ${FW_KEY} appears empty (0 bytes in S3). Backup aborted."
-        fi
-        FW_COMPRESSED_HUMAN=$(numfmt --to=iec "${FW_COMPRESSED}" 2>/dev/null || echo "?")
-        TOTAL_COMPRESSED_BYTES=$(( TOTAL_COMPRESSED_BYTES + FW_COMPRESSED ))
-        log "  Done: ${FW_COMPRESSED_HUMAN} compressed → ${FW_KEY}"
-        log "  SHA256: ${FW_SHA256}"
-        BOOT_FW_JSON="{\"name\":\"${FW_NAME}\",\"device\":\"${BOOT_FW_PART}\",\"fstype\":\"${FW_FSTYPE}\",\"key\":\"${FW_KEY}\",\"compressed_bytes\":${FW_COMPRESSED},\"sha256\":\"${FW_SHA256:-}\"}"
+        image_to_s3 "${LAST_PART}" "${LAST_KEY}" "${LAST_TOOL}" "${_LAST_RFILE}"
     fi
 fi
+
+# ── Boot firmware (parallel with last boot partition, or sequential if no FW) ─
+BOOT_FW_JSON=""
+_FW_RFILE="${_BG_RESULT_DIR}/boot_fw"
+if [[ -n "${BOOT_FW_PART}" ]]; then
+    log ""
+    log "  ${BOOT_FW_PART}  (boot firmware, ${FW_SIZE_HUMAN})"
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        log "  [DRY RUN] partclone.vfat -c -s ${BOOT_FW_PART} | ${COMPRESSOR_NAME} | aws s3 cp -"
+        printf 'sha256=\ncompressed=0\n' > "${_FW_RFILE}"
+    else
+        # Already launched last boot partition above; launch fw now (parallel)
+        image_to_s3 "${BOOT_FW_PART}" "${FW_KEY}" "partclone.vfat" "${_FW_RFILE}" &
+        _BG_PIDS+=("$!")
+    fi
+fi
+
+# ── Wait for all background jobs (last partition, boot fw, extra device) ───────
+if [[ ${#_BG_PIDS[@]} -gt 0 ]]; then
+    log ""
+    log "Waiting for ${#_BG_PIDS[@]} parallel imaging job(s)..."
+    for _pid in "${_BG_PIDS[@]}"; do
+        wait "${_pid}" || die "A parallel imaging job failed (pid ${_pid}). See log above."
+    done
+    _BG_PIDS=()
+    log "  All parallel jobs complete."
+fi
+
+# ── Collect results for last boot partition ───────────────────────────────────
+PART_SHA256=$(grep '^sha256=' "${_LAST_RFILE}" | cut -d= -f2-)
+PART_COMPRESSED_BYTES=$(grep '^compressed=' "${_LAST_RFILE}" | cut -d= -f2-)
+UPLOADED_KEYS+=("${LAST_KEY}")
+TOTAL_COMPRESSED_BYTES=$(( TOTAL_COMPRESSED_BYTES + PART_COMPRESSED_BYTES ))
+PARTITIONS_JSON+="    {\"name\":\"${LAST_PNAME}\",\"device\":\"${LAST_PART}\",\"fstype\":\"${LAST_FSTYPE}\",\"tool\":\"${LAST_TOOL}\",\"size_bytes\":${LAST_SIZE_B},\"size_human\":\"${LAST_SIZE_H}\",\"used_bytes\":${LAST_USED_B},\"used_human\":\"${LAST_USED_H}\",\"compressed_bytes\":${PART_COMPRESSED_BYTES:-0},\"sha256\":\"${PART_SHA256:-}\",\"key\":\"${LAST_KEY}\"},"$'\n'
+
+# ── Collect results for boot firmware ────────────────────────────────────────
+if [[ -n "${BOOT_FW_PART}" ]]; then
+    FW_SHA256=$(grep '^sha256=' "${_FW_RFILE}" | cut -d= -f2-)
+    FW_COMPRESSED=$(grep '^compressed=' "${_FW_RFILE}" | cut -d= -f2-)
+    FW_COMPRESSED_HUMAN=$(numfmt --to=iec "${FW_COMPRESSED}" 2>/dev/null || echo "?")
+    TOTAL_COMPRESSED_BYTES=$(( TOTAL_COMPRESSED_BYTES + FW_COMPRESSED ))
+    UPLOADED_KEYS+=("${FW_KEY}")
+    BOOT_FW_JSON="{\"name\":\"${FW_NAME}\",\"device\":\"${BOOT_FW_PART}\",\"fstype\":\"${FW_FSTYPE}\",\"key\":\"${FW_KEY}\",\"compressed_bytes\":${FW_COMPRESSED},\"sha256\":\"${FW_SHA256:-}\"}"
+fi
+
+# ── Collect results for extra device partitions ───────────────────────────────
+if [[ ${#EXTRA_PART_NAMES[@]} -gt 0 ]]; then
+    log ""
+    log "Collecting extra device results..."
+    for (( _ei=0; _ei<${#EXTRA_PART_NAMES[@]}; _ei++ )); do
+        _EPNAME="${EXTRA_PART_NAMES[$_ei]}"
+        _EKEY="${EXTRA_PART_KEYS[$_ei]}"
+        _ERFILE="${_BG_RESULT_DIR}/extra_${_EPNAME}"
+        EP_SHA256=$(grep '^sha256=' "${_ERFILE}" | cut -d= -f2-)
+        EP_COMPRESSED=$(grep '^compressed=' "${_ERFILE}" | cut -d= -f2-)
+        EP_COMPRESSED_H=$(numfmt --to=iec "${EP_COMPRESSED}" 2>/dev/null || echo "?")
+        TOTAL_COMPRESSED_BYTES=$(( TOTAL_COMPRESSED_BYTES + EP_COMPRESSED ))
+        TOTAL_USED_BYTES=$(( TOTAL_USED_BYTES + EXTRA_PART_USED_B[$_ei] ))
+        UPLOADED_KEYS+=("${_EKEY}")
+        EXTRA_PARTS_JSON+="    {\"name\":\"${_EPNAME}\",\"device\":\"${BACKUP_EXTRA_DEVICE}\",\"fstype\":\"${EXTRA_PART_FSTYPES[$_ei]}\",\"tool\":\"${EXTRA_PART_TOOLS[$_ei]}\",\"size_bytes\":${EXTRA_PART_SIZE_B[$_ei]},\"size_human\":\"${EXTRA_PART_SIZE_H[$_ei]}\",\"used_bytes\":${EXTRA_PART_USED_B[$_ei]},\"used_human\":\"${EXTRA_PART_USED_H[$_ei]}\",\"compressed_bytes\":${EP_COMPRESSED:-0},\"sha256\":\"${EP_SHA256:-}\",\"key\":\"${_EKEY}\"},"$'\n'
+        log "  ${_EPNAME}: ${EP_COMPRESSED_H} compressed  SHA256: ${EP_SHA256}"
+    done
+fi
+
+rm -rf "${_BG_RESULT_DIR}"; _BG_RESULT_DIR=""
 
 BACKUP_END=$(date +%s)
 BACKUP_DURATION=$(( BACKUP_END - BACKUP_START ))
@@ -1151,8 +1298,9 @@ fi
 log ""
 log "Uploading manifest..."
 
-# Trim trailing comma+newline from last partition entry
+# Trim trailing comma+newline from last partition entries
 PARTITIONS_JSON_CLEAN="${PARTITIONS_JSON%,$'\n'}"
+EXTRA_PARTS_JSON_CLEAN="${EXTRA_PARTS_JSON%,$'\n'}"
 
 MANIFEST_JSON=$(cat <<EOF
 {
@@ -1177,6 +1325,10 @@ MANIFEST_JSON=$(cat <<EOF
 ${PARTITIONS_JSON_CLEAN}
   ],
   "boot_firmware": ${BOOT_FW_JSON:-null},
+  "extra_device": ${BACKUP_EXTRA_DEVICE:+"\"${BACKUP_EXTRA_DEVICE}\""},
+  "extra_device_partitions": [
+${EXTRA_PARTS_JSON_CLEAN:-}
+  ],
   "s3_bucket": "${S3_BUCKET}",
   "manifest_key": "${MANIFEST_S3_KEY}",
   "compressor": "${COMPRESSOR_NAME}",

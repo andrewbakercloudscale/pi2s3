@@ -13,8 +13,9 @@ Think of it as an AMI for your Pi.
 ```
 BACKUP (runs on Pi nightly via cron)
 
-  1. Stop Docker containers
-     └─ ensures databases flush writes before imaging starts
+  1. Quiesce the database
+     ├─ MariaDB/MySQL detected → FLUSH TABLES WITH READ LOCK (zero downtime)
+     └─ No DB detected        → stop Docker briefly (~10s)
 
   2. Sync filesystem  (instant)
      └─ flush dirty pages and drop caches
@@ -32,7 +33,7 @@ BACKUP (runs on Pi nightly via cron)
      (boot firmware)      partition-aware  parallel   streaming
                           clone           gzip       no local file
 
-  5. Restart Docker containers  (site back up)
+  5. Release DB lock / restart Docker  (writes resume)
 
   6. Upload manifest JSON (metadata: partitions, sizes, duration)
 
@@ -59,32 +60,27 @@ RESTORE (run on a Linux machine or another Pi)
 | S3 upload size | ~10 GB (compressed zeros) | ~3–5 GB |
 | Restore | gunzip \| dd | partclone per partition |
 
-### Zero-downtime mode (MariaDB/MySQL)
+### Zero-downtime mode (default for MariaDB/MySQL)
 
-For MariaDB or MySQL setups, pi2s3 can take a consistent snapshot with **zero container downtime** using `FLUSH TABLES WITH READ LOCK` (FTWRL). All containers keep running — only DB writes are blocked during the ~5–15 min imaging window. This is the same technique used by mariabackup and xtrabackup.
+**No config needed.** The default `DB_CONTAINER="auto"` automatically scans for a running MariaDB/MySQL container. If found, pi2s3 uses `FLUSH TABLES WITH READ LOCK` (FTWRL) instead of stopping Docker. All containers keep running — only DB writes are blocked during the ~5–15 min imaging window. Same technique as mariabackup/xtrabackup.
 
-```bash
-# config.env
-DB_CONTAINER="auto"   # auto-detect MariaDB/MySQL container (or use explicit name)
-```
+What happens automatically:
+1. Scans running containers for any MariaDB/MySQL image
+2. Auto-reads `MYSQL_ROOT_PASSWORD` / `MARIADB_ROOT_PASSWORD` from the container env
+3. Issues `FLUSH TABLES WITH READ LOCK` via a persistent background connection
+4. Images all partitions — containers stay up, site serves reads and cached pages
+5. Kills the lock connection and releases all locks
+6. Reports probe pass/fail in the ntfy notification
 
-Set `DB_CONTAINER="auto"` and pi2s3 will:
-1. Scan running containers for any MariaDB/MySQL image
-2. Auto-read `MYSQL_ROOT_PASSWORD` / `MARIADB_ROOT_PASSWORD` from the container env
-3. Issue `FLUSH TABLES WITH READ LOCK` via a persistent background connection
-4. Run partclone on all partitions (containers stay up throughout)
-5. Kill the lock connection and release all locks
-6. Log and report probe results in the ntfy notification
+If no MariaDB/MySQL container is found (or the lock fails), the script falls back to `STOP_DOCKER=true` automatically and logs why.
 
-If auto-detection finds no MariaDB/MySQL container (or the lock fails for any reason), the script falls back to `STOP_DOCKER=true` automatically and logs why.
+A background **site availability probe** runs every `PROBE_INTERVAL` seconds (default: 60) during imaging — cache-busted requests to confirm the site stays up. `PROBE_LATEST_POST=true` (default) auto-discovers the latest WordPress post via REST API and probes real dynamic content instead of the homepage.
 
-A background **site availability probe** runs every `PROBE_INTERVAL` seconds (default: 60) during imaging, hitting your site with cache-busted requests to confirm it stays up. Set `PROBE_LATEST_POST=true` to auto-discover the latest WordPress post URL via REST API and probe real dynamic content instead of the homepage.
+### Docker downtime (fallback)
 
-### Docker downtime (default)
+If no MariaDB/MySQL container is detected, containers are stopped for the duration of partition imaging — typically **5–15 minutes** at 2am. Docker is restarted immediately after all partitions are imaged.
 
-If `DB_CONTAINER` is not set, containers are stopped for the duration of partition imaging — typically **5–15 minutes** when scheduled at 2am. Docker is restarted immediately after all partitions are imaged.
-
-This is far better than the old `dd` approach (60–90 minutes on a full NVMe), and gives a fully consistent image: databases like MariaDB/InnoDB have all writes flushed to disk and no new writes occur during the backup. On restore, no recovery step is needed.
+This is still far better than the old `dd` approach (60–90 minutes on a full NVMe), and gives a fully consistent image. On restore, no recovery step is needed.
 
 ---
 

@@ -18,10 +18,15 @@ All notable changes to pi2s3 are documented here.
   - Results logged and included in the ntfy success notification (e.g. `probe: 8/8 pass`)
 - **`DB_LOCK` → `STOP_DOCKER` fallback** — if `db_lock()` fails (wrong password, no DB, etc.) the script automatically falls back to the standard Docker stop and continues the backup
 
+- **Parallel partition imaging** — boot firmware partition (SD card) runs concurrently with the last NVMe partition. `BACKUP_EXTRA_DEVICE` partitions run concurrently with the entire boot-device imaging. Both use separate physical buses so reads don't contend. Implemented via `image_to_s3()` helper that works identically inline or backgrounded.
+- **`BACKUP_EXTRA_DEVICE` implemented** — was documented in `config.env.example` but never coded. Now fully functional: enumerates partitions on the extra device, images them in background parallel with boot device, adds results to manifest under `extra_device_partitions`.
+- **`image_to_s3()` helper function** — extracted from inline imaging code. Handles the full `partclone | pigz | [gpg] | [pv] | aws s3 cp` pipeline and writes `sha256=…\ncompressed=…` to a temp result file. Eliminates code duplication across boot partitions, boot firmware, and extra device.
+
 ### Changed
 
-- `STOP_DOCKER` is now the fallback path only; `DB_CONTAINER`-based lock is attempted first when configured
+- `STOP_DOCKER` is now the fallback path only; `DB_CONTAINER="auto"` (the default) attempts FTWRL lock first and falls back to Docker stop only if no DB is found
 - `config.env.example`: DB lock section added before `STOP_DOCKER` with inline documentation; probe section added
+- README + website hero updated to make clear zero-downtime is the default — no config change needed for MariaDB/MySQL Docker setups
 
 ---
 
