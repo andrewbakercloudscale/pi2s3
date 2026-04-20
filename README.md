@@ -1,8 +1,8 @@
-# pi2s3 — Pi to S3
+# pi2s3: Pi to S3
 
 [![CI](https://github.com/andrewbakercloudscale/pi2s3/actions/workflows/ci.yml/badge.svg)](https://github.com/andrewbakercloudscale/pi2s3/actions/workflows/ci.yml)
 
-Block-level nightly backup of a Raspberry Pi to AWS S3. Restore a complete, bootable Pi to new hardware in one command — no manual setup, no secrets to re-enter, no git clones.
+Block-level nightly backup of a Raspberry Pi to AWS S3. Restore a complete, bootable Pi to new hardware in one command. No manual setup, no secrets to re-enter, no git clones.
 
 Think of it as an AMI for your Pi.
 
@@ -62,7 +62,7 @@ RESTORE (run on a Linux machine or another Pi)
 
 ### Zero-downtime mode (default for MariaDB/MySQL)
 
-**No config needed.** The default `DB_CONTAINER="auto"` automatically scans for a running MariaDB/MySQL container. If found, pi2s3 uses `FLUSH TABLES WITH READ LOCK` (FTWRL) instead of stopping Docker. All containers keep running — only DB writes are blocked during the ~5–15 min imaging window. Same technique as mariabackup/xtrabackup.
+**No config needed.** The default `DB_CONTAINER="auto"` automatically scans for a running MariaDB/MySQL container. If found, pi2s3 uses `FLUSH TABLES WITH READ LOCK` (FTWRL) instead of stopping Docker. All containers keep running. Only DB writes are blocked during the ~5–15 min imaging window. Same technique as mariabackup/xtrabackup.
 
 What happens automatically:
 1. Scans running containers for any MariaDB/MySQL image
@@ -294,9 +294,9 @@ bash ~/pi2s3/pi-image-backup.sh --list
 
 Output:
 ```
-  [1] 2026-04-16 — 4.2G compressed (my-pi-5)
-  [2] 2026-04-15 — 4.1G compressed (my-pi-5)
-  [3] 2026-04-14 — 4.0G compressed (my-pi-5)
+  [1] 2026-04-16  4.2G compressed (my-pi-5)
+  [2] 2026-04-15  4.1G compressed (my-pi-5)
+  [3] 2026-04-14  4.0G compressed (my-pi-5)
 
   Total: 3 backup(s)
 ```
@@ -323,7 +323,7 @@ Checksums (SHA-256 of compressed upload):
   e3b0c44298fc1c149afb4c8996fb92427ae41e4649b934ca495991b7852b855
   a87ff679a2f3e71d9181a67b7542122c04521ead5f5a64afe10c2b7d64dd5c6
 
-VERIFY OK — all backup files present in S3.
+VERIFY OK. All backup files present in S3.
 ```
 
 This is the same check `BACKUP_AUTO_VERIFY=true` runs automatically after each backup. Use `--verify` to re-check at any time — after a suspected S3 issue, before a planned restore, or as part of a monthly audit.

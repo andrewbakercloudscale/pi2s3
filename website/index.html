@@ -14,7 +14,7 @@
   <meta property="og:image:width" content="1024" />
   <meta property="og:image:height" content="1024" />
   <meta property="og:image:type" content="image/jpeg" />
-  <meta property="og:image:alt" content="pi2s3 — AMI for your Raspberry Pi" />
+  <meta property="og:image:alt" content="pi2s3: AMI for your Raspberry Pi" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:image" content="https://pi2s3.com/pi2s3.jpg" />
   <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-1534132340710618" crossorigin="anonymous"></script>
@@ -633,7 +633,7 @@
     <div class="badge" style="margin-bottom:0; background:rgba(94,234,212,0.1); border-color:rgba(94,234,212,0.4); color:var(--accent2);">&#9679; New &nbsp;·&nbsp; Zero-downtime backup</div>
   </div>
   <h1>The <span class="gradient">AMI</span> for your<br>Raspberry Pi</h1>
-  <p class="hero-sub">Nightly block-level backup to S3. Your site stays <strong style="color:var(--text);">online the whole time</strong> — MariaDB is locked, not stopped. <strong style="color:var(--accent2);">Zero config needed</strong>, it detects your DB automatically. Restore a complete bootable Pi to new hardware in one command.</p>
+  <p class="hero-sub">Nightly block-level backup to S3. <strong style="color:var(--text);">Zero downtime</strong>. MariaDB is in read-only mode, not stopped. <strong style="color:var(--accent2);">Zero config needed</strong>, it detects your DB automatically. Restore a complete bootable Pi to new hardware in one command.</p>
   <div class="hero-actions">
     <a href="https://github.com/andrewbakercloudscale/pi2s3" target="_blank" class="btn-primary">
       <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
@@ -645,7 +645,7 @@
   <div style="display:flex; flex-wrap:wrap; gap:0.75rem; justify-content:center; margin-top:2rem; margin-bottom:0.5rem;">
     <span style="display:inline-flex; align-items:center; gap:0.4rem; font-size:0.85rem; color:var(--accent2); font-weight:600;">
       <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 8 5 12 15 4"/></svg>
-      Zero-downtime by default — no config needed
+      Zero-downtime by default. No config needed
     </span>
     <span style="color:var(--border);">·</span>
     <span style="display:inline-flex; align-items:center; gap:0.4rem; font-size:0.85rem; color:var(--muted); font-weight:500;">
@@ -673,7 +673,7 @@
     </div>
     <div class="terminal-body">
       <div><span class="prompt">$ </span><span class="cmd">bash pi-image-backup.sh <span class="flag">--force</span></span></div>
-      <div><span class="comment"># FLUSH TABLES WITH READ LOCK — containers stay up</span></div>
+      <div><span class="comment"># FLUSH TABLES WITH READ LOCK (containers stay up)</span></div>
       <div><span class="comment"># partclone | pigz | aws s3 cp  (no local file)</span></div>
       <div>&nbsp;</div>
       <div><span class="out">✔ DB lock acquired  (site is live)</span></div>
@@ -699,7 +699,7 @@
     <div class="step">
       <div class="step-num">BACKUP · STEP 01</div>
       <h3>Quiesce the database</h3>
-      <p>MariaDB/MySQL: <code>FLUSH TABLES WITH READ LOCK</code> — containers stay up, only writes are blocked. No Docker: Docker is stopped briefly. Either way, no dirty pages and no recovery needed on restore.</p>
+      <p>MariaDB/MySQL: <code>FLUSH TABLES WITH READ LOCK</code>. Containers stay up, only writes are blocked. No Docker: Docker is stopped briefly. Either way, no dirty pages and no recovery needed on restore.</p>
     </div>
     <div class="step">
       <div class="step-num">BACKUP · STEP 02</div>
@@ -746,7 +746,7 @@
   <div class="stats">
     <div class="stat">
       <div class="stat-num" style="color:var(--accent2);">0 min</div>
-      <div class="stat-label">Downtime during backup — site stays live</div>
+      <div class="stat-label">Downtime during backup. Site stays live</div>
     </div>
     <div class="stat">
       <div class="stat-num">~35 min</div>
@@ -1142,14 +1142,14 @@
   <div class="card-grid">
     <div class="card">
       <h3>Client-side encryption</h3>
-      <p>Each partition image is encrypted with GPG AES-256 <em>before</em> it leaves your Pi. Even full S3 bucket access is useless without the passphrase — which lives only in <code>config.env</code>, never in S3.</p>
+      <p>Each partition image is encrypted with GPG AES-256 <em>before</em> it leaves your Pi. Even full S3 bucket access is useless without the passphrase, which lives only in <code>config.env</code>, never in S3.</p>
       <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="cmt"># config.env</span>
 <span class="val">BACKUP_ENCRYPTION_PASSPHRASE</span>=<span class="str">"my-strong-passphrase"</span></pre>
       <p style="margin-top:0.5rem; color: var(--muted); font-size:0.85rem;">Requires: <code>sudo apt install gpg</code>. Restore script detects encryption automatically.</p>
     </div>
     <div class="card">
       <h3>Bandwidth throttle</h3>
-      <p>Limit upload speed so nightly backups don't saturate your home or office connection. Uses <code>pv</code> in the upload pipeline — no AWS config changes needed.</p>
+      <p>Limit upload speed so nightly backups don't saturate your home or office connection. Uses <code>pv</code> in the upload pipeline. No AWS config changes needed.</p>
       <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="cmt"># config.env</span>
 <span class="val">AWS_TRANSFER_RATE_LIMIT</span>=<span class="str">"2m"</span>   <span class="cmt"># 2 MB/s</span></pre>
       <p style="margin-top:0.5rem; color: var(--muted); font-size:0.85rem;">Requires: <code>sudo apt install pv</code>. Use <code>500k</code>, <code>2m</code>, or <code>1g</code> format.</p>
@@ -1170,7 +1170,7 @@
     </div>
     <div class="card">
       <h3>Stale backup alert</h3>
-      <p>A separate daily cron job checks S3 for a recent backup and sends a push alert if none is found within <code>STALE_BACKUP_HOURS</code>. Catches silent cron failures — including the Pi being offline.</p>
+      <p>A separate daily cron job checks S3 for a recent backup and sends a push alert if none is found within <code>STALE_BACKUP_HOURS</code>. Catches silent cron failures, including the Pi being offline.</p>
       <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="cmt"># config.env (default: true)</span>
 <span class="val">STALE_CHECK_ENABLED</span>=<span class="str">true</span>
 <span class="val">STALE_BACKUP_HOURS</span>=<span class="str">25</span></pre>
@@ -1183,14 +1183,14 @@
     </div>
     <div class="card">
       <h3>Pre/post backup hooks</h3>
-      <p>Not running Docker? Stop any service — MariaDB, nginx, php-fpm — before imaging and restart it after. Works for native WordPress, Samba, or any systemd service. The crash trap also runs <code>POST_BACKUP_CMD</code> on failure, so services always come back up.</p>
+      <p>Not running Docker? Stop any service (MariaDB, nginx, php-fpm) before imaging and restart it after. Works for native WordPress, Samba, or any systemd service. The crash trap also runs <code>POST_BACKUP_CMD</code> on failure, so services always come back up.</p>
       <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="cmt"># native WordPress example</span>
 <span class="val">PRE_BACKUP_CMD</span>=<span class="str">"systemctl stop nginx php8.2-fpm mariadb"</span>
 <span class="val">POST_BACKUP_CMD</span>=<span class="str">"systemctl start mariadb php8.2-fpm nginx"</span></pre>
     </div>
     <div class="card">
       <h3>Zero-downtime DB lock</h3>
-      <p>For MariaDB/MySQL setups, pi2s3 issues <code>FLUSH TABLES WITH READ LOCK</code> instead of stopping Docker. All containers stay running — only DB writes are blocked during the imaging window. A background probe pings your site every 60 seconds to confirm it stays up.</p>
+      <p>For MariaDB/MySQL setups, pi2s3 issues <code>FLUSH TABLES WITH READ LOCK</code> instead of stopping Docker. All containers stay running. Only DB writes are blocked during the imaging window. A background probe pings your site every 60 seconds to confirm it stays up.</p>
       <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="cmt"># config.env</span>
 <span class="val">DB_CONTAINER</span>=<span class="str">"auto"</span>        <span class="cmt"># auto-detect</span>
 <span class="val">PROBE_LATEST_POST</span>=<span class="str">true</span>   <span class="cmt"># probe latest WP post</span></pre>
@@ -1204,7 +1204,7 @@
 <section id="watchdog-config">
   <div class="section-label">Watchdog</div>
   <h2>Self-healing tunnel monitor</h2>
-  <p class="section-intro">Optional. Runs every 5 minutes as root. If your site or Cloudflare tunnel goes down, it recovers automatically through three escalating phases — no SSH needed.</p>
+  <p class="section-intro">Optional. Runs every 5 minutes as root. If your site or Cloudflare tunnel goes down, it recovers automatically through three escalating phases. No SSH needed.</p>
 
   <div class="table-wrap" style="margin-bottom:2rem;">
     <table>
