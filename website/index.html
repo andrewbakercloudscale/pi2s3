@@ -1190,7 +1190,7 @@
     </div>
     <div class="card">
       <h3>Zero-downtime DB lock</h3>
-      <p>For MariaDB/MySQL setups, pi2s3 issues <code>FLUSH TABLES WITH READ LOCK</code> instead of stopping Docker. All containers stay running. Only DB writes are blocked during the imaging window. A background probe pings your site every 60 seconds to confirm it stays up.</p>
+      <p>For MariaDB/MySQL setups, pi2s3 issues <code>FLUSH TABLES WITH READ LOCK</code> instead of stopping Docker. The lock is released after <code>sync</code> + <code>drop_caches</code> flush InnoDB dirty pages — typically under 10 seconds. Writes resume immediately; partclone images in the background. A background probe pings your site every 60 seconds to confirm it stays up.</p>
       <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="cmt"># config.env</span>
 <span class="val">DB_CONTAINER</span>=<span class="str">"auto"</span>        <span class="cmt"># auto-detect</span>
 <span class="val">PROBE_LATEST_POST</span>=<span class="str">true</span>   <span class="cmt"># probe latest WP post</span></pre>
