@@ -702,12 +702,28 @@ FPM_RESTART_COOLDOWN=1200        # seconds between auto-restarts (default: 20 mi
 # FPM_CALLBACK_TOKEN=<token from Debug AI tab>
 ```
 
+### Configuration
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `FPM_SATURATION_THRESHOLD` | `3` | Consecutive saturated checks before alert |
+| `FPM_PROBE_URL` | `http://localhost:8082/` | URL to probe for liveness |
+| `FPM_PROBE_TIMEOUT` | `5` | curl timeout in seconds |
+| `FPM_WP_CONTAINER` | `pi_wordpress` | WordPress Docker container name |
+| `FPM_DB_CONTAINER` | `pi_mariadb` | MariaDB Docker container name |
+| `FPM_ALERT_COOLDOWN` | `1800` | Seconds between repeat saturation alerts (30 min) |
+| `FPM_AUTO_RESTART` | `false` | Set `true` to auto-restart on saturation |
+| `FPM_RESTART_COOLDOWN` | `1200` | Seconds between auto-restarts (20 min) |
+| `FPM_CALLBACK_URL` | — | CloudScale Devtools plugin admin-ajax.php URL |
+| `FPM_CALLBACK_TOKEN` | — | Token from Debug AI tab in plugin |
+
 ### Plugin integration
 
 The **CloudScale Cyber and Devtools** plugin (Debug AI tab → PHP-FPM Saturation Monitor) shows:
 - Configurable settings (threshold, cooldown, probe URL, containers)
 - A pre-filled `config.env` snippet with a one-click copy button
 - Last saturation event timestamp and reason (requires `FPM_CALLBACK_URL` / `FPM_CALLBACK_TOKEN`)
+- Restart events reported separately (`type=restarted`) when `FPM_AUTO_RESTART=true`
 
 ---
 

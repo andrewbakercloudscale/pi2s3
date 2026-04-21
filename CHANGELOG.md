@@ -4,6 +4,34 @@ All notable changes to pi2s3 are documented here.
 
 ---
 
+## [1.5.0] — 2026-04-21
+
+### Added
+
+- **FPM auto-restart** (`FPM_AUTO_RESTART=true`) — `fpm-saturation-monitor.sh` now automatically restarts the WordPress container when the saturation threshold is hit, instead of alerting and waiting for manual intervention. Runs on the host cron (not WP-Cron), so it fires even when PHP-FPM is fully exhausted.
+  - `FPM_AUTO_RESTART=false` (default) — alert only, no automatic action
+  - `FPM_AUTO_RESTART=true` — `docker restart <FPM_WP_CONTAINER>` fires automatically after threshold, with ntfy confirmation
+  - Before restarting, kills any orphaned `pi2s3-lock` process from inside the DB container (see fix below)
+  - Sends a separate `type=restarted` callback to the CloudScale Devtools plugin
+  - Alert message updated: when auto-restart is on, says "Auto-restarting now" instead of "SSH and run: docker restart"
+- **`FPM_RESTART_COOLDOWN`** — minimum seconds between auto-restarts (default: `1200` / 20 min). Prevents restart loops if saturation recurs immediately after a restart.
+- **Pre-commit hook on Pi** — `install.sh --upgrade` now installs a `.git/hooks/pre-commit` that blocks direct commits on the Pi, with a message pointing to the Mac → deploy workflow. Refreshed on every deploy.
+- **`config.env.example`**: full PHP-FPM saturation monitor section added (was missing entirely).
+- **Website**: new PHP-FPM saturation monitor section documenting auto-restart, orphaned lock detection, and plugin integration.
+
+### Fixed
+
+- **`db_unlock()` orphaned lock root cause** — killing the host-side `docker exec` wrapper process (`kill $_DB_LOCK_PID`) did not terminate the `mariadb` client running inside the container. The keepalive `SLEEP(86400)` connection survived, holding FTWRL and causing "Orphaned backup lock" ntfy alerts after every successful backup. Fix: `docker exec <container> pkill -9 -f pi2s3-lock` is now called from inside the container before killing the wrapper. This closes the SLEEP connection cleanly.
+- **FPM monitor false positives** — orphaned-lock detection in `fpm-saturation-monitor.sh` previously killed `pi2s3-lock` connections whenever found, including during active backups. Now checks `pgrep -f pi-image-backup.sh` first; if the backup is running, the lock is legitimate and is left alone.
+- **`probe_stop()` double-zero syntax error** — `grep -c ... || echo 0` produced `"0\n0"` under `set -u` when the log file didn't exist (grep exits 1 on no match, triggering the fallback alongside the empty output). Fixed with `|| true` and `${var:-0}` expansion.
+- **`db_kill_orphaned_locks()` unbound variable** — `local _ids` without initialisation crashed under `set -u`. Fixed with `local _ids=""`.
+
+### Changed
+
+- `FPM_RESTART_COOLDOWN` default is `1200` (20 min).
+
+---
+
 ## [1.4.0] — 2026-04-16
 
 ### Added
