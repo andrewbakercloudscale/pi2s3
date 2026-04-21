@@ -696,7 +696,7 @@ FPM_WP_CONTAINER=pi_wordpress
 FPM_DB_CONTAINER=pi_mariadb
 FPM_ALERT_COOLDOWN=1800          # seconds between repeat alerts (30 min)
 FPM_AUTO_RESTART=false           # true = restart container automatically on saturation
-FPM_RESTART_COOLDOWN=3600        # seconds between auto-restarts (default: 1 hour)
+FPM_RESTART_COOLDOWN=1200        # seconds between auto-restarts (default: 20 min)
 # Optional — report events back to CloudScale Devtools plugin:
 # FPM_CALLBACK_URL=https://yoursite.com/wp-admin/admin-ajax.php
 # FPM_CALLBACK_TOKEN=<token from Debug AI tab>

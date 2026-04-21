@@ -1150,7 +1150,7 @@
 <span class="val">FPM_WP_CONTAINER</span>=<span class="str">pi_wordpress</span>
 <span class="val">FPM_DB_CONTAINER</span>=<span class="str">pi_mariadb</span>
 <span class="val">FPM_AUTO_RESTART</span>=<span class="str">true</span>            <span class="cmt"># restart container automatically</span>
-<span class="val">FPM_RESTART_COOLDOWN</span>=<span class="num">3600</span>        <span class="cmt"># seconds between restarts (1 hour)</span>
+<span class="val">FPM_RESTART_COOLDOWN</span>=<span class="num">1200</span>        <span class="cmt"># seconds between restarts (20 min)</span>
 <span class="val">FPM_ALERT_COOLDOWN</span>=<span class="num">1800</span>          <span class="cmt"># seconds between repeat alerts</span></pre>
 
   <p style="margin-top:1rem; color: var(--muted); font-size:0.9rem;">Install: <code>crontab -e</code> → add: <code>* * * * * /home/pi/pi2s3/fpm-saturation-monitor.sh 2&gt;/dev/null</code></p>
