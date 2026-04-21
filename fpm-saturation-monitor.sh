@@ -28,10 +28,13 @@ FPM_ALERT_COOLDOWN="${FPM_ALERT_COOLDOWN:-1800}"
 FPM_DB_ROOT_PASSWORD="${FPM_DB_ROOT_PASSWORD:-}"
 FPM_CALLBACK_URL="${FPM_CALLBACK_URL:-}"
 FPM_CALLBACK_TOKEN="${FPM_CALLBACK_TOKEN:-}"
+FPM_AUTO_RESTART="${FPM_AUTO_RESTART:-false}"
+FPM_RESTART_COOLDOWN="${FPM_RESTART_COOLDOWN:-3600}"
 
 STATE_FILE="/tmp/fpm-saturation-count"
 ALERTED_FILE="/tmp/fpm-saturation-alerted"
 LOCK_ALERTED_FILE="/tmp/fpm-lock-alerted"
+RESTART_FILE="/tmp/fpm-auto-restart"
 
 # ── Check 1: HTTP probe ───────────────────────────────────────────────────────
 http_code=$(curl -s -o /dev/null -w "%{http_code}" \
@@ -151,12 +154,17 @@ if [[ "$count" -ge "$FPM_SATURATION_THRESHOLD" ]]; then
     last_alert=$(cat "$ALERTED_FILE" 2>/dev/null || echo 0)
     now=$(date +%s)
     if [[ $((now - last_alert)) -gt "$FPM_ALERT_COOLDOWN" ]]; then
+        if [[ "${FPM_AUTO_RESTART}" == "true" ]]; then
+            alert_action="Auto-restarting ${FPM_WP_CONTAINER} now."
+        else
+            alert_action="SSH and run: docker restart ${FPM_WP_CONTAINER}"
+        fi
         if [[ -n "$NTFY_URL" ]]; then
             curl -s -X POST "$NTFY_URL" \
                 -H "Title: PHP-FPM SATURATED: andrewbaker.ninja" \
                 -H "Priority: urgent" \
                 -H "Tags: fire,rotating_light" \
-                -d "All PHP workers exhausted for ${count} consecutive checks (${count} min). Reason: ${reason}. SSH and run: docker restart pi_wordpress" \
+                -d "All PHP workers exhausted for ${count} consecutive checks (${count} min). Reason: ${reason}. ${alert_action}" \
                 2>/dev/null || true
         fi
         if [[ -n "${FPM_CALLBACK_URL}" && -n "${FPM_CALLBACK_TOKEN}" ]]; then
@@ -168,5 +176,37 @@ if [[ "$count" -ge "$FPM_SATURATION_THRESHOLD" ]]; then
                 2>/dev/null || true
         fi
         echo "$now" > "$ALERTED_FILE"
+    fi
+
+    # ── Auto-restart on saturation ────────────────────────────────────────────
+    if [[ "${FPM_AUTO_RESTART}" == "true" ]]; then
+        last_restart=$(cat "$RESTART_FILE" 2>/dev/null || echo 0)
+        now=$(date +%s)
+        if [[ $((now - last_restart)) -gt "${FPM_RESTART_COOLDOWN}" ]]; then
+            # Kill any orphaned mariadb lock from inside the container before restarting.
+            # Killing the host-side docker exec wrapper does not terminate the mariadb
+            # process inside the container — it must be killed from within.
+            if [[ -n "${FPM_DB_ROOT_PASSWORD}" ]]; then
+                docker exec "${FPM_DB_CONTAINER}" pkill -9 -f "pi2s3-lock" 2>/dev/null || true
+            fi
+            docker restart "${FPM_WP_CONTAINER}" 2>/dev/null || true
+            echo "$now" > "$RESTART_FILE"
+            if [[ -n "$NTFY_URL" ]]; then
+                curl -s -X POST "$NTFY_URL" \
+                    -H "Title: PHP-FPM auto-restarted: andrewbaker.ninja" \
+                    -H "Priority: high" \
+                    -H "Tags: arrows_counterclockwise" \
+                    -d "${FPM_WP_CONTAINER} restarted automatically after ${count} consecutive saturated checks. Reason: ${reason}. Next auto-restart available in $((FPM_RESTART_COOLDOWN / 60)) min." \
+                    2>/dev/null || true
+            fi
+            if [[ -n "${FPM_CALLBACK_URL}" && -n "${FPM_CALLBACK_TOKEN}" ]]; then
+                curl -s -X POST "${FPM_CALLBACK_URL}" \
+                    --data-urlencode "action=csdt_fpm_report" \
+                    --data-urlencode "token=${FPM_CALLBACK_TOKEN}" \
+                    --data-urlencode "type=restarted" \
+                    --data-urlencode "msg=${FPM_WP_CONTAINER} auto-restarted after ${count} consecutive saturated checks. ${reason}" \
+                    2>/dev/null || true
+            fi
+        fi
     fi
 fi

@@ -676,7 +676,7 @@ Three checks run every minute:
 | Long DB queries | `> 15 s` queries from `wordpress` user in `PROCESSLIST` | Increment saturation counter |
 | Orphaned backup lock | `pi2s3-lock` sleep connection in `PROCESSLIST` | Kill immediately + alert (once per 30 min) |
 
-After `FPM_SATURATION_THRESHOLD` consecutive saturated checks (default: 3) an ntfy alert fires. A recovery notification fires when the site returns to normal.
+After `FPM_SATURATION_THRESHOLD` consecutive saturated checks (default: 3) an ntfy alert fires. Set `FPM_AUTO_RESTART=true` to automatically restart the WordPress container instead of waiting for manual intervention — an ntfy notification confirms the restart with a cooldown between attempts. A recovery notification fires when the site returns to normal.
 
 ### Install
 
@@ -695,6 +695,8 @@ FPM_PROBE_TIMEOUT=5
 FPM_WP_CONTAINER=pi_wordpress
 FPM_DB_CONTAINER=pi_mariadb
 FPM_ALERT_COOLDOWN=1800          # seconds between repeat alerts (30 min)
+FPM_AUTO_RESTART=false           # true = restart container automatically on saturation
+FPM_RESTART_COOLDOWN=3600        # seconds between auto-restarts (default: 1 hour)
 # Optional — report events back to CloudScale Devtools plugin:
 # FPM_CALLBACK_URL=https://yoursite.com/wp-admin/admin-ajax.php
 # FPM_CALLBACK_TOKEN=<token from Debug AI tab>

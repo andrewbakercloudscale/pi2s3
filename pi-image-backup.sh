@@ -350,8 +350,13 @@ db_unlock() {
                 2>/dev/null || true
         fi
     fi
-    # Kill the background lock process directly (terminates docker exec subprocess
-    # regardless of whether the SQL KILL above succeeded). Prevents wait blocking.
+    # Kill the mariadb client inside the container directly — killing the host-side
+    # docker exec wrapper (below) does not reliably terminate the process inside
+    # the container, leaving an orphaned SLEEP(86400) connection.
+    if [[ "${DRY_RUN}" != "true" && -n "${_DB_CONTAINER:-}" ]]; then
+        docker exec "${_DB_CONTAINER}" pkill -9 -f "pi2s3-lock" 2>/dev/null || true
+    fi
+    # Kill the host-side docker exec wrapper and wait for it to exit.
     [[ -n "${_DB_LOCK_PID:-}" ]] && kill "${_DB_LOCK_PID}" 2>/dev/null || true
     wait "${_DB_LOCK_PID:-}" 2>/dev/null || true
     _DB_LOCK_PID=""; _DB_CONN_ID=""; _DB_LOCKED=false

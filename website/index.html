@@ -1105,6 +1105,57 @@
   </div>
 </section>
 
+<!-- FPM MONITOR -->
+<hr class="divider" />
+<section id="fpm-monitor">
+  <div class="section-label">FPM Monitor</div>
+  <h2>PHP-FPM saturation monitor</h2>
+  <p class="section-intro">When all PHP-FPM workers are exhausted, WordPress serves 504 errors — and WP-Cron goes silent at the worst moment. This monitor runs as a <strong>host cron</strong> (not inside Docker), so it fires regardless of PHP-FPM state.</p>
+
+  <div class="terminal-wrap" style="max-width:100%; margin-top:0;">
+    <div class="terminal-bar">
+      <div class="dot dot-r"></div>
+      <div class="dot dot-y"></div>
+      <div class="dot dot-g"></div>
+      <span class="terminal-label">host cron · every minute</span>
+    </div>
+    <div class="terminal-body">
+      <div><span class="comment">Check 1: HTTP probe — curl to FPM_PROBE_URL (5xx or timeout?)</span></div>
+      <div><span class="comment">Check 2: DB queries — &gt;15 s queries from wordpress user?</span></div>
+      <div><span class="comment">Check 3: Orphaned backup lock — pi2s3-lock SLEEP in PROCESSLIST?</span></div>
+      <div>&nbsp;</div>
+      <div><span class="out">Saturated for N checks → ntfy alert fires</span></div>
+      <div><span class="out">FPM_AUTO_RESTART=true → docker restart pi_wordpress automatically</span></div>
+      <div><span class="out">Orphaned lock → killed immediately + ntfy (backup must not be running)</span></div>
+    </div>
+  </div>
+
+  <div class="card-grid" style="margin-top:2rem;">
+    <div class="card">
+      <h3>Auto-restart</h3>
+      <p>Set <code>FPM_AUTO_RESTART=true</code> to automatically restart the WordPress container when saturation is detected. An ntfy notification confirms the restart. A cooldown (<code>FPM_RESTART_COOLDOWN</code>, default 1 hour) prevents restart loops.</p>
+    </div>
+    <div class="card">
+      <h3>Orphaned lock detection</h3>
+      <p>After a backup, the DB lock process is killed from <em>inside</em> the container so no orphaned <code>SLEEP(86400)</code> connections survive. The monitor also detects and kills any that slip through, with a 30-min alert cooldown.</p>
+    </div>
+    <div class="card">
+      <h3>Plugin integration</h3>
+      <p>The <strong>CloudScale Cyber and Devtools</strong> plugin (Debug AI tab → PHP-FPM Monitor) shows last saturation event, reason, and a pre-filled <code>config.env</code> snippet. Set <code>FPM_CALLBACK_URL</code> and <code>FPM_CALLBACK_TOKEN</code> to enable.</p>
+    </div>
+  </div>
+
+  <pre style="margin-top:1.5rem;"><span class="cmt"># config.env</span>
+<span class="val">FPM_SATURATION_THRESHOLD</span>=<span class="num">3</span>       <span class="cmt"># checks before alerting</span>
+<span class="val">FPM_WP_CONTAINER</span>=<span class="str">pi_wordpress</span>
+<span class="val">FPM_DB_CONTAINER</span>=<span class="str">pi_mariadb</span>
+<span class="val">FPM_AUTO_RESTART</span>=<span class="str">true</span>            <span class="cmt"># restart container automatically</span>
+<span class="val">FPM_RESTART_COOLDOWN</span>=<span class="num">3600</span>        <span class="cmt"># seconds between restarts (1 hour)</span>
+<span class="val">FPM_ALERT_COOLDOWN</span>=<span class="num">1800</span>          <span class="cmt"># seconds between repeat alerts</span></pre>
+
+  <p style="margin-top:1rem; color: var(--muted); font-size:0.9rem;">Install: <code>crontab -e</code> → add: <code>* * * * * /home/pi/pi2s3/fpm-saturation-monitor.sh 2&gt;/dev/null</code></p>
+</section>
+
 <!-- COST -->
 <hr class="divider" />
 <section id="cost">
