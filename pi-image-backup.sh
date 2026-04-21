@@ -293,8 +293,9 @@ db_lock() {
         _DB_CONTAINER=""; _DB_LOCK_PID=""; return 0
     fi
 
-    # Find the connection ID so db_unlock() can KILL it cleanly via SQL
-    local _q="SELECT ID FROM information_schema.PROCESSLIST WHERE INFO LIKE '%pi2s3-lock%' LIMIT 1;"
+    # Find the connection ID so db_unlock() can KILL it cleanly via SQL.
+    # Use the comment markers (not just the label) so this lookup does not match itself in PROCESSLIST.
+    local _q="SELECT ID FROM information_schema.PROCESSLIST WHERE INFO LIKE '%/* pi2s3-lock */%' AND TIME > 0 LIMIT 1;"
     if [[ -n "${_DB_CONTAINER}" ]]; then
         _DB_CONN_ID=$(docker exec "${_DB_CONTAINER}" \
             mariadb -u root -p"${_DB_ROOT_PASSWORD}" --batch --silent -e "${_q}" \
@@ -312,7 +313,7 @@ db_lock() {
 db_kill_orphaned_locks() {
     # Kill any pi2s3-lock sleep connections left by a previous crashed backup.
     # Safe to call unconditionally -- just a no-op if nothing is orphaned.
-    local _q="SELECT ID FROM information_schema.PROCESSLIST WHERE INFO LIKE '%pi2s3-lock%';"
+    local _q="SELECT ID FROM information_schema.PROCESSLIST WHERE INFO LIKE '%/* pi2s3-lock */%' AND TIME > 5;"
     local _ids=""
     if [[ -n "${_DB_CONTAINER:-}" ]]; then
         _ids=$(docker exec "${_DB_CONTAINER}"             mariadb -u root -p"${_DB_ROOT_PASSWORD}" --batch --silent -e "${_q}"             2>/dev/null | tr '\n' ' ' | xargs || true)

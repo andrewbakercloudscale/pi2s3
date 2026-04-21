@@ -4,6 +4,14 @@ All notable changes to pi2s3 are documented here.
 
 ---
 
+## [1.5.1] — 2026-04-21
+
+### Fixed
+
+- **Orphaned-lock false positives (self-referential PROCESSLIST query)** — `fpm-saturation-monitor.sh` and `db_kill_orphaned_locks()` detected their own `SELECT ... WHERE INFO LIKE '%pi2s3-lock%'` queries as orphaned locks. MariaDB includes the querying connection itself in `information_schema.PROCESSLIST`, and the WHERE clause literal contains the string "pi2s3-lock", so each check matched itself. Result: ntfy "Orphaned backup lock killed" alerts fired every 30 min with incrementing connection IDs even when no backup was running. Fix: narrowed pattern to `'%/* pi2s3-lock */%'` (comment delimiters are present in the actual backup lock SQL but not in the WHERE clause text) and added `AND TIME > 5` (real locks have been running for minutes; detection queries complete in milliseconds).
+
+---
+
 ## [1.5.0] — 2026-04-21
 
 ### Added

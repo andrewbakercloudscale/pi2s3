@@ -65,7 +65,7 @@ if [[ -n "${FPM_DB_ROOT_PASSWORD}" ]]; then
     lock_count=$(docker exec "${FPM_DB_CONTAINER}" mariadb \
         -uroot -p"${FPM_DB_ROOT_PASSWORD}" --batch --silent 2>/dev/null \
         -e "SELECT COUNT(*) FROM information_schema.PROCESSLIST
-            WHERE INFO LIKE '%pi2s3-lock%';" \
+            WHERE INFO LIKE '%/* pi2s3-lock */%' AND TIME > 5;" \
         | tail -1 || echo "0")
     if [[ "${lock_count:-0}" -gt 0 ]]; then
         backup_lock=true
@@ -88,7 +88,7 @@ fi
 if $backup_lock; then
     lock_ids=$(docker exec "${FPM_DB_CONTAINER}" mariadb \
         -uroot -p"${FPM_DB_ROOT_PASSWORD}" --batch --silent 2>/dev/null \
-        -e "SELECT ID FROM information_schema.PROCESSLIST WHERE INFO LIKE '%pi2s3-lock%';" \
+        -e "SELECT ID FROM information_schema.PROCESSLIST WHERE INFO LIKE '%/* pi2s3-lock */%' AND TIME > 5;" \
         | tr '\n' ' ' || true)
 
     # If pi-image-backup.sh is actively running, the lock is legitimate — leave it alone.
