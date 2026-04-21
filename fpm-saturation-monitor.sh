@@ -81,30 +81,36 @@ if [[ "${db_stuck:-0}" -gt 10 ]]; then
     reason="${reason:+${reason}; }${db_stuck} DB queries stuck >15s"
 fi
 
-# ── Orphaned backup lock: kill immediately, alert once per incident ───────────
+# ── Orphaned backup lock: kill only if backup is not actively running ─────────
 if $backup_lock; then
     lock_ids=$(docker exec "${FPM_DB_CONTAINER}" mariadb \
         -uroot -p"${FPM_DB_ROOT_PASSWORD}" --batch --silent 2>/dev/null \
         -e "SELECT ID FROM information_schema.PROCESSLIST WHERE INFO LIKE '%pi2s3-lock%';" \
         | tr '\n' ' ' || true)
-    for lid in $lock_ids; do
-        docker exec "${FPM_DB_CONTAINER}" mariadb \
-            -uroot -p"${FPM_DB_ROOT_PASSWORD}" --batch --silent 2>/dev/null \
-            -e "KILL ${lid};" || true
-    done
-    # Alert with 30-min cooldown — avoids spam during a multi-minute stuck backup
-    now=$(date +%s)
-    last_lock_alert=$(cat "$LOCK_ALERTED_FILE" 2>/dev/null || echo 0)
-    if [[ $((now - last_lock_alert)) -gt 1800 ]]; then
-        if [[ -n "$NTFY_URL" ]]; then
-            curl -s -X POST "$NTFY_URL" \
-                -H "Title: Orphaned backup lock killed (andrewbaker.ninja)" \
-                -H "Priority: high" \
-                -H "Tags: warning" \
-                -d "Orphaned pi2s3 DB lock detected and killed (conn ${lock_ids}). All writes unblocked. Will not alert again for 30 min." \
-                2>/dev/null || true
+
+    # If pi-image-backup.sh is actively running, the lock is legitimate — leave it alone.
+    if pgrep -f "pi-image-backup.sh" > /dev/null 2>&1; then
+        backup_lock=false
+    else
+        for lid in $lock_ids; do
+            docker exec "${FPM_DB_CONTAINER}" mariadb \
+                -uroot -p"${FPM_DB_ROOT_PASSWORD}" --batch --silent 2>/dev/null \
+                -e "KILL ${lid};" || true
+        done
+        # Alert with 30-min cooldown
+        now=$(date +%s)
+        last_lock_alert=$(cat "$LOCK_ALERTED_FILE" 2>/dev/null || echo 0)
+        if [[ $((now - last_lock_alert)) -gt 1800 ]]; then
+            if [[ -n "$NTFY_URL" ]]; then
+                curl -s -X POST "$NTFY_URL" \
+                    -H "Title: Orphaned backup lock killed (andrewbaker.ninja)" \
+                    -H "Priority: high" \
+                    -H "Tags: warning" \
+                    -d "Orphaned pi2s3 DB lock detected and killed (conn ${lock_ids}). All writes unblocked. Will not alert again for 30 min." \
+                    2>/dev/null || true
+            fi
+            echo "$now" > "$LOCK_ALERTED_FILE"
         fi
-        echo "$now" > "$LOCK_ALERTED_FILE"
     fi
 fi
 
