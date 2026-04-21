@@ -313,7 +313,7 @@ db_kill_orphaned_locks() {
     # Kill any pi2s3-lock sleep connections left by a previous crashed backup.
     # Safe to call unconditionally -- just a no-op if nothing is orphaned.
     local _q="SELECT ID FROM information_schema.PROCESSLIST WHERE INFO LIKE '%pi2s3-lock%';"
-    local _ids
+    local _ids=""
     if [[ -n "${_DB_CONTAINER:-}" ]]; then
         _ids=$(docker exec "${_DB_CONTAINER}"             mariadb -u root -p"${_DB_ROOT_PASSWORD}" --batch --silent -e "${_q}"             2>/dev/null | tr '\n' ' ' | xargs || true)
     elif [[ -n "${DB_ROOT_PASSWORD:-}" ]]; then
