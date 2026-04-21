@@ -867,8 +867,11 @@ log "Preflight checks..."
 
 command -v aws          &>/dev/null || die "aws CLI not found. Run: bash install.sh"
 command -v partclone.ext4 &>/dev/null || die "partclone not found. Run: sudo apt install partclone"
-aws_cmd s3 ls "s3://${S3_BUCKET}/" > /dev/null 2>&1 \
-    || die "Cannot reach s3://${S3_BUCKET}/. Check AWS credentials and bucket name."
+if ! aws_cmd s3 ls "s3://${S3_BUCKET}/" > /dev/null 2>&1; then
+    _aws_err=$(aws_cmd s3 ls "s3://${S3_BUCKET}/" 2>&1 | head -1)
+    _run_user=$(id -un)
+    die "Cannot reach s3://${S3_BUCKET}/. AWS credentials not configured for user '${_run_user}'. Run: aws configure (as ${_run_user}). Detail: ${_aws_err}"
+fi
 
 BOOT_DEV=$(detect_boot_device)
 DEV_SIZE=$(blockdev --getsize64 "${BOOT_DEV}" 2>/dev/null \
