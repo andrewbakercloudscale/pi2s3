@@ -113,3 +113,22 @@ Initial release.
 - `install.sh` — full setup, watchdog install, upgrade, status, uninstall
 - `--dry-run` mode for safe testing
 - Legacy dd format support (reads old `.img.gz` backups)
+
+
+---
+
+## [1.4.0] — 2026-04-21
+
+### Added
+
+- **`db_kill_orphaned_locks()`** — called unconditionally before `db_lock()` on every run. Queries `information_schema.PROCESSLIST` for any surviving `SELECT /* pi2s3-lock */ SLEEP(86400)` connections left by a previous crashed backup and kills them immediately. Prevents the new backup from hanging when `FLUSH TABLES WITH READ LOCK` blocks on an orphaned lock from the last run.
+- **`fpm-saturation-monitor.sh`** — host cron script (runs every minute via `* * * * *`) that detects PHP-FPM worker pool exhaustion and alerts via ntfy.sh. Three detection mechanisms: HTTP probe (5 s timeout), MariaDB long-running queries (>15 s from `wordpress` user), and orphaned `pi2s3-lock` connections (kills them immediately). Configurable via `config.env`: `FPM_SATURATION_THRESHOLD` (consecutive checks before alert, default: 3), `FPM_PROBE_URL`, `FPM_ALERT_COOLDOWN` (default: 1800 s). Orphaned-lock kills use a separate 30-min cooldown to suppress per-minute alert spam. Optional `FPM_CALLBACK_URL` / `FPM_CALLBACK_TOKEN` for reporting events back to the CloudScale Devtools plugin panel.
+
+### Changed
+
+- **Early FTWRL release** — `db_unlock()` is now called immediately after `sync` + `drop_caches`, before the multi-minute `partclone` imaging loop begins. InnoDB crash-recovery safely replays any redo log entries written during imaging, so fuzzy snapshots taken after the lock is released are valid. Site writes resume ~5 seconds into the backup window instead of after 15–30 minutes of imaging. Previously, the lock was held for the full imaging duration.
+- **`db_unlock()` kill-before-wait** — added `kill "${_DB_LOCK_PID}"` directly before `wait "${_DB_LOCK_PID}"`. The SQL `KILL <connection_id>` was supposed to terminate the `SELECT SLEEP(86400)` and cause the `docker exec mariadb` process to exit, but if the SQL kill raced or missed, `wait` would block for up to 86,400 seconds. The `kill` call terminates the subprocess unconditionally, making unlock always fast regardless of SQL KILL outcome.
+
+### Fixed
+
+- `probe_stop` is now always called (even when `_USE_DB_LOCK=false`) so the probe summary is always collected and logged. Previously `probe_stop` was inside the `if _USE_DB_LOCK` block and was silently skipped when the backup fell back to `STOP_DOCKER` mode.

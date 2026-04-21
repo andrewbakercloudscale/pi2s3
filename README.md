@@ -62,15 +62,19 @@ RESTORE (run on a Linux machine or another Pi)
 
 ### Zero-downtime mode (default for MariaDB/MySQL)
 
-**No config needed.** The default `DB_CONTAINER="auto"` automatically scans for a running MariaDB/MySQL container. If found, pi2s3 uses `FLUSH TABLES WITH READ LOCK` (FTWRL) instead of stopping Docker. All containers keep running. Only DB writes are blocked during the ~5–15 min imaging window. Same technique as mariabackup/xtrabackup.
+**No config needed.** The default `DB_CONTAINER="auto"` automatically scans for a running MariaDB/MySQL container. If found, pi2s3 uses `FLUSH TABLES WITH READ LOCK` (FTWRL) instead of stopping Docker. The lock is held only while `sync` and `drop_caches` complete (typically **under 10 seconds**), then released — DB writes resume while `partclone` images the partitions. Same technique as mariabackup/xtrabackup.
 
 What happens automatically:
-1. Scans running containers for any MariaDB/MySQL image
-2. Auto-reads `MYSQL_ROOT_PASSWORD` / `MARIADB_ROOT_PASSWORD` from the container env
-3. Issues `FLUSH TABLES WITH READ LOCK` via a persistent background connection
-4. Images all partitions — containers stay up, site serves reads and cached pages
-5. Kills the lock connection and releases all locks
-6. Reports probe pass/fail in the ntfy notification
+1. Kills any orphaned `pi2s3-lock` connections left by previous crashed backups (`db_kill_orphaned_locks`)
+2. Scans running containers for any MariaDB/MySQL image
+3. Auto-reads `MYSQL_ROOT_PASSWORD` / `MARIADB_ROOT_PASSWORD` from the container env
+4. Issues `FLUSH TABLES WITH READ LOCK` via a persistent background connection
+5. Runs `sync` + `drop_caches` to flush InnoDB dirty pages to disk (~5–10 seconds)
+6. **Releases the lock** — all containers stay up for the full imaging window
+7. Images all partitions with `partclone` — site serves reads *and* writes throughout
+8. Reports probe pass/fail in the ntfy notification
+
+InnoDB replays any redo log entries written during imaging on the next startup — fuzzy snapshots taken after lock release are fully consistent and bootable.
 
 If no MariaDB/MySQL container is found (or the lock fails), the script falls back to `STOP_DOCKER=true` automatically and logs why.
 
@@ -655,6 +659,53 @@ sudo journalctl -t pi2s3-watchdog --since today
 # View pre-reboot diagnostics (if a watchdog reboot occurred)
 sudo cat /var/log/pi2s3-watchdog-prediag.log
 ```
+
+---
+
+## PHP-FPM saturation monitor
+
+When all PHP-FPM workers are exhausted, WordPress serves 504 errors — but WP-Cron itself is also stuck, so any cron-based alerting goes silent at the worst moment. `fpm-saturation-monitor.sh` runs as a **host cron** (not inside Docker), so it fires regardless of PHP-FPM state.
+
+### How it works
+
+Three checks run every minute:
+
+| Check | Condition | Action |
+|-------|-----------|--------|
+| HTTP probe | `curl` to `FPM_PROBE_URL` times out or returns 5xx | Increment saturation counter |
+| Long DB queries | `> 15 s` queries from `wordpress` user in `PROCESSLIST` | Increment saturation counter |
+| Orphaned backup lock | `pi2s3-lock` sleep connection in `PROCESSLIST` | Kill immediately + alert (once per 30 min) |
+
+After `FPM_SATURATION_THRESHOLD` consecutive saturated checks (default: 3) an ntfy alert fires. A recovery notification fires when the site returns to normal.
+
+### Install
+
+```bash
+# 1. Add to crontab on the Pi host
+crontab -e
+# Paste: * * * * * /home/pi/pi2s3/fpm-saturation-monitor.sh 2>/dev/null
+```
+
+Add to `~/pi2s3/config.env`:
+```bash
+# ── PHP-FPM Saturation Monitor ──────────────────────────────────────────────
+FPM_SATURATION_THRESHOLD=3       # consecutive saturated checks before alerting
+FPM_PROBE_URL=http://localhost:8082/
+FPM_PROBE_TIMEOUT=5
+FPM_WP_CONTAINER=pi_wordpress
+FPM_DB_CONTAINER=pi_mariadb
+FPM_ALERT_COOLDOWN=1800          # seconds between repeat alerts (30 min)
+# Optional — report events back to CloudScale Devtools plugin:
+# FPM_CALLBACK_URL=https://yoursite.com/wp-admin/admin-ajax.php
+# FPM_CALLBACK_TOKEN=<token from Debug AI tab>
+```
+
+### Plugin integration
+
+The **CloudScale Cyber and Devtools** plugin (Debug AI tab → PHP-FPM Saturation Monitor) shows:
+- Configurable settings (threshold, cooldown, probe URL, containers)
+- A pre-filled `config.env` snippet with a one-click copy button
+- Last saturation event timestamp and reason (requires `FPM_CALLBACK_URL` / `FPM_CALLBACK_TOKEN`)
 
 ---
 

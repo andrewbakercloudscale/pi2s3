@@ -309,6 +309,30 @@ db_lock() {
     log "  Site stays UP. Reads/cached pages served. Writes blocked during imaging."
 }
 
+db_kill_orphaned_locks() {
+    # Kill any pi2s3-lock sleep connections left by a previous crashed backup.
+    # Safe to call unconditionally -- just a no-op if nothing is orphaned.
+    local _q="SELECT ID FROM information_schema.PROCESSLIST WHERE INFO LIKE '%pi2s3-lock%';"
+    local _ids
+    if [[ -n "${_DB_CONTAINER:-}" ]]; then
+        _ids=$(docker exec "${_DB_CONTAINER}"             mariadb -u root -p"${_DB_ROOT_PASSWORD}" --batch --silent -e "${_q}"             2>/dev/null | tr '\n' ' ' | xargs || true)
+    elif [[ -n "${DB_ROOT_PASSWORD:-}" ]]; then
+        _ids=$(mariadb -u root -p"${DB_ROOT_PASSWORD}" --batch --silent -e "${_q}"             2>/dev/null | tr '\n' ' ' | xargs || true)
+    fi
+    if [[ -n "${_ids// /}" ]]; then
+        log "  WARNING: orphaned pi2s3 backup lock found (conn ${_ids}) — killing now"
+        for _id in ${_ids}; do
+            local _kq="KILL ${_id};"
+            if [[ -n "${_DB_CONTAINER:-}" ]]; then
+                docker exec "${_DB_CONTAINER}"                     mariadb -u root -p"${_DB_ROOT_PASSWORD}" --batch --silent -e "${_kq}"                     2>/dev/null || true
+            else
+                mariadb -u root -p"${DB_ROOT_PASSWORD}" --batch --silent -e "${_kq}"                     2>/dev/null || true
+            fi
+        done
+        log "  Orphaned lock cleared."
+    fi
+}
+
 db_unlock() {
     [[ "${_DB_LOCKED}" != "true" ]] && return 0
     log ""
@@ -326,6 +350,9 @@ db_unlock() {
                 2>/dev/null || true
         fi
     fi
+    # Kill the background lock process directly (terminates docker exec subprocess
+    # regardless of whether the SQL KILL above succeeded). Prevents wait blocking.
+    [[ -n "${_DB_LOCK_PID:-}" ]] && kill "${_DB_LOCK_PID}" 2>/dev/null || true
     wait "${_DB_LOCK_PID:-}" 2>/dev/null || true
     _DB_LOCK_PID=""; _DB_CONN_ID=""; _DB_LOCKED=false
     log "  DB unlocked — writes unblocked."
@@ -953,6 +980,7 @@ preflight_health
 # Docker stop path: used only when no DB is configured (STOP_DOCKER=true).
 if [[ -n "${DB_CONTAINER}" || -n "${DB_ROOT_PASSWORD}" ]]; then
     probe_start
+    db_kill_orphaned_locks
     db_lock
     if [[ "${_DB_LOCKED}" == "true" ]]; then
         _USE_DB_LOCK=true
@@ -998,6 +1026,17 @@ log ""
 log "Syncing filesystem..."
 sync
 echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null 2>&1 || true
+
+# ── Release DB lock immediately after flush ───────────────────────────────────────
+# InnoDB dirty pages are now fully on disk. FTWRL was only needed for the
+# flush itself (~seconds). Releasing here lets writes resume during the
+# multi-minute partclone imaging window. InnoDB crash-recovery replays any
+# redo log entries that land during imaging -- fuzzy snapshots are safe.
+if [[ "${_USE_DB_LOCK}" == "true" ]]; then
+    db_unlock
+    log "  DB lock released -- site fully operational during imaging."
+    _USE_DB_LOCK=false
+fi
 
 # ── Partition table ───────────────────────────────────────────────────────────
 PARTITION_TABLE_KEY="${S3_DATE_PREFIX}/partition-table-${TIMESTAMP}.sfdisk"
@@ -1229,11 +1268,9 @@ rm -rf "${_BG_RESULT_DIR}"; _BG_RESULT_DIR=""
 BACKUP_END=$(date +%s)
 BACKUP_DURATION=$(( BACKUP_END - BACKUP_START ))
 
-# ── Unlock DB and collect probe results ──────────────────────────────────────
-if [[ "${_USE_DB_LOCK}" == "true" ]]; then
-    db_unlock
-    probe_stop
-fi
+# ── Collect probe results ──────────────────────────────────────────────────
+# DB already unlocked after flush -- just stop the probe.
+probe_stop
 
 # ── Restart Docker after imaging ──────────────────────────────────────────────
 if [[ "${_CONTAINERS_STOPPED}" == "true" && -n "${_STOPPED_IDS}" ]]; then
