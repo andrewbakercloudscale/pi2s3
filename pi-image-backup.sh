@@ -416,9 +416,9 @@ probe_stop() {
     [[ ! -f "${_PROBE_LOG:-}" ]] && return 0
 
     local _total _ok _fail
-    _total=$(grep -c . "${_PROBE_LOG}" 2>/dev/null || echo 0)
-    _ok=$(grep -c " HTTP 200 " "${_PROBE_LOG}" 2>/dev/null || echo 0)
-    _fail=$(( _total - _ok ))
+    _total=$(grep -c . "${_PROBE_LOG}" 2>/dev/null) || true
+    _ok=$(grep -c " HTTP 200 " "${_PROBE_LOG}" 2>/dev/null) || true
+    _fail=$(( ${_total:-0} - ${_ok:-0} ))
 
     log ""
     log "Site probe summary — ${_PROBE_URL_USED:-?} (${_total} check(s)):"
