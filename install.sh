@@ -47,6 +47,21 @@ ok()   { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ $*"; }
 warn() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ⚠ $*"; }
 die()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✗ ERROR: $*" >&2; exit 1; }
 
+# ── Pre-commit hook: block commits on the Pi ─────────────────────────────────
+install_no_commit_hook() {
+    local hook="${SCRIPT_DIR}/.git/hooks/pre-commit"
+    cat > "${hook}" <<'HOOKEOF'
+#!/usr/bin/env bash
+echo ""
+echo "  ✗ ERROR: Do not commit directly on the Pi."
+echo "  Edit locally on your Mac, then deploy:"
+echo "    git commit && git push && bash deploy-pi.sh"
+echo ""
+exit 1
+HOOKEOF
+    chmod +x "${hook}"
+}
+
 # ── Install watchdog helper ───────────────────────────────────────────────────
 install_watchdog() {
     log ""
@@ -149,6 +164,10 @@ upgrade() {
           echo "${POST_CHECK_CRON_LINE}" ) | crontab -
         ok "Post-backup check cron refreshed: ${POST_BACKUP_CHECK_SCHEDULE}"
     fi
+
+    # Block direct commits on the Pi
+    install_no_commit_hook
+    ok "Pre-commit hook: direct commits on Pi blocked"
 
     log ""
     log "Upgrade complete. Run 'bash install.sh --status' to verify."
@@ -567,6 +586,10 @@ else
     log "  Watchdog disabled (CF_WATCHDOG_ENABLED=false in config.env)."
     log "  To enable: set CF_WATCHDOG_ENABLED=true then run: bash install.sh --watchdog"
 fi
+
+# ── Step 8b: Pre-commit hook ─────────────────────────────────────────────────
+install_no_commit_hook
+ok "Pre-commit hook: direct commits on Pi blocked"
 
 # ── Step 9: Dry run ───────────────────────────────────────────────────────────
 log ""

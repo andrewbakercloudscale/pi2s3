@@ -1,6 +1,9 @@
 # User configuration — never commit this, it contains your bucket name and ntfy topic
 config.env
 
+# Claude Code personal settings (machine-specific paths)
+.claude/settings.local.json
+
 # macOS
 .DS_Store
 
