@@ -1133,7 +1133,7 @@
   <div class="card-grid" style="margin-top:2rem;">
     <div class="card">
       <h3>Auto-restart</h3>
-      <p>Set <code>FPM_AUTO_RESTART=true</code> to automatically restart the WordPress container when saturation is detected. An ntfy notification confirms the restart. A cooldown (<code>FPM_RESTART_COOLDOWN</code>, default 1 hour) prevents restart loops.</p>
+      <p>Set <code>FPM_AUTO_RESTART=true</code> to automatically restart the WordPress container when saturation is detected. An ntfy notification confirms the restart. A cooldown (<code>FPM_RESTART_COOLDOWN</code>, default 20 min) prevents restart loops. Configure both in the Devtools plugin (Debug AI → PHP-FPM Monitor) or directly in <code>config.env</code>.</p>
     </div>
     <div class="card">
       <h3>Orphaned lock detection</h3>
