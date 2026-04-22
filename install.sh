@@ -364,10 +364,21 @@ status() {
 main() {
 
 case "${1:-}" in
-    --uninstall) uninstall;        exit 0 ;;
-    --status)    status;           exit 0 ;;
-    --watchdog)  install_watchdog; exit 0 ;;
-    --upgrade)   upgrade;          exit 0 ;;
+    --uninstall)   uninstall;        exit 0 ;;
+    --status)      status;           exit 0 ;;
+    --watchdog)    install_watchdog; exit 0 ;;
+    --upgrade)     upgrade;          exit 0 ;;
+    --iam-policy)
+        # Print the minimum IAM policy, substituting bucket name if config.env exists
+        local _bucket="YOUR-BUCKET-NAME"
+        [[ -f "${CONFIG_FILE}" ]] && { source "${CONFIG_FILE}" 2>/dev/null || true; }
+        [[ -n "${S3_BUCKET:-}" ]] && _bucket="${S3_BUCKET}"
+        sed "s/YOUR-BUCKET-NAME/${_bucket}/g" "${SCRIPT_DIR}/iam-policy.json"
+        echo ""
+        echo "  Apply with:"
+        echo "    aws iam put-user-policy --user-name <USER> --policy-name pi2s3 \\"
+        echo "      --policy-document file://${SCRIPT_DIR}/iam-policy.json"
+        exit 0 ;;
 esac
 
 # ── Install ───────────────────────────────────────────────────────────────────
@@ -397,15 +408,19 @@ else
     read -r -p "  AWS region (e.g. af-south-1, us-east-1):  " input_region
     [[ -z "${input_region}" ]] && die "S3_REGION cannot be empty."
 
-    read -r -p "  ntfy URL (e.g. https://ntfy.sh/my-topic):  " input_ntfy
-    [[ -z "${input_ntfy}" ]] && die "NTFY_URL cannot be empty."
+    read -r -p "  ntfy URL (e.g. https://ntfy.sh/my-topic, or Enter to skip):  " input_ntfy
 
     # Write the values into config.env
     sed -i \
         -e "s|S3_BUCKET=\"\"|S3_BUCKET=\"${input_bucket}\"|" \
         -e "s|S3_REGION=\"us-east-1\"|S3_REGION=\"${input_region}\"|" \
-        -e "s|NTFY_URL=\"https://ntfy.sh/YOUR_TOPIC\"|NTFY_URL=\"${input_ntfy}\"|" \
         "${CONFIG_FILE}"
+    if [[ -n "${input_ntfy}" ]]; then
+        sed -i "s|NTFY_URL=\"https://ntfy.sh/YOUR_TOPIC\"|NTFY_URL=\"${input_ntfy}\"|" "${CONFIG_FILE}"
+    else
+        sed -i "s|NTFY_URL=\"https://ntfy.sh/YOUR_TOPIC\"|NTFY_URL=\"\"|" "${CONFIG_FILE}"
+        warn "ntfy skipped — no push notifications. Set NTFY_URL in config.env to enable later."
+    fi
 
     ok "config.env configured."
 fi
@@ -415,7 +430,7 @@ source "${CONFIG_FILE}"
 
 [[ -z "${S3_BUCKET:-}" ]] && die "S3_BUCKET is empty in config.env. Edit it and re-run."
 [[ -z "${S3_REGION:-}" ]] && die "S3_REGION is empty in config.env. Edit it and re-run."
-[[ -z "${NTFY_URL:-}"  ]] && die "NTFY_URL is empty in config.env. Edit it and re-run."
+[[ -z "${NTFY_URL:-}"  ]] && warn "NTFY_URL is not set — backups will run silently with no push notifications."
 
 CRON_SCHEDULE="${CRON_SCHEDULE:-0 2 * * *}"
 MAX_IMAGES="${MAX_IMAGES:-60}"
@@ -496,12 +511,15 @@ AWS_CMD="aws --region ${S3_REGION}"
 if ! ${AWS_CMD} s3 ls "s3://${S3_BUCKET}/" > /dev/null 2>&1; then
     warn "Cannot access s3://${S3_BUCKET}/. Check credentials."
     echo ""
+    echo "  Required IAM permissions (run to see the exact policy):"
+    echo "    bash install.sh --iam-policy"
+    echo ""
     read -r -p "  Run 'aws configure' now? [y/N] " do_configure
     if [[ "${do_configure,,}" == "y" ]]; then
         aws configure
         ${AWS_CMD} s3 ls "s3://${S3_BUCKET}/" > /dev/null 2>&1 \
             && ok "AWS access confirmed." \
-            || die "Still cannot access bucket. Check IAM permissions."
+            || die "Still cannot access bucket. Run 'bash install.sh --iam-policy' to see required permissions."
     else
         warn "Skipping. Run 'aws configure' before the first backup."
     fi
