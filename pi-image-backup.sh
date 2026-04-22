@@ -101,7 +101,7 @@ source "${SCRIPT_DIR}/lib/containers.sh"
 # ── Validate required config ─────────────────────────────────────────────────
 [[ -z "${S3_BUCKET:-}"  ]] && { echo "ERROR: S3_BUCKET is not set in config.env"; exit 1; }
 [[ -z "${S3_REGION:-}"  ]] && { echo "ERROR: S3_REGION is not set in config.env"; exit 1; }
-[[ -z "${NTFY_URL:-}"   ]] && { echo "ERROR: NTFY_URL is not set in config.env"; exit 1; }
+[[ -z "${NTFY_URL:-}"   ]] && echo "WARNING: NTFY_URL is not set — backups will run silently with no push notifications."
 
 # ── Defaults for optional config ─────────────────────────────────────────────
 MAX_IMAGES="${MAX_IMAGES:-60}"
@@ -200,6 +200,7 @@ _BG_PIDS=()
 _BG_RESULT_DIR=""
 
 ntfy_send() {
+    [[ -z "${NTFY_URL:-}" ]] && return 0
     local title="$1" msg="$2" priority="${3:-default}" tags="${4:-}"
     local extra=()
     [[ -n "$tags" ]] && extra+=(-H "Tags: $tags")
