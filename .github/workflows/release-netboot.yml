@@ -1,0 +1,80 @@
+name: Build Netboot Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      upload_bucket:
+        description: "S3 URI to upload to (e.g. s3://boot.pi2s3.com/). Leave blank to skip upload."
+        required: false
+        default: ""
+      pi_os_url:
+        description: "Pi OS Lite ARM64 URL (leave blank for latest)"
+        required: false
+        default: ""
+
+jobs:
+  build:
+    name: Build netboot boot files
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            qemu-user-static binfmt-support \
+            xz-utils python3 parted e2fsprogs \
+            cloud-guest-utils util-linux pigz
+
+      - name: Enable QEMU binfmt for ARM64
+        run: sudo update-binfmts --enable qemu-aarch64
+
+      - name: Configure AWS credentials (for upload)
+        if: ${{ github.event.inputs.upload_bucket != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.NETBOOT_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.NETBOOT_AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.NETBOOT_AWS_REGION || 'us-east-1' }}
+
+      - name: Build netboot image
+        run: |
+          ARGS=()
+          URL="${{ github.event.inputs.pi_os_url }}"
+          BUCKET="${{ github.event.inputs.upload_bucket }}"
+          [[ -n "${URL}"    ]] && ARGS+=(--pi-os-url "${URL}")
+          [[ -n "${BUCKET}" ]] && ARGS+=(--upload "${BUCKET}")
+          bash extras/build-netboot-image.sh "${ARGS[@]}"
+
+      - name: Find output directory
+        id: output
+        run: |
+          DIR=$(ls -d pi2s3-netboot-* | head -1)
+          echo "dir=${DIR}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload build artifacts (GitHub)
+        uses: actions/upload-artifact@v4
+        with:
+          name: pi2s3-netboot-${{ github.run_number }}
+          path: ${{ steps.output.outputs.dir }}/
+          retention-days: 30
+
+      - name: Summary
+        run: |
+          DIR="${{ steps.output.outputs.dir }}"
+          echo "## pi2s3 Netboot Build" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| File | Size |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|------|------|" >> "$GITHUB_STEP_SUMMARY"
+          for f in "${DIR}"/*; do
+            echo "| $(basename "$f") | $(du -h "$f" | cut -f1) |" >> "$GITHUB_STEP_SUMMARY"
+          done
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          BUCKET="${{ github.event.inputs.upload_bucket }}"
+          if [[ -n "${BUCKET}" ]]; then
+            echo "Uploaded to: \`${BUCKET}\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Not uploaded (no bucket specified). Download from Artifacts above." >> "$GITHUB_STEP_SUMMARY"
+          fi

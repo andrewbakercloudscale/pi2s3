@@ -75,6 +75,44 @@ sudo dd if=pi2s3-recovery-usb-*.img of=/dev/sdX bs=4M status=progress
 ```
 Boot, enter your S3 bucket + AWS credentials when prompted. Default SSH password: `recovery`.
 
+## setup-netboot.sh + build-netboot-image.sh
+
+Pi 5 HTTP netboot support. Configure a Pi 5 to fall back to the pi2s3 recovery environment over HTTP when no NVMe is present — no USB, no SD card, no laptop needed.
+
+**Who needs this:** anyone who wants zero-media recovery or plans to deploy multiple Pis (fleet use case).
+
+**How it works:**
+1. Pi 5 EEPROM has HTTP boot support (`BOOT_ORDER` entry `7`)
+2. When NVMe is missing/blank, the Pi fetches `kernel8.img` + `initrd.img` from `boot.pi2s3.com` (CloudFront → S3) over HTTP
+3. A minimal Linux environment boots in RAM, launches the pi2s3 restore wizard
+4. Restore streams your backup from S3 to the target device
+
+**One-time Pi setup:**
+```bash
+# Run on each Pi you want recovery-ready:
+bash ~/pi2s3/extras/setup-netboot.sh
+sudo reboot
+```
+
+**Trigger immediate netboot (e.g. to restore to new NVMe):**
+```bash
+bash ~/pi2s3/extras/setup-netboot.sh --force
+sudo reboot
+# After recovery, restore normal boot order:
+bash ~/pi2s3/extras/setup-netboot.sh
+```
+
+**Build and publish boot files** (requires Linux + AWS write access to boot.pi2s3.com):
+```bash
+bash ~/pi2s3/extras/build-netboot-image.sh --upload s3://boot.pi2s3.com/
+```
+Or trigger the **Build Netboot Image** workflow in GitHub Actions — it builds and uploads automatically.
+
+**Infrastructure required (one-time):**
+- S3 bucket serving static files at `boot.pi2s3.com` (or any public HTTP host)
+- CloudFront distribution with CNAME `boot.pi2s3.com` for low-latency global delivery
+- Public read access on the four boot files: `kernel8.img`, `initrd.img`, `config.txt`, `cmdline.txt`
+
 ## config.env.example
 
 Full config for both extras. Copy the relevant section into your `~/pi2s3/config.env`.
