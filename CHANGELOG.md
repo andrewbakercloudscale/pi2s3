@@ -4,6 +4,33 @@ All notable changes to pi2s3 are documented here.
 
 ---
 
+## [1.6.0] — 2026-04-22
+
+### Added
+
+- **One-liner installer** (`curl -sL pi2s3.com/install | bash`) — bootstrap script at `pi2s3.com/install` detects Pi model and architecture, installs git if missing, clones the repo (or pulls latest if already installed), and hands off to `install.sh`. Enables zero-prerequisite install from any Pi with internet access.
+- **Bucket auto-create** — `install.sh` now distinguishes `NoSuchBucket` errors from credential errors. If the bucket doesn't exist, offers to create it with `aws s3 mb` (default: yes). Handles the `LocationConstraint` requirement for all regions except `us-east-1`.
+- **First backup prompt** — after a successful dry-run, `install.sh` asks "Run a real backup now? [Y/n]". Removes the need to remember `--force` after install.
+- **`--iam-policy` flag** — `bash install.sh --iam-policy` prints the minimum IAM policy with the bucket name substituted from `config.env`. Shown as a hint whenever AWS access fails.
+- **`iam-policy.json`** — policy file included in the repo. Minimum permissions: `s3:CreateBucket`, `s3:ListBucket`, `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject`, `s3:PutLifecycleConfiguration`, `s3:GetLifecycleConfiguration`.
+- **Support matrix** — documented tested/expected/unsupported combinations of Pi hardware, storage, and OS in README.
+- **Shared library extraction** (`lib/log.sh`, `lib/aws.sh`, `lib/containers.sh`) — eliminates duplicate `log()`/`die()`/`aws_cmd()`/`find_db_container()`/`read_container_db_password()` definitions across scripts.
+- **`main()` guards** — all scripts now use `[[ "${BASH_SOURCE[0]}" == "${0}" ]] && main "$@"` so they can be safely sourced for testing.
+- **`push.sh`** — one-command push to GitHub + deploy to Pi with `--no-deploy` option.
+- **`deploy-pi.sh`** — LAN-first SSH pattern (tries `andrew-pi-5.local` directly, falls back to Cloudflare tunnel).
+
+### Changed
+
+- **ntfy is now optional** — `NTFY_URL` is no longer required. Installer prompt accepts Enter to skip. `ntfy_send()` is a no-op when `NTFY_URL` is empty. `config.env.example` defaults to blank.
+- **32-bit arch guard** — `install.sh` now exits immediately on `armv7l`/`armv6l` with a clear error message instead of downloading the wrong AWS CLI binary and failing mid-install.
+- **`get_manifest_field()` in `pi-image-restore.sh`** — replaced fragile `grep -o | cut` parsing with `jq -r ".field // empty"`.
+
+### Fixed
+
+- 32 code-review findings across all scripts: unquoted variables, missing `pipefail`, insecure temp files, `local` variable leaks, errors written to stdout, missing dependency checks.
+
+---
+
 ## [1.5.1] — 2026-04-21
 
 ### Fixed
@@ -53,16 +80,23 @@ All notable changes to pi2s3 are documented here.
   - `PROBE_LATEST_POST=true` — auto-discovers the latest WordPress post via REST API and probes that URL instead of the homepage, testing real dynamic content
   - Results logged and included in the ntfy success notification (e.g. `probe: 8/8 pass`)
 - **`DB_LOCK` → `STOP_DOCKER` fallback** — if `db_lock()` fails (wrong password, no DB, etc.) the script automatically falls back to the standard Docker stop and continues the backup
-
 - **Parallel partition imaging** — boot firmware partition (SD card) runs concurrently with the last NVMe partition. `BACKUP_EXTRA_DEVICE` partitions run concurrently with the entire boot-device imaging. Both use separate physical buses so reads don't contend. Implemented via `image_to_s3()` helper that works identically inline or backgrounded.
 - **`BACKUP_EXTRA_DEVICE` implemented** — was documented in `config.env.example` but never coded. Now fully functional: enumerates partitions on the extra device, images them in background parallel with boot device, adds results to manifest under `extra_device_partitions`.
 - **`image_to_s3()` helper function** — extracted from inline imaging code. Handles the full `partclone | pigz | [gpg] | [pv] | aws s3 cp` pipeline and writes `sha256=…\ncompressed=…` to a temp result file. Eliminates code duplication across boot partitions, boot firmware, and extra device.
+- **`db_kill_orphaned_locks()`** — called unconditionally before `db_lock()` on every run. Queries `information_schema.PROCESSLIST` for surviving `SELECT /* pi2s3-lock */ SLEEP(86400)` connections left by a previous crashed backup and kills them. Prevents the new backup from hanging when FTWRL blocks on a stale lock.
+- **`fpm-saturation-monitor.sh`** — host cron script (every minute) that detects PHP-FPM worker pool exhaustion and alerts via ntfy.sh. Three mechanisms: HTTP probe, MariaDB long-running queries (>15 s from `wordpress` user), orphaned `pi2s3-lock` connections (killed immediately). Configurable: `FPM_SATURATION_THRESHOLD`, `FPM_PROBE_URL`, `FPM_ALERT_COOLDOWN`. Optional `FPM_CALLBACK_URL`/`FPM_CALLBACK_TOKEN` for CloudScale Devtools plugin reporting.
 
 ### Changed
 
 - `STOP_DOCKER` is now the fallback path only; `DB_CONTAINER="auto"` (the default) attempts FTWRL lock first and falls back to Docker stop only if no DB is found
+- **Early FTWRL release** — `db_unlock()` now called immediately after `sync` + `drop_caches`, before the partclone imaging loop. Site writes resume ~5 seconds into the backup window instead of after 15–30 minutes of imaging.
+- **`db_unlock()` kill-before-wait** — `kill "${_DB_LOCK_PID}"` called before `wait` so unlock is always fast regardless of SQL KILL race outcome.
 - `config.env.example`: DB lock section added before `STOP_DOCKER` with inline documentation; probe section added
 - README + website hero updated to make clear zero-downtime is the default — no config change needed for MariaDB/MySQL Docker setups
+
+### Fixed
+
+- `probe_stop` is now always called (even when `_USE_DB_LOCK=false`) so the probe summary is always collected and logged.
 
 ---
 
@@ -151,20 +185,3 @@ Initial release.
 - Legacy dd format support (reads old `.img.gz` backups)
 
 
----
-
-## [1.4.0] — 2026-04-21
-
-### Added
-
-- **`db_kill_orphaned_locks()`** — called unconditionally before `db_lock()` on every run. Queries `information_schema.PROCESSLIST` for any surviving `SELECT /* pi2s3-lock */ SLEEP(86400)` connections left by a previous crashed backup and kills them immediately. Prevents the new backup from hanging when `FLUSH TABLES WITH READ LOCK` blocks on an orphaned lock from the last run.
-- **`fpm-saturation-monitor.sh`** — host cron script (runs every minute via `* * * * *`) that detects PHP-FPM worker pool exhaustion and alerts via ntfy.sh. Three detection mechanisms: HTTP probe (5 s timeout), MariaDB long-running queries (>15 s from `wordpress` user), and orphaned `pi2s3-lock` connections (kills them immediately). Configurable via `config.env`: `FPM_SATURATION_THRESHOLD` (consecutive checks before alert, default: 3), `FPM_PROBE_URL`, `FPM_ALERT_COOLDOWN` (default: 1800 s). Orphaned-lock kills use a separate 30-min cooldown to suppress per-minute alert spam. Optional `FPM_CALLBACK_URL` / `FPM_CALLBACK_TOKEN` for reporting events back to the CloudScale Devtools plugin panel.
-
-### Changed
-
-- **Early FTWRL release** — `db_unlock()` is now called immediately after `sync` + `drop_caches`, before the multi-minute `partclone` imaging loop begins. InnoDB crash-recovery safely replays any redo log entries written during imaging, so fuzzy snapshots taken after the lock is released are valid. Site writes resume ~5 seconds into the backup window instead of after 15–30 minutes of imaging. Previously, the lock was held for the full imaging duration.
-- **`db_unlock()` kill-before-wait** — added `kill "${_DB_LOCK_PID}"` directly before `wait "${_DB_LOCK_PID}"`. The SQL `KILL <connection_id>` was supposed to terminate the `SELECT SLEEP(86400)` and cause the `docker exec mariadb` process to exit, but if the SQL kill raced or missed, `wait` would block for up to 86,400 seconds. The `kill` call terminates the subprocess unconditionally, making unlock always fast regardless of SQL KILL outcome.
-
-### Fixed
-
-- `probe_stop` is now always called (even when `_USE_DB_LOCK=false`) so the probe summary is always collected and logged. Previously `probe_stop` was inside the `if _USE_DB_LOCK` block and was silently skipped when the backup fell back to `STOP_DOCKER` mode.
