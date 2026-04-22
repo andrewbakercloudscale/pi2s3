@@ -1,0 +1,17 @@
+# pi2s3 fleet deployment manifest
+# Fields: name, host/IP, backup_date, device, post_restore_script (optional)
+#
+# - name: friendly label used in logs and the summary table
+# - host: IP address or hostname reachable via SSH from this machine
+# - backup_date: YYYY-MM-DD or "latest"
+# - device: target block device on the remote Pi
+# - post_restore_script: local path to a post-restore script for this Pi (optional)
+#   See extras/post-restore-example.sh for a template.
+
+# Classroom Pis — all get the same base image + classroom post-restore
+pi-classroom-01,192.168.1.101,latest,/dev/nvme0n1,./post-restore/classroom.sh
+pi-classroom-02,192.168.1.102,latest,/dev/nvme0n1,./post-restore/classroom.sh
+pi-classroom-03,192.168.1.103,latest,/dev/nvme0n1,./post-restore/classroom.sh
+
+# Office Pi — different date + different post-restore (different CF tunnel / hostname)
+pi-office,192.168.1.50,2026-04-20,/dev/nvme0n1,./post-restore/office.sh

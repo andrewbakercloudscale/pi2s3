@@ -442,6 +442,9 @@ pi-image-restore.sh [options]
   --extract <path>            Extract a file or directory from a backup (Linux only)
   --partition <name>          Partition to mount for --extract (default: largest non-boot)
   --verify /dev/...           Verify a flashed device against S3 manifest (dd format)
+  --post-restore <script>     Run a script inside the restored root before reboot
+                              RESTORE_ROOT is exported pointing to the mounted partition.
+                              See extras/post-restore-example.sh for a template.
 ```
 
 ---
@@ -540,6 +543,113 @@ bash ~/pi2s3/test-recovery.sh --guide
 ```
 
 Prints the complete step-by-step recovery guide.
+
+---
+
+## Clone to a second Pi (--post-restore)
+
+Restore a backup to a second Pi and have it come up as a different site — different Cloudflare tunnel, hostname, and `.env` variables — without any manual editing after reboot.
+
+```bash
+bash ~/pi2s3/pi-image-restore.sh \
+  --date latest --device /dev/nvme0n1 \
+  --post-restore ~/post-restore-office.sh
+```
+
+After restore completes, `pi-image-restore.sh` mounts the restored root partition, exports `RESTORE_ROOT` pointing to it, and runs your script. Changes are written directly to the target device before the first boot.
+
+**Template:** [`extras/post-restore-example.sh`](extras/post-restore-example.sh) — covers hostname rename, Cloudflare tunnel credential swap, `.env` substitution, and SSH host key regeneration.
+
+---
+
+## Recovery USB image
+
+A bootable Raspberry Pi OS Lite image with pi2s3 and all dependencies pre-installed. Flash to a USB stick or SD card, plug into any Pi 5, power on — it auto-logs in and launches the restore wizard. No laptop, no internet, no Raspberry Pi Imager session needed at restore time.
+
+**Download a pre-built image** from [GitHub Releases](https://github.com/andrewbakercloudscale/pi2s3/releases) (tagged `recovery-usb/YYYY-MM-DD`), or build your own:
+
+```bash
+# Linux, ~15 min, ~6 GB free disk (x86_64 needs: sudo apt install qemu-user-static binfmt-support)
+bash ~/pi2s3/extras/build-recovery-usb.sh
+# → pi2s3-recovery-usb-YYYY-MM-DD.img.xz
+```
+
+Flash with Raspberry Pi Imager → **Use custom image**. Default SSH password: `recovery`.
+
+On first boot: Pi auto-logs in on tty1 → prompts for S3 bucket and AWS credentials if not yet configured → hands off to the interactive restore wizard.
+
+To publish a release, trigger the **Build Recovery USB Image** workflow in GitHub Actions.
+
+---
+
+## HTTP netboot (Pi 5)
+
+Configure a Pi 5 EEPROM to fall back to the pi2s3 restore environment over HTTP when no NVMe is present. No USB, no SD card, no laptop needed — just power and ethernet.
+
+**One-time setup per Pi:**
+
+```bash
+bash ~/pi2s3/extras/setup-netboot.sh
+sudo reboot
+```
+
+This adds `HTTP_HOST=boot.pi2s3.com` to the EEPROM and sets `BOOT_ORDER` to try NVMe first with HTTP as fallback. When the Pi boots with a blank or missing NVMe, it fetches `kernel8.img` + `initrd.img` from `boot.pi2s3.com` (CloudFront → S3) and boots the pi2s3 restore environment entirely in RAM.
+
+**Trigger immediate netboot (e.g. to restore to a new NVMe):**
+
+```bash
+bash ~/pi2s3/extras/setup-netboot.sh --force   # HTTP first
+sudo reboot
+# After recovery, restore normal boot order:
+bash ~/pi2s3/extras/setup-netboot.sh           # NVMe first, HTTP fallback
+```
+
+**Build and publish boot files:**
+
+```bash
+bash ~/pi2s3/extras/build-netboot-image.sh --upload s3://boot.pi2s3.com/
+```
+
+Or trigger the **Build Netboot Image** workflow in GitHub Actions.
+
+**Infrastructure:** S3 bucket + CloudFront distribution at `boot.pi2s3.com`. Terraform in [`extras/terraform/boot-infrastructure/`](extras/terraform/boot-infrastructure/README.md) with both automated and manual setup instructions.
+
+---
+
+## Fleet deployment
+
+Deploy the same backup to 10–100 Pis from a single CSV manifest. Each Pi gets the base image plus a per-Pi post-restore script that sets the hostname, Cloudflare tunnel credentials, SSH keys, and any `.env` variables.
+
+Pis must be in recovery mode before deploying — use netboot (recommended for fleets) or the recovery USB image.
+
+**Manifest (`fleet.csv`):**
+
+```csv
+# name,host,date,device,post_restore_script
+pi-classroom-01,192.168.1.101,latest,/dev/nvme0n1,./post-restore/classroom.sh
+pi-classroom-02,192.168.1.102,latest,/dev/nvme0n1,./post-restore/classroom.sh
+pi-office,192.168.1.50,2026-04-20,/dev/nvme0n1,./post-restore/office.sh
+```
+
+**Deploy:**
+
+```bash
+# Sequential (default)
+bash ~/pi2s3/extras/fleet-deploy.sh fleet.csv
+
+# All Pis simultaneously
+bash ~/pi2s3/extras/fleet-deploy.sh fleet.csv --parallel
+
+# Show plan without deploying
+bash ~/pi2s3/extras/fleet-deploy.sh fleet.csv --dry-run
+
+# Deploy a single Pi by name (for re-runs or failures)
+bash ~/pi2s3/extras/fleet-deploy.sh fleet.csv --only pi-classroom-02
+```
+
+`fleet-deploy.sh` SSHes into each Pi, copies `config.env` and the per-Pi post-restore script, then runs `pi-image-restore.sh` non-interactively. Per-Pi logs are saved to `fleet-deploy-logs-<timestamp>/`.
+
+See [`extras/fleet-example/`](extras/fleet-example/) for a complete worked example including a classroom post-restore template that auto-sets the hostname from the Pi's IP address.
 
 ---
 
