@@ -1,0 +1,95 @@
+name: Build Recovery USB Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      pi_os_url:
+        description: "Pi OS Lite ARM64 URL (leave blank for latest)"
+        required: false
+        default: ""
+      tag:
+        description: "Release tag (e.g. recovery-usb/2026-04-23)"
+        required: false
+        default: ""
+
+jobs:
+  build:
+    name: Build recovery USB image
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            qemu-user-static binfmt-support \
+            xz-utils python3 parted e2fsprogs \
+            cloud-guest-utils util-linux
+
+      - name: Enable QEMU binfmt for ARM64
+        run: sudo update-binfmts --enable qemu-aarch64
+
+      - name: Build recovery USB image
+        run: |
+          URL="${{ github.event.inputs.pi_os_url }}"
+          ARGS=()
+          [[ -n "${URL}" ]] && ARGS+=(--pi-os-url "${URL}")
+          bash extras/build-recovery-usb.sh "${ARGS[@]}"
+
+      - name: Find built image
+        id: image
+        run: |
+          IMG=$(ls pi2s3-recovery-usb-*.img.xz | head -1)
+          echo "path=${IMG}" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "${IMG}")" >> "$GITHUB_OUTPUT"
+          SIZE=$(du -h "${IMG}" | cut -f1)
+          echo "size=${SIZE}" >> "$GITHUB_OUTPUT"
+
+      - name: Determine release tag
+        id: tag
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          if [[ -z "${TAG}" ]]; then
+            TAG="recovery-usb/$(date +%Y-%m-%d)"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release and upload image
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: "pi2s3 Recovery USB — ${{ steps.tag.outputs.tag }}"
+          body: |
+            ## pi2s3 Recovery USB Image
+
+            Bootable Raspberry Pi OS Lite (ARM64) with pi2s3 pre-installed.
+            Flash to a USB stick or SD card and keep it in a drawer for
+            zero-prerequisite disaster recovery.
+
+            **Size:** ${{ steps.image.outputs.size }}
+
+            ### How to use
+
+            1. Flash `${{ steps.image.outputs.name }}` with [Raspberry Pi Imager](https://www.raspberrypi.com/software/) (choose **Use custom**), or:
+               ```bash
+               xz -d ${{ steps.image.outputs.name }}
+               sudo dd if=${{ steps.image.outputs.name %.xz }} of=/dev/sdX bs=4M status=progress
+               ```
+            2. Insert the USB/SD into any Raspberry Pi 5
+            3. Power on — the Pi auto-logs in and launches the pi2s3 restore wizard
+            4. Enter your S3 bucket, region, and AWS credentials when prompted
+            5. Pick a backup date and target device — restore streams directly from S3
+
+            **Default SSH password:** `recovery`
+
+            ### What's included
+
+            - Raspberry Pi OS Lite ARM64 (latest at build time)
+            - `partclone`, `pigz`, `pv`, `python3`, `git`, AWS CLI v2
+            - `pi2s3` repo pre-cloned at `/home/pi/pi2s3`
+            - Auto-login on first boot → restore wizard launches automatically
+          files: ${{ steps.image.outputs.path }}
+          draft: false
+          prerelease: false

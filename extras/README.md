@@ -50,6 +50,31 @@ bash ~/pi2s3/pi-image-restore.sh \
 
 The restored root is mounted read-write at `$RESTORE_ROOT`. Any changes made to `$RESTORE_ROOT/...` persist to the target device.
 
+## build-recovery-usb.sh + recovery-launcher.sh
+
+Build a bootable Raspberry Pi OS Lite image with pi2s3 pre-installed. Flash to a USB stick or SD card and keep it in a drawer. Plug into any Pi 5, power on — it auto-logs in and launches the restore wizard without any laptop, SD card, or internet access needed.
+
+**Who needs this:** anyone who wants a zero-prerequisite disaster recovery drive, or wants to hand a ready-to-go restore stick to a remote site.
+
+**Build the image** (requires Linux, ~6 GB free, ~15 min):
+```bash
+# On x86_64: install QEMU first
+sudo apt install qemu-user-static binfmt-support
+
+bash ~/pi2s3/extras/build-recovery-usb.sh
+# → pi2s3-recovery-usb-YYYY-MM-DD.img.xz
+```
+
+**Or download a pre-built image** from [GitHub Releases](https://github.com/andrewbakercloudscale/pi2s3/releases).
+
+**Flash and use:**
+```bash
+# Flash with Raspberry Pi Imager (choose "Use custom"), or:
+xz -d pi2s3-recovery-usb-*.img.xz
+sudo dd if=pi2s3-recovery-usb-*.img of=/dev/sdX bs=4M status=progress
+```
+Boot, enter your S3 bucket + AWS credentials when prompted. Default SSH password: `recovery`.
+
 ## config.env.example
 
 Full config for both extras. Copy the relevant section into your `~/pi2s3/config.env`.
