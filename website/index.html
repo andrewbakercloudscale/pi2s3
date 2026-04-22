@@ -655,6 +655,7 @@
     <a href="#prerequisites" class="hide-sm">Prerequisites</a>
     <a href="#quickstart" class="hide-sm">Quick start</a>
     <a href="#restore" class="hide-sm">Restore</a>
+    <a href="#go-further" class="hide-sm">Go further</a>
     <a href="#security" class="hide-sm">Security</a>
     <a href="#watchdog" class="hide-sm">Watchdog</a>
     <a href="#troubleshooting" class="hide-sm">Troubleshooting</a>
@@ -691,7 +692,7 @@
   <img src="pi2s3.jpg" alt="pi2s3 logo" class="hero-logo" />
   <div style="display:flex; gap:0.6rem; flex-wrap:wrap; justify-content:center; margin-bottom:1.5rem;">
     <div class="badge" style="margin-bottom:0;">Open Source &nbsp;·&nbsp; MIT License</div>
-    <div class="badge" style="margin-bottom:0; background:rgba(94,234,212,0.1); border-color:rgba(94,234,212,0.4); color:var(--accent2);">&#9679; New &nbsp;·&nbsp; Zero-downtime backup</div>
+    <div class="badge" style="margin-bottom:0; background:rgba(94,234,212,0.1); border-color:rgba(94,234,212,0.4); color:var(--accent2);">&#9679; v1.7.0 &nbsp;·&nbsp; Clone, netboot &amp; fleet deploy</div>
   </div>
   <h1>The <span class="gradient">AMI</span> for your<br>Raspberry Pi</h1>
   <p class="hero-sub">Nightly block-level backup to S3. <strong style="color:var(--text);">Zero downtime</strong>. MariaDB is in read-only mode, not stopped. <strong style="color:var(--accent2);">Zero config needed</strong>, it detects your DB automatically. Restore a complete bootable Pi to new hardware in one command.</p>
@@ -1036,8 +1037,10 @@
   <div class="qs-step">
     <div class="qs-num">1</div>
     <div class="qs-content">
-      <h3>Flash Raspberry Pi OS Lite (64-bit) to an SD card</h3>
-      <p>Use <a href="https://www.raspberrypi.com/software/" target="_blank" style="color:var(--accent2)">Raspberry Pi Imager</a>. Enable SSH in the imager settings. Boot the new Pi and SSH in.</p>
+      <h3>Get a Pi into recovery mode</h3>
+      <p><strong>Option A — Recovery USB (recommended, zero-prereq):</strong> Flash the <a href="https://github.com/andrewbakercloudscale/pi2s3/releases" target="_blank" style="color:var(--accent2);">pre-built recovery image</a> to a USB or SD card with <a href="https://www.raspberrypi.com/software/" target="_blank" style="color:var(--accent2)">Raspberry Pi Imager</a>. Boot — it auto-logs in and prompts for credentials. Skip to step 3.</p>
+      <p style="margin-top:0.5rem;"><strong>Option B — HTTP netboot (Pi 5, no media):</strong> Run <code>bash extras/setup-netboot.sh --force</code> on the Pi, reboot. It fetches the restore environment from <code>boot.pi2s3.com</code> over ethernet. Skip to step 3.</p>
+      <p style="margin-top:0.5rem;"><strong>Option C — Manual:</strong> Flash Raspberry Pi OS Lite (64-bit) to an SD card with Raspberry Pi Imager, enable SSH, boot, SSH in, continue to step 2.</p>
     </div>
   </div>
 
@@ -1119,9 +1122,71 @@
     </div>
   </div>
 
-  <p style="margin-top:2rem; color:var(--muted); font-size:0.9rem; border-left:3px solid var(--border); padding-left:1rem;">
+  <div class="qs-step" style="margin-top:2rem;">
+    <div class="qs-num qs-num--alt">or</div>
+    <div class="qs-content">
+      <h3>Clone to a second Pi (--post-restore)</h3>
+      <p>Restore to a second Pi and customise it — different hostname, Cloudflare tunnel, or <code>.env</code> variables — before the first boot. The restored root is mounted read-write and your script runs inside it.</p>
+      <pre><span class="kw">bash</span> pi-image-restore.sh <span class="kw">--date</span> latest <span class="kw">--device</span> /dev/nvme0n1 \
+  <span class="kw">--post-restore</span> ~/post-restore-office.sh</pre>
+      <p style="margin-top:0.5rem; font-size:0.85rem; color:var(--muted)">Template: <code>extras/post-restore-example.sh</code></p>
+    </div>
+  </div>
+
+  <p style="margin-top:1rem; color:var(--muted); font-size:0.9rem; border-left:3px solid var(--border); padding-left:1rem;">
     <strong style="color:var(--text);">If a restore is interrupted mid-way</strong> (network cut, power loss, wrong device) it is safe to rerun. partclone.restore writes blocks independently; rerunning overwrites the partial work cleanly. Re-apply the partition table with <code>sfdisk</code> before restarting the restore.
   </p>
+</section>
+
+<!-- GO FURTHER -->
+<hr class="divider" />
+<section id="go-further">
+  <div class="section-label">Beyond backup &amp; restore</div>
+  <h2>Clone, recover anywhere, deploy fleets</h2>
+  <p class="section-intro">pi2s3 ships four tools for scenarios beyond a single-Pi disaster recovery — staging environments, zero-media recovery, and mass deployment.</p>
+
+  <div class="card-grid">
+    <div class="card">
+      <h3>Clone / staging environments</h3>
+      <p>Restore a backup to a second Pi and have it come up as a different site — different Cloudflare tunnel, hostname, and <code>.env</code> values — without manual editing after reboot.</p>
+      <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="kw">bash</span> pi-image-restore.sh \
+  <span class="kw">--date</span> latest <span class="kw">--device</span> /dev/nvme0n1 \
+  <span class="kw">--post-restore</span> ~/post-restore-office.sh</pre>
+      <p style="margin-top:0.5rem; color:var(--muted); font-size:0.85rem;">A template covering hostname, CF tunnel, <code>.env</code>, and SSH keys is at <code>extras/post-restore-example.sh</code>.</p>
+    </div>
+
+    <div class="card">
+      <h3>Recovery USB image</h3>
+      <p>A pre-built bootable image with pi2s3 and all tools installed. Plug into any Pi 5, power on — it auto-logs in and launches the restore wizard. No laptop, no internet, no SD card setup required at restore time.</p>
+      <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="cmt"># Build your own (Linux, ~15 min)</span>
+<span class="kw">bash</span> extras/build-recovery-usb.sh</pre>
+      <p style="margin-top:0.5rem; color:var(--muted); font-size:0.85rem;">Or download a pre-built image from <a href="https://github.com/andrewbakercloudscale/pi2s3/releases" target="_blank" style="color:var(--accent2);">GitHub Releases</a>. Flash with Raspberry Pi Imager. Default SSH password: <code>recovery</code>.</p>
+    </div>
+
+    <div class="card">
+      <h3>HTTP netboot (Pi 5)</h3>
+      <p>Configure the Pi 5 EEPROM to fall back to the pi2s3 restore environment over HTTP when no NVMe is present. Power + ethernet is all you need — no physical media at all.</p>
+      <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="cmt"># One-time setup per Pi</span>
+<span class="kw">bash</span> extras/setup-netboot.sh
+<span class="kw">sudo</span> reboot
+
+<span class="cmt"># Force recovery boot immediately</span>
+<span class="kw">bash</span> extras/setup-netboot.sh <span class="kw">--force</span></pre>
+      <p style="margin-top:0.5rem; color:var(--muted); font-size:0.85rem;">Boot files served from <code>boot.pi2s3.com</code> (CloudFront → S3). Terraform in <code>extras/terraform/</code>.</p>
+    </div>
+
+    <div class="card">
+      <h3>Fleet deployment</h3>
+      <p>Deploy the same backup to 10–100 Pis from a CSV manifest. Each Pi gets the base image plus a per-Pi post-restore script for hostname, tunnel credentials, and SSH keys.</p>
+      <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="cmt"># fleet.csv</span>
+<span class="str">pi-01,192.168.1.101,latest,/dev/nvme0n1,./classroom.sh</span>
+<span class="str">pi-02,192.168.1.102,latest,/dev/nvme0n1,./classroom.sh</span>
+
+<span class="cmt"># Deploy all at once</span>
+<span class="kw">bash</span> extras/fleet-deploy.sh fleet.csv <span class="kw">--parallel</span></pre>
+      <p style="margin-top:0.5rem; color:var(--muted); font-size:0.85rem;">Per-Pi logs saved to <code>fleet-deploy-logs-*/</code>. Example manifest + scripts in <code>extras/fleet-example/</code>.</p>
+    </div>
+  </div>
 </section>
 
 <!-- WATCHDOG -->
@@ -1380,7 +1445,7 @@
   <div>
     <div class="footer-brand">pi<span>2</span>s3</div>
     <div class="footer-meta" style="margin-top:0.4rem;">Built by <a href="https://andrewbaker.ninja" target="_blank">Andrew Baker</a> · Group CIO, Capitec Bank</div>
-    <div style="margin-top:0.5rem;"><a href="https://github.com/andrewbakercloudscale/pi2s3/releases/tag/v1.5.0" target="_blank" style="display:inline-block; background: var(--surface2); border: 1px solid var(--border); border-radius:4px; padding:2px 8px; font-size:0.75rem; color: var(--accent); text-decoration:none; font-family: monospace;">v1.5.0</a></div>
+    <div style="margin-top:0.5rem;"><a href="https://github.com/andrewbakercloudscale/pi2s3/releases" target="_blank" style="display:inline-block; background: var(--surface2); border: 1px solid var(--border); border-radius:4px; padding:2px 8px; font-size:0.75rem; color: var(--accent); text-decoration:none; font-family: monospace;">v1.7.0</a></div>
   </div>
   <div class="footer-links">
     <a href="https://github.com/andrewbakercloudscale/pi2s3" target="_blank">GitHub</a>

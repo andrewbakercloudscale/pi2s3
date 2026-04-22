@@ -34,6 +34,14 @@ bash pi-image-backup.sh --verify
 
 ---
 
+## Faster alternatives to steps 1–3
+
+**Option A — Recovery USB (recommended):** Download the [pre-built recovery image](https://github.com/andrewbakercloudscale/pi2s3/releases) from GitHub Releases. Flash it to a USB stick or SD card with Raspberry Pi Imager. Boot the new Pi from it — it auto-logs in and launches the restore wizard. Skip directly to Step 4.
+
+**Option B — HTTP netboot (Pi 5, no media):** If you already ran `bash extras/setup-netboot.sh` on this Pi previously, remove the NVMe and reboot. The Pi fetches the restore environment over ethernet from `boot.pi2s3.com`. Skip to Step 4.
+
+---
+
 ## Step 2 — Flash the bootstrap SD (Mac, ~3 min)
 
 Download Raspberry Pi OS Lite (64-bit) and flash to the bootstrap SD.
