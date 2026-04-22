@@ -86,54 +86,27 @@ Default password for fresh Pi OS is `raspberry` (change it after recovery).
 
 ---
 
-## Step 4 — Set up the new Pi for restore (~5 min)
+## Step 4 — Restore (~25 min)
+
+One command handles dependencies, AWS credentials, and the restore:
 
 ```bash
-# Install restore dependencies
-sudo apt update -qq
-sudo apt install -y partclone pigz pv
-
-# Install AWS CLI v2
-curl -sL https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip -o /tmp/awscliv2.zip
-unzip -q /tmp/awscliv2.zip -d /tmp
-sudo /tmp/aws/install
-rm -rf /tmp/awscliv2.zip /tmp/aws
-
-# Configure AWS credentials
-aws configure
-# Enter: Access Key ID, Secret Access Key, region (af-south-1), output format (json)
-
-# Clone pi2s3
-git clone https://github.com/andrewbakercloudscale/pi2s3.git ~/pi2s3
-
-# Create config.env
-cp ~/pi2s3/config.env.example ~/pi2s3/config.env
-nano ~/pi2s3/config.env
-# Set: S3_BUCKET, S3_REGION, NTFY_URL (minimum required values)
+curl -sL pi2s3.com/restore | bash
 ```
 
----
+This will:
+1. Install `partclone`, `pigz`, `pv`, and AWS CLI v2
+2. Prompt for AWS credentials (Access Key ID, Secret, region) if not configured
+3. Clone pi2s3 into `~/pi2s3`
+4. Run `pi-image-restore.sh` interactively — list your S3 backups, pick a date, pick a target device, confirm, then stream directly from S3
 
-## Step 5 — Run the restore (~20–30 min)
+**You'll need your AWS credentials.** These were generated when you first set up pi2s3. Retrieve them from your password manager before starting.
 
+The NVMe restore streams ~3–10 GB from S3 and takes 15–25 minutes depending on your internet speed. Progress is shown per partition.
+
+**Non-interactive restore (if you already have pi2s3 cloned and AWS configured):**
 ```bash
-bash ~/pi2s3/pi-image-restore.sh
-```
-
-The script will:
-1. List available backups from S3 — select the most recent
-2. List available devices — select the NVMe (e.g. `/dev/nvme0n1`)
-3. Show a summary and ask for confirmation
-4. Stream each partition directly from S3 → gunzip → partclone (no local temp file)
-5. Prompt for the boot firmware partition — enter `/dev/mmcblk0p1` (the bootstrap SD's first partition)
-
-The NVMe restore takes ~20 minutes. Progress is shown per partition.
-
-**Non-interactive (if you know the date and device):**
-```bash
-bash ~/pi2s3/pi-image-restore.sh \
-  --date 2026-04-16 \
-  --device /dev/nvme0n1
+bash ~/pi2s3/pi-image-restore.sh --date 2026-04-16 --device /dev/nvme0n1 --yes
 ```
 
 ---
@@ -182,8 +155,8 @@ bash ~/pi2s3/test-recovery.sh --post-boot
 | Step | Time |
 |------|------|
 | Verify backup + flash bootstrap SD | ~5 min |
-| Boot new Pi + install tools | ~8 min |
-| Restore from S3 | ~20 min |
+| Boot new Pi + SSH in | ~3 min |
+| `curl pi2s3.com/restore \| bash` (deps + credentials + restore) | ~25 min |
 | Reboot + verify | ~3 min |
 | **Total** | **~35 minutes** |
 
