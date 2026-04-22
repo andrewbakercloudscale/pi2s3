@@ -1,82 +1,51 @@
 # pi2s3 — TODO
 
----
-
-## 1. Clone / staging environments
-
-**Use case:** Restore a pi2s3 image to a second Pi (office, staging, dev) and have it come up as a different site — different Cloudflare tunnel, different subdomain, different hostname — without manual editing after restore.
-
-**What's needed:**
-- `--post-restore <script>` flag on `pi-image-restore.sh`
-- Script runs inside the restored filesystem before reboot (chroot or post-boot via rc.local hook)
-- User provides a `post-restore-office.sh` that swaps CF tunnel credential, updates hostname, updates `.env` vars
-- Could ship example templates: `extras/post-restore-example.sh`
-
-**Outcome:** `bash pi-image-restore.sh --date latest --device /dev/nvme0n1 --post-restore ~/post-restore-office.sh` → running copy of the site in one command.
+All four planned items are complete as of v1.7.0.
 
 ---
 
-## 2. Pre-made recovery / clone USB
+## 1. Clone / staging environments — DONE (v1.7.0)
 
-**Use case:** Keep a bootable USB drive in a drawer (or post one to a remote site). Plug into any Pi 5, power on — it boots directly into a pi2s3 restore environment with no SD card, no laptop, no Raspberry Pi Imager needed.
+`--post-restore <script>` flag on `pi-image-restore.sh`. Mounts the restored root partition, exports `RESTORE_ROOT`, and runs the user script before first boot. Template at `extras/post-restore-example.sh`.
 
-**What's needed:**
-- Build a minimal Raspberry Pi OS Lite image (~1 GB) with pre-installed: `partclone`, `pigz`, `pv`, `aws-cli`, `pi2s3` repo
-- On first boot: auto-run `curl -sL pi2s3.com/restore | bash` (or just exec the local copy)
-- Publish as a downloadable `.img.xz` from GitHub Releases / S3
-- Users flash it once with Raspberry Pi Imager and keep it on a shelf
-
-**Outcome:** DR or clone with zero prerequisites on the recovery machine.
+```bash
+bash pi-image-restore.sh --date latest --device /dev/nvme0n1 --post-restore ~/post-restore-office.sh
+```
 
 ---
 
-## 3. HTTP netboot from AWS (Pi 5)
+## 2. Pre-made recovery / clone USB — DONE (v1.7.0)
 
-**Use case:** Boot a Pi 5 into a pi2s3 restore/clone environment with no physical media at all — just power + ethernet. Works for single Pi (office) and fleets (school).
+`extras/build-recovery-usb.sh` builds a bootable Pi OS Lite ARM64 image with all tools pre-installed. GitHub Actions workflow publishes it as a GitHub Release. On first boot: auto-login → credential prompt → restore wizard.
 
-**How Pi 5 HTTP boot works:**
-- Pi 5 EEPROM supports `BOOT_ORDER` entry `7` = HTTP boot
-- Pi gets an IP via DHCP from the local router (standard, nothing to configure)
-- Pi fetches kernel + initramfs from a configurable HTTP URL — can be anywhere on the internet
-- We host boot files on S3 / CloudFront at `boot.pi2s3.com`
-
-**What's needed:**
-- Build a pi2s3 rescue initramfs: minimal Linux + partclone + pigz + aws-cli + restore script
-- Host boot files (kernel, initrd, config.txt, cmdline.txt) on S3/CloudFront at `boot.pi2s3.com`
-- EEPROM configuration script: `bash pi2s3/extras/setup-netboot.sh` — sets `HTTP_HOST=boot.pi2s3.com` in EEPROM config and reboots
-- On netboot: initramfs prompts for AWS credentials, lists S3 backups, restores to target device
-- Optional: embed AWS credentials / S3 bucket in EEPROM `CUSTOM_ETH_CONFIG` so restore is fully unattended
-
-**Infrastructure:**
-- S3 bucket `boot.pi2s3.com` (or subfolder of existing bucket) — serves static boot files
-- CloudFront distribution in front for low-latency global delivery
-- Boot files updated via CI when initramfs changes
-
-**Outcome:** Configure EEPROM once (`bash extras/setup-netboot.sh`). Next time Pi boots with no NVMe attached (or NVMe blank), it automatically fetches restore environment from AWS and starts the restore flow.
+Pre-built images: [GitHub Releases](https://github.com/andrewbakercloudscale/pi2s3/releases) (tagged `recovery-usb/YYYY-MM-DD`).
 
 ---
 
-## 4. Fleet deployment (school / many Pis)
+## 3. HTTP netboot from AWS (Pi 5) — DONE (v1.7.0)
 
-**Use case:** Deploy an identical pi2s3 image to 10–100 Pis on the same network. Each Pi gets the same base OS + apps, then diverges with per-Pi config (hostname, credentials).
+`extras/setup-netboot.sh` configures Pi 5 EEPROM. `extras/build-netboot-image.sh` builds kernel + initramfs. Boot files served from `boot.pi2s3.com` (CloudFront → S3). Terraform in `extras/terraform/boot-infrastructure/`.
 
-**Builds on:** HTTP netboot (#3) + post-restore hook (#1)
-
-**What's needed:**
-- HTTP netboot configured on all fleet Pis (one-time EEPROM setup, can be scripted)
-- A fleet manifest: maps hostname → S3 backup date + post-restore script
-- `extras/fleet-deploy.sh` — iterates the manifest, SSH into each Pi (or trigger via netboot), restores + customises
-- Per-Pi post-restore scripts handle: hostname, SSH keys, app credentials, CF tunnel
-
-**Outcome:** `bash extras/fleet-deploy.sh fleet.csv` → N Pis imaged and customised from one command on a management machine.
+**Still needed before this works end-to-end:**
+- Apply Terraform to stand up `boot.pi2s3.com`
+- Trigger the Build Netboot Image GitHub Actions workflow to publish boot files
 
 ---
 
-## Priority order
+## 4. Fleet deployment (school / many Pis) — DONE (v1.7.0)
 
-| # | Feature | Effort | Value |
-|---|---------|--------|-------|
-| 1 | Post-restore hook (`--post-restore`) | Low | High — unlocks clone/staging today |
-| 2 | Pre-made recovery USB image | Medium | High — zero-prereq DR + easy handoff |
-| 3 | HTTP netboot from AWS | High | High — no physical media, fleet-ready |
-| 4 | Fleet deployment tooling | Medium (builds on 3) | High for multi-Pi |
+`extras/fleet-deploy.sh` reads a CSV manifest, SSHes into each recovery-mode Pi, copies `config.env` + per-Pi post-restore script, runs restore non-interactively. Supports `--parallel`, `--dry-run`, `--only <name>`.
+
+Example manifest + classroom post-restore template in `extras/fleet-example/`.
+
+```bash
+bash extras/fleet-deploy.sh fleet.csv --parallel
+```
+
+---
+
+## Next ideas (not yet scoped)
+
+- Embed AWS credentials in Pi 5 EEPROM `CUSTOM_ETH_CONFIG` for fully unattended netboot restore
+- GitHub Actions auto-rebuild of netboot/USB images when pi2s3 code changes
+- `--verify` flag on fleet-deploy to confirm all Pis came back up cleanly after restore
