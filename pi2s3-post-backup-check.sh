@@ -14,7 +14,7 @@
 # POST_BACKUP_CHECK_ENABLED=true in config.env.
 #
 # Cron example (30 min after a 2:00 AM backup):
-#   30 2 * * * bash /home/pi/pi2s3/pi2s3-post-backup-check.sh >> /var/log/pi2s3-backup.log 2>&1
+#   30 2 * * * bash ~/pi2s3/pi2s3-post-backup-check.sh >> /var/log/pi2s3-backup.log 2>&1
 # =============================================================
 set -euo pipefail
 

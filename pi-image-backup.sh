@@ -25,7 +25,7 @@
 #   bash pi-image-backup.sh --verify=DATE # verify specific date (YYYY-MM-DD)
 #
 # Cron (installed automatically by install.sh):
-#   0 2 * * * bash /home/pi/pi2s3/pi-image-backup.sh >> /var/log/pi2s3-backup.log 2>&1
+#   0 2 * * * bash ~/pi2s3/pi-image-backup.sh >> /var/log/pi2s3-backup.log 2>&1
 #
 # Prerequisites on Pi:
 #   - config.env filled in (see config.env.example)
@@ -174,7 +174,7 @@ done
 
 _BACKUP_SUCCEEDED=false
 _CONTAINERS_STOPPED=false
-_STOPPED_IDS=""
+_STOPPED_IDS=()
 _PRE_BACKUP_RAN=false
 _POST_BACKUP_RAN=false
 _USE_DB_LOCK=false
@@ -183,6 +183,7 @@ _DB_CONTAINER=""
 _DB_ROOT_PASSWORD=""
 _DB_LOCK_PID=""
 _DB_CONN_ID=""
+_DB_LOCK_TAG="pi2s3-lock-$$"
 _PROBE_PID=""
 _PROBE_LOG=""
 _PROBE_URL_USED=""
@@ -207,12 +208,32 @@ ntfy_send() {
     local title="$1" msg="$2" priority="${3:-default}" tags="${4:-}"
     local extra=()
     [[ -n "$tags" ]] && extra+=(-H "Tags: $tags")
-    curl -s --max-time 10 \
-        -H "Title: $title" \
-        -H "Priority: $priority" \
-        "${extra[@]}" \
-        -d "$msg" \
-        "${NTFY_URL}" > /dev/null 2>&1 || true
+    local _attempt _rc=1
+    for _attempt in 1 2 3; do
+        curl -s --max-time 10 \
+            -H "Title: $title" \
+            -H "Priority: $priority" \
+            "${extra[@]}" \
+            -d "$msg" \
+            "${NTFY_URL}" > /dev/null 2>&1 && { _rc=0; break; }
+        [[ ${_attempt} -lt 3 ]] && sleep $(( _attempt * 5 ))
+    done
+    return ${_rc}
+}
+
+# Run a mariadb query without exposing the password in command-line args.
+# Usage: db_exec [container] password sql...
+# If container is non-empty, runs via docker exec with MYSQL_PWD set in the container env.
+# If container is empty, runs mariadb/mysql locally with MYSQL_PWD in the environment.
+db_exec() {
+    local _c="$1" _pw="$2"; shift 2
+    if [[ -n "${_c}" ]]; then
+        docker exec -e "MYSQL_PWD=${_pw}" "${_c}" \
+            mariadb -u root --batch --silent "$@" 2>/dev/null
+    else
+        MYSQL_PWD="${_pw}" mariadb -u root --batch --silent "$@" 2>/dev/null \
+            || MYSQL_PWD="${_pw}" mysql -u root --batch --silent "$@" 2>/dev/null
+    fi
 }
 
 # ── MariaDB/MySQL consistent-snapshot lock ───────────────────────────────────
@@ -271,18 +292,8 @@ db_lock() {
     # Run FTWRL in background. The SLEEP(86400) keepalive holds the connection
     # (and the global read lock) open until db_unlock() kills the connection ID.
     # A unique comment allows processlist lookup even if multiple sleep queries exist.
-    if [[ -n "${_DB_CONTAINER}" ]]; then
-        docker exec -i "${_DB_CONTAINER}" \
-            mariadb -u root -p"${_DB_ROOT_PASSWORD}" --batch --silent \
-            -e "FLUSH TABLES WITH READ LOCK; FLUSH LOGS; SELECT /* pi2s3-lock */ SLEEP(86400);" \
-            2>/dev/null &
-    else
-        { mariadb -u root -p"${_DB_ROOT_PASSWORD}" --batch --silent \
-              -e "FLUSH TABLES WITH READ LOCK; FLUSH LOGS; SELECT /* pi2s3-lock */ SLEEP(86400);" \
-          || mysql -u root -p"${_DB_ROOT_PASSWORD}" --batch --silent \
-              -e "FLUSH TABLES WITH READ LOCK; FLUSH LOGS; SELECT /* pi2s3-lock */ SLEEP(86400);" ; } \
-          2>/dev/null &
-    fi
+    db_exec "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" \
+        -e "FLUSH TABLES WITH READ LOCK; FLUSH LOGS; SELECT /* ${_DB_LOCK_TAG} */ SLEEP(86400);" &
     _DB_LOCK_PID=$!
 
     sleep 3  # allow FTWRL to establish before imaging starts
@@ -295,15 +306,9 @@ db_lock() {
 
     # Find the connection ID so db_unlock() can KILL it cleanly via SQL.
     # Use the comment markers (not just the label) so this lookup does not match itself in PROCESSLIST.
-    local _q="SELECT ID FROM information_schema.PROCESSLIST WHERE INFO LIKE '%/* pi2s3-lock */%' AND TIME > 0 LIMIT 1;"
-    if [[ -n "${_DB_CONTAINER}" ]]; then
-        _DB_CONN_ID=$(docker exec "${_DB_CONTAINER}" \
-            mariadb -u root -p"${_DB_ROOT_PASSWORD}" --batch --silent -e "${_q}" \
-            2>/dev/null | tail -1 || true)
-    else
-        _DB_CONN_ID=$(mariadb -u root -p"${_DB_ROOT_PASSWORD}" --batch --silent -e "${_q}" \
-            2>/dev/null | tail -1 || true)
-    fi
+    local _q="SELECT ID FROM information_schema.PROCESSLIST WHERE INFO LIKE '%/* ${_DB_LOCK_TAG} */%' AND TIME > 0 LIMIT 1;"
+    _DB_CONN_ID=$(db_exec "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" -e "${_q}" \
+        | tail -1 || true)
 
     _DB_LOCKED=true
     log "  LOCKED — FLUSH TABLES WITH READ LOCK active (conn ${_DB_CONN_ID:-?})"
@@ -313,22 +318,16 @@ db_lock() {
 db_kill_orphaned_locks() {
     # Kill any pi2s3-lock sleep connections left by a previous crashed backup.
     # Safe to call unconditionally -- just a no-op if nothing is orphaned.
-    local _q="SELECT ID FROM information_schema.PROCESSLIST WHERE INFO LIKE '%/* pi2s3-lock */%' AND TIME > 5;"
-    local _ids=""
-    if [[ -n "${_DB_CONTAINER:-}" ]]; then
-        _ids=$(docker exec "${_DB_CONTAINER}"             mariadb -u root -p"${_DB_ROOT_PASSWORD}" --batch --silent -e "${_q}"             2>/dev/null | tr '\n' ' ' | xargs || true)
-    elif [[ -n "${DB_ROOT_PASSWORD:-}" ]]; then
-        _ids=$(mariadb -u root -p"${DB_ROOT_PASSWORD}" --batch --silent -e "${_q}"             2>/dev/null | tr '\n' ' ' | xargs || true)
+    local _q="SELECT ID FROM information_schema.PROCESSLIST WHERE INFO LIKE '%/* pi2s3-lock%' AND TIME > 5;"
+    local _ids="" _pw="${_DB_ROOT_PASSWORD:-${DB_ROOT_PASSWORD:-}}"
+    if [[ -n "${_DB_CONTAINER:-}" || -n "${_pw}" ]]; then
+        _ids=$(db_exec "${_DB_CONTAINER:-}" "${_pw}" -e "${_q}" \
+            2>/dev/null | tr '\n' ' ' | xargs || true)
     fi
     if [[ -n "${_ids// /}" ]]; then
         log "  WARNING: orphaned pi2s3 backup lock found (conn ${_ids}) — killing now"
         for _id in ${_ids}; do
-            local _kq="KILL ${_id};"
-            if [[ -n "${_DB_CONTAINER:-}" ]]; then
-                docker exec "${_DB_CONTAINER}"                     mariadb -u root -p"${_DB_ROOT_PASSWORD}" --batch --silent -e "${_kq}"                     2>/dev/null || true
-            else
-                mariadb -u root -p"${DB_ROOT_PASSWORD}" --batch --silent -e "${_kq}"                     2>/dev/null || true
-            fi
+            db_exec "${_DB_CONTAINER:-}" "${_pw}" -e "KILL ${_id};" 2>/dev/null || true
         done
         log "  Orphaned lock cleared."
     fi
@@ -341,21 +340,14 @@ db_unlock() {
 
     if [[ "${DRY_RUN}" != "true" && -n "${_DB_CONN_ID:-}" ]]; then
         # KILL the lock-holding connection by its ID — releases FTWRL server-side
-        local _q="KILL ${_DB_CONN_ID};"
-        if [[ -n "${_DB_CONTAINER}" ]]; then
-            docker exec "${_DB_CONTAINER}" \
-                mariadb -u root -p"${_DB_ROOT_PASSWORD}" --batch --silent -e "${_q}" \
-                2>/dev/null || true
-        else
-            mariadb -u root -p"${_DB_ROOT_PASSWORD}" --batch --silent -e "${_q}" \
-                2>/dev/null || true
-        fi
+        db_exec "${_DB_CONTAINER:-}" "${_DB_ROOT_PASSWORD:-}" \
+            -e "KILL ${_DB_CONN_ID};" 2>/dev/null || true
     fi
     # Kill the mariadb client inside the container directly — killing the host-side
     # docker exec wrapper (below) does not reliably terminate the process inside
     # the container, leaving an orphaned SLEEP(86400) connection.
     if [[ "${DRY_RUN}" != "true" && -n "${_DB_CONTAINER:-}" ]]; then
-        docker exec "${_DB_CONTAINER}" pkill -9 -f "pi2s3-lock" 2>/dev/null || true
+        docker exec "${_DB_CONTAINER}" pkill -9 -f "${_DB_LOCK_TAG}" 2>/dev/null || true
     fi
     # Kill the host-side docker exec wrapper and wait for it to exit.
     [[ -n "${_DB_LOCK_PID:-}" ]] && kill "${_DB_LOCK_PID}" 2>/dev/null || true
@@ -505,15 +497,19 @@ preflight_health() {
         [[ -z "${_unhealthy}" && -z "${_exited}" ]] && log "  Docker: all containers healthy."
     fi
 
-    # Check 2: Free disk space on root filesystem
-    local _free_mb
-    _free_mb=$(df -m / 2>/dev/null | awk 'NR==2{print $4}' || echo "0")
-    if [[ ${_free_mb} -lt ${PREFLIGHT_MIN_FREE_MB} ]]; then
-        log "  WARN: only ${_free_mb} MB free on / (minimum: ${PREFLIGHT_MIN_FREE_MB} MB)"
-        _warn=true
-    else
-        log "  Free space: ${_free_mb} MB on / (OK)."
-    fi
+    # Check 2: Free disk space on key filesystems
+    local _fs _free_mb
+    for _fs in / /tmp /var/log; do
+        # Skip if mountpoint doesn't exist or isn't a separate mount (df will still work for /)
+        mountpoint -q "${_fs}" 2>/dev/null || [[ "${_fs}" == "/" ]] || continue
+        _free_mb=$(df -m "${_fs}" 2>/dev/null | awk 'NR==2{print $4}' || echo "0")
+        if [[ ${_free_mb} -lt ${PREFLIGHT_MIN_FREE_MB} ]]; then
+            log "  WARN: only ${_free_mb} MB free on ${_fs} (minimum: ${PREFLIGHT_MIN_FREE_MB} MB)"
+            _warn=true
+        else
+            log "  Free space on ${_fs}: ${_free_mb} MB (OK)."
+        fi
+    done
 
     # Check 3: Recent I/O errors in dmesg (last hour)
     local _io_errors
@@ -564,10 +560,12 @@ partclone_tool() {
 #   image_to_s3 ... &  _BG_PIDS+=("$!")
 image_to_s3() {
     local _part="$1" _key="$2" _tool="$3" _result_file="$4"
-    local _sha_tmp
+    local _sha_tmp _pipe_status
     _sha_tmp=$(mktemp)
-    # -F: allow cloning mounted partitions
+    # -F: allow cloning mounted partitions. Run pipeline with set -e disabled so we
+    # can capture PIPESTATUS for per-stage diagnostics before returning.
     # shellcheck disable=SC2086
+    set +e
     sudo "${_tool}" -c -F -s "${_part}" -o - \
         | ${COMPRESSOR} \
         | tee >(sha256sum | awk '{print $1}' > "${_sha_tmp}") \
@@ -576,8 +574,28 @@ image_to_s3() {
         | aws_cmd s3 cp - "s3://${S3_BUCKET}/${_key}" \
             --storage-class "${S3_STORAGE_CLASS}" \
             --no-progress
+    # Capture before any other command resets PIPESTATUS
+    _pipe_status=("${PIPESTATUS[@]}")
+    set -e
+    # Stage labels match the fixed pipeline order above
+    local _labels=("partclone" "compress" "tee" "encrypt" "throttle" "aws-s3")
+    local _i _any_fail=false
+    for _i in "${!_pipe_status[@]}"; do
+        if [[ "${_pipe_status[_i]}" -ne 0 ]]; then
+            log "ERROR: imaging pipeline stage '${_labels[_i]:-stage${_i}}' exited ${_pipe_status[_i]} (${_part} → ${_key})"
+            _any_fail=true
+        fi
+    done
+    if [[ "${_any_fail}" == "true" ]]; then
+        rm -f "${_sha_tmp}"
+        return 1
+    fi
     local _sha _compressed _ch
-    _sha=$(cat "${_sha_tmp}"); rm -f "${_sha_tmp}"
+    _sha=$(cat "${_sha_tmp}" 2>/dev/null || true); rm -f "${_sha_tmp}"
+    if [[ -z "${_sha}" ]]; then
+        log "ERROR: sha256 not computed for ${_part} — sha256sum subprocess did not complete"
+        return 1
+    fi
     _compressed=$(aws_cmd s3 ls "s3://${S3_BUCKET}/${_key}" 2>/dev/null \
         | awk '{print $3}' | head -1 || echo "0")
     if [[ "${_compressed:-0}" -eq 0 ]]; then
@@ -618,16 +636,15 @@ Manual action required. Command was: ${POST_BACKUP_CMD}" \
         fi
     fi
     # Safety net: if the script crashes mid-imaging, ensure Docker comes back up.
-    if [[ "${_CONTAINERS_STOPPED}" == "true" && -n "${_STOPPED_IDS}" ]]; then
+    if [[ "${_CONTAINERS_STOPPED}" == "true" && ${#_STOPPED_IDS[@]} -gt 0 ]]; then
         log "Restarting Docker containers (crash recovery)..."
-        # shellcheck disable=SC2086
-        if docker start ${_STOPPED_IDS} 2>&1; then
+        if docker start "${_STOPPED_IDS[@]}" 2>&1; then
             log "  Containers restarted."
         else
             log "  ERROR: docker start failed — containers may still be stopped!"
             ntfy_send "pi2s3 — containers NOT restarted" \
                 "URGENT: backup crashed and container restart FAILED on $(hostname).
-Manual action required. Run: docker start ${_STOPPED_IDS}" \
+Manual action required. Run: docker start ${_STOPPED_IDS[*]}" \
                 "urgent" "sos,floppy_disk"
         fi
         _CONTAINERS_STOPPED=false
@@ -1002,13 +1019,13 @@ fi
 if [[ "${_USE_DB_LOCK}" != "true" && "${STOP_DOCKER}" == "true" ]] \
    && command -v docker &>/dev/null \
    && docker info &>/dev/null 2>&1; then
-    _STOPPED_IDS=$(docker ps -q 2>/dev/null || true)
-    if [[ -n "${_STOPPED_IDS}" ]]; then
-        CONTAINER_COUNT=$(echo "${_STOPPED_IDS}" | wc -w | tr -d ' ')
+    mapfile -t _STOPPED_IDS < <(docker ps -q 2>/dev/null || true)
+    if [[ ${#_STOPPED_IDS[@]} -gt 0 ]]; then
+        CONTAINER_COUNT=${#_STOPPED_IDS[@]}
         log ""
         log "Stopping ${CONTAINER_COUNT} Docker container(s) for consistent snapshot..."
         [[ "${DRY_RUN}" != "true" ]] \
-            && docker stop --timeout "${DOCKER_STOP_TIMEOUT}" ${_STOPPED_IDS}
+            && docker stop --timeout "${DOCKER_STOP_TIMEOUT}" "${_STOPPED_IDS[@]}"
         _CONTAINERS_STOPPED=true
         log "  Stopped. Will restart after imaging."
     fi
@@ -1085,6 +1102,11 @@ _part_meta() {
     _PNAME=$(basename "${_p}")
     _FSTYPE=$(lsblk -no FSTYPE "${_p}" 2>/dev/null | tr -d '[:space:]' || echo "")
     _TOOL=$(partclone_tool "${_FSTYPE}")
+    if [[ "${_TOOL}" == "partclone.dd" && -n "${_FSTYPE}" ]]; then
+        log "  WARN: no partclone module for filesystem '${_FSTYPE}' on ${_p} — falling back to partclone.dd (copies every block, slow on sparse devices)"
+    elif [[ "${_TOOL}" == "partclone.dd" ]]; then
+        log "  WARN: filesystem type unknown on ${_p} — falling back to partclone.dd (copies every block)"
+    fi
     _SIZE_B=$(lsblk -bdno SIZE "${_p}" 2>/dev/null || echo "0")
     _SIZE_H=$(numfmt --to=iec "${_SIZE_B}" 2>/dev/null || echo "?")
     _USED_B=0; _USED_H="?"
@@ -1282,22 +1304,21 @@ BACKUP_DURATION=$(( BACKUP_END - BACKUP_START ))
 probe_stop
 
 # ── Restart Docker after imaging ──────────────────────────────────────────────
-if [[ "${_CONTAINERS_STOPPED}" == "true" && -n "${_STOPPED_IDS}" ]]; then
+if [[ "${_CONTAINERS_STOPPED}" == "true" && ${#_STOPPED_IDS[@]} -gt 0 ]]; then
     log ""
     log "Restarting Docker containers (imaging complete)..."
     if [[ "${DRY_RUN}" != "true" ]]; then
-        # shellcheck disable=SC2086
-        if docker start ${_STOPPED_IDS} 2>&1; then
+        if docker start "${_STOPPED_IDS[@]}" 2>&1; then
             log "  Containers restarted."
         else
             log "  ERROR: docker start failed — containers may still be stopped!"
             ntfy_send "pi2s3 — containers NOT restarted" \
                 "URGENT: post-imaging container restart FAILED on $(hostname).
-Manual action required. Run: docker start ${_STOPPED_IDS}" \
+Manual action required. Run: docker start ${_STOPPED_IDS[*]}" \
                 "urgent" "sos,floppy_disk"
         fi
     else
-        log "  [DRY RUN] docker start ${_STOPPED_IDS}"
+        log "  [DRY RUN] docker start ${_STOPPED_IDS[*]}"
     fi
     _CONTAINERS_STOPPED=false
 fi
@@ -1411,9 +1432,16 @@ BACKUP_DATES=$(aws_cmd s3 ls "s3://${S3_BUCKET}/${S3_PREFIX}/" 2>/dev/null \
 TOTAL_IMAGES=$(echo "${BACKUP_DATES}" | grep -c . || true)
 log "  Total on S3: ${TOTAL_IMAGES}"
 
+# Verify today's backup appears before pruning — S3 listing can lag briefly
+# after a fresh upload, and we must never prune a backup we just made.
+if ! echo "${BACKUP_DATES}" | grep -q "^${TIMESTAMP}$"; then
+    log "  WARN: today's backup (${TIMESTAMP}) not yet visible in S3 listing — skipping prune to be safe"
+    TOTAL_IMAGES=0
+fi
+
 if [[ "${TOTAL_IMAGES}" -gt "${MAX_IMAGES}" ]]; then
     DELETE_COUNT=$(( TOTAL_IMAGES - MAX_IMAGES ))
-    TO_DELETE=$(echo "${BACKUP_DATES}" | head -"${DELETE_COUNT}")
+    TO_DELETE=$(echo "${BACKUP_DATES}" | grep -v "^${TIMESTAMP}$" | head -"${DELETE_COUNT}")
     while IFS= read -r old_date; do
         [[ -z "${old_date}" ]] && continue
         log "  Deleting: ${old_date}"

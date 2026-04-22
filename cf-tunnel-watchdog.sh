@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -uo pipefail
 # =============================================================
 # cf-tunnel-watchdog.sh — Cloudflare tunnel + site health watchdog
 #
@@ -63,6 +64,12 @@ CF_PHASE2_MAX="${CF_PHASE2_MAX:-8}"
 CF_REBOOT_MIN_INTERVAL="${CF_REBOOT_MIN_INTERVAL:-21600}"
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Recovery timing constants (seconds)
+_CONTAINER_START_SETTLE=10     # time for containers to start accepting connections
+_CLOUDFLARED_SETTLE=30         # time for cloudflared to establish HA connections
+_COMPOSE_DOWN_UP_PAUSE=5       # pause between compose down and up
+_PHASE2_RECHECK_DELAY=20       # wait after full stack restart before re-checking
+
 STATE_FILE="/var/run/pi2s3-watchdog.state"
 LOCK_FILE="/var/run/pi2s3-watchdog.lock"
 REBOOT_TS_FILE="/var/log/pi2s3-watchdog-reboot.ts"
@@ -102,6 +109,16 @@ ntfy_send() {
         "${NTFY_URL}" > /dev/null 2>&1 || true
 }
 
+# Run a recovery action, logging a warning if it fails (never aborts the watchdog).
+run_step() {
+    local _desc="$1"; shift
+    local _rc=0
+    "$@" 2>&1 | logger -t "${LOG_TAG}" || _rc=$?
+    if [[ ${_rc} -ne 0 ]]; then
+        logger -t "${LOG_TAG}" "WARNING: ${_desc} exited ${_rc}"
+    fi
+}
+
 ha_connections() {
     curl -s --max-time 5 "${CF_METRICS_URL}" 2>/dev/null \
         | awk '/^cloudflared_tunnel_ha_connections/ && !/^#/ {print $2}' \
@@ -124,10 +141,10 @@ find_compose_dir() {
 
     # Auto-detect common locations
     for candidate in \
-        /home/pi/andrewbakerninja-pi \
-        "${HOME}/andrewbakerninja-pi" \
         /opt/stack \
-        "${HOME}/stack"; do
+        /opt/docker \
+        "${HOME}/stack" \
+        "${HOME}/docker"; do
         [[ -f "${candidate}/docker-compose.yml" ]] && echo "${candidate}" && return
     done
 
@@ -246,21 +263,21 @@ CF: ${DIAG_CF}" \
         logger -t "${LOG_TAG}" \
             "Phase 1: starting stopped containers: ${STOPPED_CONTAINERS}"
         for container in ${STOPPED_CONTAINERS}; do
-            docker start "${container}" 2>&1 | logger -t "${LOG_TAG}" || true
+            run_step "docker start ${container}" docker start "${container}"
         done
-        sleep 10
+        sleep "${_CONTAINER_START_SETTLE}"
     fi
 
     # Restart cloudflared if tunnel connections are the issue
     if [[ "${METRICS_AVAILABLE}" == "true" && ( -z "${CONNS}" || "${CONNS}" == "0" ) ]]; then
         logger -t "${LOG_TAG}" "Phase 1: restarting cloudflared"
-        systemctl restart cloudflared 2>&1 | logger -t "${LOG_TAG}" || true
+        run_step "systemctl restart cloudflared" systemctl restart cloudflared
     elif ! systemctl is-active --quiet cloudflared 2>/dev/null; then
         logger -t "${LOG_TAG}" "Phase 1: cloudflared not active — starting"
-        systemctl start cloudflared 2>&1 | logger -t "${LOG_TAG}" || true
+        run_step "systemctl start cloudflared" systemctl start cloudflared
     fi
 
-    sleep 30
+    sleep "${_CLOUDFLARED_SETTLE}"
     NEW_CONNS=$(ha_connections)
     NEW_HTTP=$(http_probe)
     logger -t "${LOG_TAG}" \
@@ -295,21 +312,23 @@ ${DIAG_MEM} | ${DIAG_SWAP}" \
     if [[ -n "${COMPOSE_DIR}" ]]; then
         # Preferred: docker compose down/up for clean restart
         logger -t "${LOG_TAG}" "Phase 2: docker compose down in ${COMPOSE_DIR}"
-        (cd "${COMPOSE_DIR}" && docker compose down --timeout 20 2>&1) \
-            | logger -t "${LOG_TAG}" || true
-        sleep 5
-        (cd "${COMPOSE_DIR}" && docker compose up -d 2>&1) \
-            | logger -t "${LOG_TAG}" || true
+        run_step "docker compose down" \
+            bash -c "cd '${COMPOSE_DIR}' && docker compose down --timeout 20"
+        sleep "${_COMPOSE_DOWN_UP_PAUSE}"
+        run_step "docker compose up" \
+            bash -c "cd '${COMPOSE_DIR}' && docker compose up -d"
     else
         # Fallback: restart all non-running containers directly
         logger -t "${LOG_TAG}" \
             "Phase 2: no compose dir found — restarting all stopped containers"
-        docker start $(docker ps -aq 2>/dev/null) 2>&1 \
-            | logger -t "${LOG_TAG}" || true
+        mapfile -t _all_containers < <(docker ps -aq 2>/dev/null || true)
+        if [[ ${#_all_containers[@]} -gt 0 ]]; then
+            run_step "docker start all" docker start "${_all_containers[@]}"
+        fi
     fi
 
     sleep 20
-    systemctl restart cloudflared 2>&1 | logger -t "${LOG_TAG}" || true
+    run_step "systemctl restart cloudflared" systemctl restart cloudflared
     sleep 30
 
     NEW_CONNS=$(ha_connections)
@@ -377,9 +396,8 @@ Diag: ${PREDIAG_LOG}" \
 
     # Graceful Docker shutdown (best-effort, 20 s)
     if [[ -n "${COMPOSE_DIR}" ]]; then
-        timeout 20 bash -c \
-            "cd '${COMPOSE_DIR}' && docker compose down --timeout 15" \
-            2>&1 | logger -t "${LOG_TAG}" || true
+        run_step "pre-reboot docker compose down" \
+            timeout 20 bash -c "cd '${COMPOSE_DIR}' && docker compose down --timeout 15"
     fi
     sync
 

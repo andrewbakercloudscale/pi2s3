@@ -47,6 +47,25 @@ ok()   { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ $*"; }
 warn() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ⚠ $*"; }
 die()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✗ ERROR: $*" >&2; exit 1; }
 
+# Save a snapshot of the current user crontab before modifying it.
+# Prints the backup path. Safe to call multiple times — idempotent per session.
+_CRONTAB_SNAPSHOT=""
+crontab_snapshot() {
+    if [[ -z "${_CRONTAB_SNAPSHOT}" ]]; then
+        _CRONTAB_SNAPSHOT="/tmp/pi2s3-crontab-backup-$(date +%Y%m%d-%H%M%S)"
+        crontab -l > "${_CRONTAB_SNAPSHOT}" 2>/dev/null || true
+        log "  Crontab snapshot saved to ${_CRONTAB_SNAPSHOT} (restore: crontab ${_CRONTAB_SNAPSHOT})"
+    fi
+}
+_ROOT_CRONTAB_SNAPSHOT=""
+root_crontab_snapshot() {
+    if [[ -z "${_ROOT_CRONTAB_SNAPSHOT}" ]]; then
+        _ROOT_CRONTAB_SNAPSHOT="/tmp/pi2s3-root-crontab-backup-$(date +%Y%m%d-%H%M%S)"
+        sudo crontab -l > "${_ROOT_CRONTAB_SNAPSHOT}" 2>/dev/null || true
+        log "  Root crontab snapshot saved to ${_ROOT_CRONTAB_SNAPSHOT}"
+    fi
+}
+
 # ── Pre-commit hook: block commits on the Pi ─────────────────────────────────
 install_no_commit_hook() {
     local hook="${SCRIPT_DIR}/.git/hooks/pre-commit"
@@ -82,6 +101,7 @@ install_watchdog() {
 
     # Root cron: run every 5 minutes
     WATCHDOG_CRON="*/5 * * * * ${WATCHDOG_BIN}"
+    root_crontab_snapshot
     ( sudo crontab -l 2>/dev/null | grep -v "${WATCHDOG_CRON_MARKER}" || true
       echo "${WATCHDOG_CRON}" ) | sudo crontab -
     ok "Root cron installed: every 5 minutes"
@@ -142,6 +162,7 @@ upgrade() {
     CRON_SCHEDULE="${CRON_SCHEDULE:-0 2 * * *}"
     CRON_LINE="${CRON_SCHEDULE} bash ${BACKUP_SCRIPT} >> ${LOG_FILE} 2>&1"
     if crontab -l 2>/dev/null | grep -qF "${CRON_MARKER}"; then
+        crontab_snapshot
         ( crontab -l 2>/dev/null | grep -vF "${CRON_MARKER}"; echo "${CRON_LINE}" ) | crontab -
         ok "Backup cron refreshed: ${CRON_SCHEDULE}"
     fi
@@ -169,6 +190,23 @@ upgrade() {
     install_no_commit_hook
     ok "Pre-commit hook: direct commits on Pi blocked"
 
+    # Check for new keys in config.env.example that are missing from config.env
+    if [[ -f "${CONFIG_FILE}" && -f "${CONFIG_EXAMPLE}" ]]; then
+        local _new_keys=()
+        while IFS= read -r _line; do
+            [[ "${_line}" =~ ^[A-Z_]+=  ]] || continue
+            local _key="${_line%%=*}"
+            grep -qE "^#?${_key}=" "${CONFIG_FILE}" 2>/dev/null || _new_keys+=("${_key}")
+        done < <(grep -E '^[A-Z_]+=' "${CONFIG_EXAMPLE}")
+        if [[ ${#_new_keys[@]} -gt 0 ]]; then
+            warn "New config keys in config.env.example not yet in your config.env:"
+            for _k in "${_new_keys[@]}"; do
+                warn "  ${_k}"
+            done
+            warn "Review ${CONFIG_EXAMPLE} and add any you want to use."
+        fi
+    fi
+
     log ""
     log "Upgrade complete. Run 'bash install.sh --status' to verify."
 }
@@ -178,6 +216,7 @@ uninstall() {
     log "Uninstalling pi2s3..."
 
     if crontab -l 2>/dev/null | grep -qF "${CRON_MARKER}"; then
+        crontab_snapshot
         ( crontab -l 2>/dev/null | grep -vF "${CRON_MARKER}" ) | crontab -
         ok "Backup cron removed."
     else
@@ -185,6 +224,7 @@ uninstall() {
     fi
 
     if sudo crontab -l 2>/dev/null | grep -qF "${WATCHDOG_CRON_MARKER}"; then
+        root_crontab_snapshot
         ( sudo crontab -l 2>/dev/null | grep -v "${WATCHDOG_CRON_MARKER}" ) \
             | sudo crontab -
         ok "Watchdog root cron removed."
@@ -380,13 +420,31 @@ MAX_IMAGES="${MAX_IMAGES:-60}"
 # ── Step 2: Dependencies ──────────────────────────────────────────────────────
 log ""
 log "Step 2: Installing dependencies..."
-export DEBIAN_FRONTEND=noninteractive
+
+# Detect package manager (Debian/Ubuntu/Raspbian: apt; Arch: pacman; Fedora/RHEL: dnf/yum)
+if command -v apt-get &>/dev/null; then
+    export DEBIAN_FRONTEND=noninteractive
+    pkg_install() { sudo apt-get install -y -qq "$@"; }
+    pkg_update()  { sudo apt-get update -qq; }
+elif command -v dnf &>/dev/null; then
+    pkg_install() { sudo dnf install -y -q "$@"; }
+    pkg_update()  { true; }
+elif command -v yum &>/dev/null; then
+    pkg_install() { sudo yum install -y -q "$@"; }
+    pkg_update()  { true; }
+elif command -v pacman &>/dev/null; then
+    pkg_install() { sudo pacman -S --noconfirm --quiet "$@"; }
+    pkg_update()  { sudo pacman -Sy --quiet; }
+else
+    pkg_install() { warn "No supported package manager found. Install manually: $*"; return 1; }
+    pkg_update()  { true; }
+fi
 
 if command -v pigz &>/dev/null; then
     ok "pigz: $(pigz --version 2>&1)"
 else
     log "  Installing pigz..."
-    sudo apt-get update -qq && sudo apt-get install -y -qq pigz
+    pkg_update && pkg_install pigz
     ok "pigz installed."
 fi
 
@@ -394,7 +452,7 @@ if command -v pv &>/dev/null; then
     ok "pv: $(pv --version 2>&1 | head -1)"
 else
     log "  Installing pv (progress viewer)..."
-    sudo apt-get install -y -qq pv 2>/dev/null && ok "pv installed." \
+    pkg_install pv 2>/dev/null && ok "pv installed." \
         || warn "pv unavailable — restore will work without it."
 fi
 
@@ -402,7 +460,7 @@ if command -v partclone.ext4 &>/dev/null || [[ -x /usr/sbin/partclone.ext4 ]]; t
     ok "partclone: $(/usr/sbin/partclone.ext4 --version 2>&1 | head -1 || echo 'installed')"
 else
     log "  Installing partclone (reads only used blocks — much faster than dd)..."
-    sudo apt-get install -y -qq partclone
+    pkg_install partclone
     ok "partclone installed."
 fi
 
