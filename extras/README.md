@@ -30,6 +30,26 @@ crontab -e
 # Add: * * * * * bash ~/pi2s3/extras/fpm-saturation-monitor.sh 2>/dev/null
 ```
 
+## post-restore-example.sh
+
+Template for `--post-restore` hooks. When passed to `pi-image-restore.sh`, this script runs inside the restored filesystem before reboot — useful for cloning a Pi to a second site with a different Cloudflare tunnel, hostname, or `.env` values.
+
+**Who needs this:** anyone cloning a Pi to a staging, office, or dev environment.
+
+**Usage:**
+```bash
+# Copy and customise for your target environment
+cp ~/pi2s3/extras/post-restore-example.sh ~/post-restore-office.sh
+nano ~/post-restore-office.sh   # set NEW_HOSTNAME, CF tunnel credentials, .env changes
+
+# Pass it to the restore:
+bash ~/pi2s3/pi-image-restore.sh \
+  --date latest --device /dev/nvme0n1 \
+  --post-restore ~/post-restore-office.sh
+```
+
+The restored root is mounted read-write at `$RESTORE_ROOT`. Any changes made to `$RESTORE_ROOT/...` persist to the target device.
+
 ## config.env.example
 
 Full config for both extras. Copy the relevant section into your `~/pi2s3/config.env`.
