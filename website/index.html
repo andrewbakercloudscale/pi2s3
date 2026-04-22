@@ -701,7 +701,7 @@
       <code class="hero-install-cmd">curl -sL pi2s3.com/install | bash</code>
       <button class="hero-copy-btn" onclick="(function(b){var t=b.textContent;navigator.clipboard.writeText('curl -sL pi2s3.com/install | bash').then(function(){b.textContent='Copied!';setTimeout(function(){b.textContent=t},1500)});})(this)" aria-label="Copy install command">Copy</button>
     </div>
-    <div class="hero-install-sub">SSH into your Pi and paste. Handles everything — dependencies, config, cron, dry-run test.</div>
+    <div class="hero-install-sub">SSH into your Pi and paste. Handles everything — dependencies, config, bucket creation, cron, dry-run, and first backup.</div>
   </div>
   <div class="hero-actions">
     <a href="https://github.com/andrewbakercloudscale/pi2s3" target="_blank" class="btn-primary">
@@ -981,7 +981,7 @@
     <div class="qs-num">1</div>
     <div class="qs-content">
       <h3>Run the installer on your Pi</h3>
-      <p>SSH into your Pi and paste one command. It detects your hardware, installs dependencies, prompts for your S3 bucket and region, configures cron, and runs a dry-run test.</p>
+      <p>SSH into your Pi and paste one command. It detects your hardware, installs dependencies, prompts for your S3 bucket and region (creates the bucket if it doesn't exist), configures cron, runs a dry-run test, then offers to run a real backup immediately.</p>
       <pre><span class="kw">curl</span> -sL pi2s3.com/install | bash</pre>
     </div>
   </div>

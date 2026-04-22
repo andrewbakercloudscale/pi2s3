@@ -138,7 +138,7 @@ This is still far better than the old `dd` approach (60–90 minutes on a full N
 | Pi 4 + NVMe (via HAT) | Raspberry Pi OS Bookworm 64-bit | ✅ Expected | HAT presents as `/dev/nvme0n1` |
 | Pi 3B/3B+ | Raspberry Pi OS Bookworm 64-bit | ⚠️ Expected | Single-core pigz, no parallel imaging; expect 2–4× slower |
 | Pi Zero 2W | Raspberry Pi OS Bookworm 64-bit | ⚠️ Expected | 512 MB RAM; 1-core compression; slow but functional |
-| Any Pi + 32-bit OS (armv7l) | Raspberry Pi OS Legacy 32-bit | ⚠️ Limited | AWS CLI v2 has no official armv7l build; install may fail |
+| Any Pi + 32-bit OS (armv7l) | Raspberry Pi OS Legacy 32-bit | ❌ Not supported | AWS CLI v2 has no official armv7l build; install.sh exits with a clear error |
 | Non-Raspberry Pi Linux (x86_64, etc.) | Any 64-bit Linux | 🔬 Untested | `partclone` must be installed manually; no Pi model detection |
 
 **64-bit OS strongly recommended** — AWS CLI v2 has full aarch64 support; the 32-bit (armv7l) path requires manual AWS CLI install from source or a third-party build.
@@ -216,13 +216,16 @@ bash install.sh
 `install.sh` will:
 - Prompt for your S3 bucket and AWS region (ntfy URL is optional)
 - Write `config.env` (gitignored — never committed)
-- Install `partclone`, `pigz`, and AWS CLI v2 if not present
-- Verify AWS access to your bucket
+- Install `partclone`, `pigz`, and AWS CLI v2 if not present (64-bit OS required)
+- Verify AWS access — offers to create the bucket if it doesn't exist yet
 - Set up S3 lifecycle policy
 - Install the nightly cron job (2:00am by default)
 - Run a `--dry-run` to confirm everything works
+- Offer to run a real backup immediately
 
 ### 3. First backup
+
+The installer offers to run a backup at the end. To run one manually:
 
 ```bash
 bash ~/pi2s3/pi-image-backup.sh --force
