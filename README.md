@@ -919,13 +919,6 @@ bash ~/pi2s3/install.sh --upgrade    # git pull + redeploy watchdog binary + ref
 
 ---
 
-## Roadmap
-
-- [ ] **GitHub Releases / version pinning** — tag stable releases so `curl pi2s3.com/install | bash` installs a specific version rather than `main` HEAD
-- [ ] **Client-side encryption by default** — prompt for an encryption passphrase during install; make `age` the default instead of an opt-in
-
----
-
 ## License
 
 MIT
