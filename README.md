@@ -448,11 +448,21 @@ pi-image-restore.sh [options]
 
 ## Restore to a new Pi
 
-> **Full step-by-step runbook:** [RECOVERY.md](RECOVERY.md) — the document to open when your Pi is dead and you need to restore from scratch. Covers hardware requirements, bootstrap SD flashing from macOS, restore procedure, and post-boot verification.
+> **Full step-by-step runbook:** [RECOVERY.md](RECOVERY.md) — the document to open when your Pi is dead and you need to restore from scratch.
 
-### Step 1 — Validate (Mac)
+### One-liner restore
 
-Before touching anything, confirm the S3 image is ready:
+Flash Raspberry Pi OS Lite (64-bit) to an SD card, boot the new Pi, SSH in, and run:
+
+```bash
+curl -sL pi2s3.com/restore | bash
+```
+
+This installs `partclone`, `pigz`, `pv`, and AWS CLI v2, prompts for your AWS credentials, clones pi2s3, and hands off to the interactive restore script. Have your AWS access key and secret ready (from your password manager).
+
+### Step 1 — Validate (optional, before touching hardware)
+
+From any machine with AWS access, confirm the S3 image is intact:
 
 ```bash
 bash ~/pi2s3/test-recovery.sh --pre-flash
@@ -460,12 +470,11 @@ bash ~/pi2s3/test-recovery.sh --pre-flash
 
 Checks AWS access, confirms image exists and is non-zero, reads the manifest, estimates flash time, prints the restore command.
 
-### Step 2 — Flash (Linux or Pi)
+### Step 2 — Flash + restore
 
-> **Requires Linux** — `sfdisk` and `partclone` are not available on macOS.
->
-> **On macOS**: boot the new Pi from a minimal SD card, attach the target NVMe,
-> SSH in, clone the repo, and run from there.
+Flash Raspberry Pi OS Lite (64-bit) to an SD card using [Raspberry Pi Imager](https://www.raspberrypi.com/software/). Boot the new Pi, SSH in, then run the restore one-liner above.
+
+> **Requires Linux** — `sfdisk` and `partclone` are not available on macOS. The restore script runs on the new Pi itself.
 
 ```bash
 bash ~/pi2s3/pi-image-restore.sh
@@ -653,6 +662,8 @@ bash ~/pi2s3/pi-image-backup.sh --cost
 
 ## Cloudflare tunnel watchdog
 
+> **extras/ — only needed if you run a Cloudflare tunnel.** Script lives at [`extras/cf-tunnel-watchdog.sh`](extras/cf-tunnel-watchdog.sh).
+
 An optional self-healing monitor that runs every 5 minutes as a root cron job. If your site or Cloudflare tunnel goes down, it automatically recovers through three escalating phases before rebooting the Pi as a last resort.
 
 ### How it works
@@ -740,6 +751,8 @@ sudo cat /var/log/pi2s3-watchdog-prediag.log
 
 ## PHP-FPM saturation monitor
 
+> **extras/ — only needed if you run WordPress with PHP-FPM.** Script lives at [`extras/fpm-saturation-monitor.sh`](extras/fpm-saturation-monitor.sh). Configuration: [`extras/config.env.example`](extras/config.env.example).
+
 When all PHP-FPM workers are exhausted, WordPress serves 504 errors — but WP-Cron itself is also stuck, so any cron-based alerting goes silent at the worst moment. `fpm-saturation-monitor.sh` runs as a **host cron** (not inside Docker), so it fires regardless of PHP-FPM state.
 
 ### How it works
@@ -759,23 +772,17 @@ After `FPM_SATURATION_THRESHOLD` consecutive saturated checks (default: 3) an nt
 ```bash
 # 1. Add to crontab on the Pi host
 crontab -e
-# Paste: * * * * * /home/pi/pi2s3/fpm-saturation-monitor.sh 2>/dev/null
+# Paste: * * * * * /home/pi/pi2s3/extras/fpm-saturation-monitor.sh 2>/dev/null
 ```
 
-Add to `~/pi2s3/config.env`:
+Add the FPM settings from [`extras/config.env.example`](extras/config.env.example) to `~/pi2s3/config.env`. Key settings:
+
 ```bash
-# ── PHP-FPM Saturation Monitor ──────────────────────────────────────────────
 FPM_SATURATION_THRESHOLD=3       # consecutive saturated checks before alerting
-FPM_PROBE_URL=http://localhost:8082/
-FPM_PROBE_TIMEOUT=5
-FPM_WP_CONTAINER=pi_wordpress
-FPM_DB_CONTAINER=pi_mariadb
-FPM_ALERT_COOLDOWN=1800          # seconds between repeat alerts (30 min)
+FPM_PROBE_URL=http://localhost:80/
+FPM_WP_CONTAINER=wordpress
+FPM_DB_CONTAINER=mariadb
 FPM_AUTO_RESTART=false           # true = restart container automatically on saturation
-FPM_RESTART_COOLDOWN=1200        # seconds between auto-restarts (default: 20 min)
-# Optional — report events back to CloudScale Devtools plugin:
-# FPM_CALLBACK_URL=https://yoursite.com/wp-admin/admin-ajax.php
-# FPM_CALLBACK_TOKEN=<token from Debug AI tab>
 ```
 
 ### Configuration
