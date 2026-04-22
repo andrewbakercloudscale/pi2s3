@@ -14,7 +14,7 @@ PI_LOCAL="andrew-pi-5.local"
 PI_DIR="~/pi2s3"
 
 _PI_CF_HOST="ssh.andrewbaker.ninja"
-_PI_CF_USER="andrew.j.baker.007"
+_PI_CF_USER="pi"
 
 # ── Pick connection (LAN first, CF tunnel fallback) ───────────────────────────
 if ssh -i "${PI_KEY}" -o StrictHostKeyChecking=no -o ConnectTimeout=4 -o BatchMode=yes \
