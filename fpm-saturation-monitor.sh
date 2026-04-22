@@ -17,6 +17,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="${SCRIPT_DIR}/config.env"
 [[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
+# shellcheck disable=SC1091
+[[ -f "${SCRIPT_DIR}/lib/containers.sh" ]] && source "${SCRIPT_DIR}/lib/containers.sh"
 
 NTFY_URL="${NTFY_URL:-}"
 FPM_PROBE_URL="${FPM_PROBE_URL:-http://localhost:8082/}"
@@ -49,6 +51,9 @@ ALERTED_FILE="${_STATE_DIR}/fpm-saturation-alerted"
 LOCK_ALERTED_FILE="${_STATE_DIR}/fpm-lock-alerted"
 RESTART_FILE="${_STATE_DIR}/fpm-auto-restart"
 
+# ── Main ──────────────────────────────────────────────────────────────────────
+main() {
+
 # ── Check 1: HTTP probe ───────────────────────────────────────────────────────
 http_code=$(curl -s -o /dev/null -w "%{http_code}" \
     --max-time "${FPM_PROBE_TIMEOUT}" \
@@ -61,8 +66,7 @@ http_ok=false
 db_stuck=0
 if [[ -z "${FPM_DB_ROOT_PASSWORD}" ]] && docker ps --format '{{.Names}}' 2>/dev/null \
         | grep -q "^${FPM_DB_CONTAINER}$"; then
-    FPM_DB_ROOT_PASSWORD=$(docker exec "${FPM_DB_CONTAINER}" env 2>/dev/null \
-        | grep -E "^MYSQL_ROOT_PASSWORD=|^MARIADB_ROOT_PASSWORD=" | cut -d= -f2- | head -1 || true)
+    FPM_DB_ROOT_PASSWORD=$(read_container_db_password "${FPM_DB_CONTAINER}" 2>/dev/null || true)
 fi
 
 # Helper: run mariadb query via docker exec without exposing password in ps args.
@@ -227,3 +231,7 @@ if [[ "$count" -ge "$FPM_SATURATION_THRESHOLD" ]]; then
         fi
     fi
 fi
+
+} # end main
+
+[[ "${BASH_SOURCE[0]}" == "${0}" ]] && main "$@"

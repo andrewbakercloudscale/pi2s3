@@ -94,14 +94,11 @@ if [[ -f "${CONFIG_FILE}" ]]; then
     # shellcheck disable=SC1090
     source "${CONFIG_FILE}"
 fi
+# shellcheck disable=SC1091
+[[ -f "${SCRIPT_DIR}/lib/aws.sh" ]] && source "${SCRIPT_DIR}/lib/aws.sh"
 
-aws_cmd() {
-    if [[ -n "${AWS_PROFILE}" ]]; then
-        aws --profile "${AWS_PROFILE}" --region "${S3_REGION}" "$@"
-    else
-        aws --region "${S3_REGION}" "$@"
-    fi
-}
+# ── Main ──────────────────────────────────────────────────────────────────────
+main() {
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  GUIDE — full recovery walkthrough
@@ -678,3 +675,7 @@ if [[ "${PHASE}" == "post-boot" ]]; then
     # ── Final summary ─────────────────────────────────────────────────────────
     summary
 fi
+
+} # end main
+
+[[ "${BASH_SOURCE[0]}" == "${0}" ]] && main "$@"

@@ -91,6 +91,12 @@ fi
 
 # shellcheck disable=SC1090
 source "${CONFIG_FILE}"
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib/log.sh"
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib/aws.sh"
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib/containers.sh"
 
 # ── Validate required config ─────────────────────────────────────────────────
 [[ -z "${S3_BUCKET:-}"  ]] && { echo "ERROR: S3_BUCKET is not set in config.env"; exit 1; }
@@ -193,17 +199,6 @@ _GPG_PASS_FILE=""
 _BG_PIDS=()
 _BG_RESULT_DIR=""
 
-log()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
-die()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $*" >&2; exit 1; }
-
-aws_cmd() {
-    if [[ -n "${AWS_PROFILE}" ]]; then
-        aws --profile "${AWS_PROFILE}" --region "${S3_REGION}" "$@"
-    else
-        aws --region "${S3_REGION}" "$@"
-    fi
-}
-
 ntfy_send() {
     local title="$1" msg="$2" priority="${3:-default}" tags="${4:-}"
     local extra=()
@@ -250,10 +245,8 @@ db_exec() {
 # If no DB is found/configured, falls back silently to STOP_DOCKER.
 db_lock() {
     # ── Resolve container ────────────────────────────────────────────────────
-    if [[ "${DB_CONTAINER}" == "auto" ]] \
-       && command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
-        _DB_CONTAINER=$(docker ps --format '{{.Names}} {{.Image}}' 2>/dev/null \
-            | grep -iE '\bmariadb\b|\bmysql\b' | awk '{print $1}' | head -1 || true)
+    if [[ "${DB_CONTAINER}" == "auto" ]]; then
+        _DB_CONTAINER=$(find_db_container)
         if [[ -z "${_DB_CONTAINER}" ]]; then
             log "  DB lock: no MariaDB/MySQL container found — using STOP_DOCKER fallback"
             return 0
@@ -269,9 +262,7 @@ db_lock() {
     # ── Resolve password ─────────────────────────────────────────────────────
     _DB_ROOT_PASSWORD="${DB_ROOT_PASSWORD:-}"
     if [[ -z "${_DB_ROOT_PASSWORD}" && -n "${_DB_CONTAINER}" ]]; then
-        _DB_ROOT_PASSWORD=$(docker exec "${_DB_CONTAINER}" env 2>/dev/null \
-            | grep -E "^MYSQL_ROOT_PASSWORD=|^MARIADB_ROOT_PASSWORD=" \
-            | cut -d= -f2- | head -1 || true)
+        _DB_ROOT_PASSWORD=$(read_container_db_password "${_DB_CONTAINER}")
         if [[ -z "${_DB_ROOT_PASSWORD}" ]]; then
             log "  DB lock: could not read root password from container env — using STOP_DOCKER fallback"
             _DB_CONTAINER=""
@@ -870,6 +861,7 @@ detect_boot_device() {
 }
 
 # ── Main ─────────────────────────────────────────────────────────────────────
+main() {
 log "========================================================"
 log "  pi2s3 — partition image backup"
 log "  Host:      $(hostname)"
@@ -1519,3 +1511,6 @@ Size:  ${TOTAL_COMPRESSED_HUMAN} compressed (from ${TOTAL_USED_HUMAN} used)
 Time:  ${TOTAL_ELAPSED}s${_VERIFY_LINE}${_PROBE_LINE}"
     ntfy_send "pi2s3 backup complete" "${_NTFY_MSG}" "low" "white_check_mark,floppy_disk"
 fi
+} # end main
+
+[[ "${BASH_SOURCE[0]}" == "${0}" ]] && main "$@"

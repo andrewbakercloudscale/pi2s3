@@ -360,6 +360,9 @@ status() {
     echo ""
 }
 
+# ── Main ──────────────────────────────────────────────────────────────────────
+main() {
+
 case "${1:-}" in
     --uninstall) uninstall;        exit 0 ;;
     --status)    status;           exit 0 ;;
@@ -682,3 +685,7 @@ log "    Upgrade:           bash ${SCRIPT_DIR}/install.sh --upgrade"
 log "    Install watchdog:  bash ${SCRIPT_DIR}/install.sh --watchdog"
 log "    Test watchdog:     sudo ${WATCHDOG_BIN}"
 log "============================================================"
+
+} # end main
+
+[[ "${BASH_SOURCE[0]}" == "${0}" ]] && main "$@"
