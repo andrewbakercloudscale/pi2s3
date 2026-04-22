@@ -1,7 +1,7 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # fpm-saturation-monitor.sh
 # Host-cron monitor: detects PHP-FPM worker pool exhaustion and alerts via ntfy.sh.
-# Add to crontab: * * * * * /home/pi/pi2s3/fpm-saturation-monitor.sh 2>/dev/null
+# Add to crontab: * * * * * /path/to/pi2s3/fpm-saturation-monitor.sh 2>/dev/null
 #
 # Config vars (all in config.env — see FPM_* section):
 #   FPM_SATURATION_THRESHOLD  consecutive saturated checks before alerting (default: 3)
@@ -30,11 +30,24 @@ FPM_CALLBACK_URL="${FPM_CALLBACK_URL:-}"
 FPM_CALLBACK_TOKEN="${FPM_CALLBACK_TOKEN:-}"
 FPM_AUTO_RESTART="${FPM_AUTO_RESTART:-false}"
 FPM_RESTART_COOLDOWN="${FPM_RESTART_COOLDOWN:-1200}"
+FPM_SITE_HOSTNAME="${FPM_SITE_HOSTNAME:-${CF_SITE_HOSTNAME:-$(hostname)}}"
 
-STATE_FILE="/tmp/fpm-saturation-count"
-ALERTED_FILE="/tmp/fpm-saturation-alerted"
-LOCK_ALERTED_FILE="/tmp/fpm-lock-alerted"
-RESTART_FILE="/tmp/fpm-auto-restart"
+# Warn if the configured container names don't appear in the running container list.
+# This catches the "using defaults that don't match your actual stack" failure mode.
+for _chk_container in "${FPM_WP_CONTAINER}" "${FPM_DB_CONTAINER}"; do
+    if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${_chk_container}$"; then
+        if ! docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${_chk_container}$"; then
+            echo "WARNING: container '${_chk_container}' not found. Check FPM_WP_CONTAINER / FPM_DB_CONTAINER in config.env." >&2
+        fi
+    fi
+done
+
+_STATE_DIR="/var/lib/pi2s3"
+mkdir -p "${_STATE_DIR}" 2>/dev/null || _STATE_DIR="/tmp"
+STATE_FILE="${_STATE_DIR}/fpm-saturation-count"
+ALERTED_FILE="${_STATE_DIR}/fpm-saturation-alerted"
+LOCK_ALERTED_FILE="${_STATE_DIR}/fpm-lock-alerted"
+RESTART_FILE="${_STATE_DIR}/fpm-auto-restart"
 
 # ── Check 1: HTTP probe ───────────────────────────────────────────────────────
 http_code=$(curl -s -o /dev/null -w "%{http_code}" \
@@ -49,11 +62,19 @@ db_stuck=0
 if [[ -z "${FPM_DB_ROOT_PASSWORD}" ]] && docker ps --format '{{.Names}}' 2>/dev/null \
         | grep -q "^${FPM_DB_CONTAINER}$"; then
     FPM_DB_ROOT_PASSWORD=$(docker exec "${FPM_DB_CONTAINER}" env 2>/dev/null \
-        | grep -E "^MYSQL_ROOT_PASSWORD=" | cut -d= -f2- | head -1 || true)
+        | grep -E "^MYSQL_ROOT_PASSWORD=|^MARIADB_ROOT_PASSWORD=" | cut -d= -f2- | head -1 || true)
 fi
+
+# Helper: run mariadb query via docker exec without exposing password in ps args.
+fpm_db_exec() {
+    if [[ -n "${FPM_DB_ROOT_PASSWORD}" ]]; then
+        docker exec -e "MYSQL_PWD=${FPM_DB_ROOT_PASSWORD}" "${FPM_DB_CONTAINER}" \
+            mariadb -uroot --batch --silent "$@" 2>/dev/null
+    fi
+}
+
 if [[ -n "${FPM_DB_ROOT_PASSWORD}" ]]; then
-    db_stuck=$(docker exec "${FPM_DB_CONTAINER}" mariadb \
-        -uroot -p"${FPM_DB_ROOT_PASSWORD}" --batch --silent 2>/dev/null \
+    db_stuck=$(fpm_db_exec \
         -e "SELECT COUNT(*) FROM information_schema.PROCESSLIST
             WHERE TIME > 15 AND USER = 'wordpress';" \
         | tail -1 || echo "0")
@@ -62,10 +83,9 @@ fi
 # ── Detect orphaned backup lock ───────────────────────────────────────────────
 backup_lock=false
 if [[ -n "${FPM_DB_ROOT_PASSWORD}" ]]; then
-    lock_count=$(docker exec "${FPM_DB_CONTAINER}" mariadb \
-        -uroot -p"${FPM_DB_ROOT_PASSWORD}" --batch --silent 2>/dev/null \
+    lock_count=$(fpm_db_exec \
         -e "SELECT COUNT(*) FROM information_schema.PROCESSLIST
-            WHERE INFO LIKE '%/* pi2s3-lock */%' AND TIME > 5;" \
+            WHERE INFO LIKE '%/* pi2s3-lock%' AND TIME > 5;" \
         | tail -1 || echo "0")
     if [[ "${lock_count:-0}" -gt 0 ]]; then
         backup_lock=true
@@ -86,9 +106,8 @@ fi
 
 # ── Orphaned backup lock: kill only if backup is not actively running ─────────
 if $backup_lock; then
-    lock_ids=$(docker exec "${FPM_DB_CONTAINER}" mariadb \
-        -uroot -p"${FPM_DB_ROOT_PASSWORD}" --batch --silent 2>/dev/null \
-        -e "SELECT ID FROM information_schema.PROCESSLIST WHERE INFO LIKE '%/* pi2s3-lock */%' AND TIME > 5;" \
+    lock_ids=$(fpm_db_exec \
+        -e "SELECT ID FROM information_schema.PROCESSLIST WHERE INFO LIKE '%/* pi2s3-lock%' AND TIME > 5;" \
         | tr '\n' ' ' || true)
 
     # If pi-image-backup.sh is actively running, the lock is legitimate — leave it alone.
@@ -96,9 +115,7 @@ if $backup_lock; then
         backup_lock=false
     else
         for lid in $lock_ids; do
-            docker exec "${FPM_DB_CONTAINER}" mariadb \
-                -uroot -p"${FPM_DB_ROOT_PASSWORD}" --batch --silent 2>/dev/null \
-                -e "KILL ${lid};" || true
+            fpm_db_exec -e "KILL ${lid};" || true
         done
         # Alert with 30-min cooldown
         now=$(date +%s)
@@ -106,7 +123,7 @@ if $backup_lock; then
         if [[ $((now - last_lock_alert)) -gt 1800 ]]; then
             if [[ -n "$NTFY_URL" ]]; then
                 curl -s -X POST "$NTFY_URL" \
-                    -H "Title: Orphaned backup lock killed (andrewbaker.ninja)" \
+                    -H "Title: Orphaned backup lock killed (${FPM_SITE_HOSTNAME})" \
                     -H "Priority: high" \
                     -H "Tags: warning" \
                     -d "Orphaned pi2s3 DB lock detected and killed (conn ${lock_ids}). All writes unblocked. Will not alert again for 30 min." \
@@ -128,7 +145,7 @@ else
     if [[ "$prev" -ge "$FPM_SATURATION_THRESHOLD" ]]; then
         if [[ -n "$NTFY_URL" ]]; then
             curl -s -X POST "$NTFY_URL" \
-                -H "Title: PHP-FPM recovered: andrewbaker.ninja" \
+                -H "Title: PHP-FPM recovered: ${FPM_SITE_HOSTNAME}" \
                 -H "Priority: low" \
                 -H "Tags: white_check_mark" \
                 -d "Workers no longer saturated. DB stuck queries: ${db_stuck}." \
@@ -161,7 +178,7 @@ if [[ "$count" -ge "$FPM_SATURATION_THRESHOLD" ]]; then
         fi
         if [[ -n "$NTFY_URL" ]]; then
             curl -s -X POST "$NTFY_URL" \
-                -H "Title: PHP-FPM SATURATED: andrewbaker.ninja" \
+                -H "Title: PHP-FPM SATURATED: ${FPM_SITE_HOSTNAME}" \
                 -H "Priority: urgent" \
                 -H "Tags: fire,rotating_light" \
                 -d "All PHP workers exhausted for ${count} consecutive checks (${count} min). Reason: ${reason}. ${alert_action}" \
@@ -193,7 +210,7 @@ if [[ "$count" -ge "$FPM_SATURATION_THRESHOLD" ]]; then
             echo "$now" > "$RESTART_FILE"
             if [[ -n "$NTFY_URL" ]]; then
                 curl -s -X POST "$NTFY_URL" \
-                    -H "Title: PHP-FPM auto-restarted: andrewbaker.ninja" \
+                    -H "Title: PHP-FPM auto-restarted: ${FPM_SITE_HOSTNAME}" \
                     -H "Priority: high" \
                     -H "Tags: arrows_counterclockwise" \
                     -d "${FPM_WP_CONTAINER} restarted automatically after ${count} consecutive saturated checks. Reason: ${reason}. Next auto-restart available in $((FPM_RESTART_COOLDOWN / 60)) min." \

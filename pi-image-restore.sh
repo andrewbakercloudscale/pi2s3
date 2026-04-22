@@ -376,8 +376,11 @@ for p in m.get('partitions', []):
     # ── Mount read-only ───────────────────────────────────────────────────────
     _mnt=$(mktemp -d --tmpdir="/tmp" "pi2s3-mnt-XXXXXX")
     log "Mounting ${_loop} at ${_mnt} (read-only)..."
-    sudo mount -o ro "${_loop}" "${_mnt}" \
-        || die "mount failed — the filesystem type (${sel_fstype}) may not be supported by this kernel"
+    local _mount_args=("-o" "ro")
+    [[ -n "${sel_fstype}" && "${sel_fstype}" != "unknown" ]] \
+        && _mount_args+=("-t" "${sel_fstype}")
+    sudo mount "${_mount_args[@]}" "${_loop}" "${_mnt}" \
+        || die "mount failed — the filesystem type (${sel_fstype:-auto-detect}) may not be supported by this kernel"
 
     # ── Verify path exists ────────────────────────────────────────────────────
     local src_path="${_mnt}${EXTRACT_PATH}"
@@ -716,11 +719,16 @@ confirm "Proceed with flash?" || { echo "Aborted."; exit 0; }
 log ""
 log "Unmounting ${TARGET_DEVICE}..."
 if [[ "${OS_TYPE}" == "Darwin" ]]; then
-    diskutil unmountDisk "${TARGET_DEVICE}" 2>/dev/null || true
+    diskutil unmountDisk "${TARGET_DEVICE}" 2>/dev/null \
+        || die "diskutil unmountDisk ${TARGET_DEVICE} failed — device may be busy. Cannot restore to a mounted device."
 else
     lsblk -no NAME "${TARGET_DEVICE}" 2>/dev/null | tail -n +2 | while read -r part; do
         umount "/dev/${part}" 2>/dev/null || true
     done
+    # Verify no remaining mounts on the target before writing
+    if mount | grep -q "^${TARGET_DEVICE}"; then
+        die "${TARGET_DEVICE} is still mounted — cannot write to a mounted device"
+    fi
 fi
 
 # ── Flash ─────────────────────────────────────────────────────────────────────
@@ -755,9 +763,13 @@ if [[ "${BACKUP_TYPE}" == "partclone" ]]; then
 
     log ""
     log "Restoring partition table to ${TARGET_DEVICE}..."
-    aws_cmd s3 cp "s3://${S3_BUCKET}/${PTABLE_KEY}" - 2>/dev/null \
-        | sudo sfdisk --force --no-reread "${TARGET_DEVICE}" 2>&1 \
-        | grep -v '^$' | sed 's/^/  /' || true
+    local _ptable_out _ptable_rc=0
+    _ptable_out=$(aws_cmd s3 cp "s3://${S3_BUCKET}/${PTABLE_KEY}" - 2>/dev/null \
+        | sudo sfdisk --force --no-reread "${TARGET_DEVICE}" 2>&1) || _ptable_rc=$?
+    echo "${_ptable_out}" | grep -v '^$' | sed 's/^/  /' || true
+    if [[ ${_ptable_rc} -ne 0 ]]; then
+        die "sfdisk failed (exit ${_ptable_rc}) — partition table NOT restored to ${TARGET_DEVICE}"
+    fi
 
     # Wait for kernel to update partition table
     sudo partprobe "${TARGET_DEVICE}" 2>/dev/null \
@@ -802,11 +814,20 @@ for p in m.get('partitions', []):
     while IFS=$'\t' read -r PART_NAME PART_TOOL PART_KEY PART_CSIZE; do
         [[ -z "${PART_NAME}" || -z "${PART_KEY}" ]] && continue
 
-        # Map source partition name to target partition device by number
-        PART_NUM=$(echo "${PART_NAME}" | grep -o '[0-9]*$' || true)
+        # Map source partition name to target partition device by number.
+        # p-separated naming: nvme0n1p2, mmcblk0p1, loop0p3, md0p1
+        # Direct-suffix naming: sda1, sdb10, vda2, xvda1
+        if [[ "${PART_NAME}" =~ p([0-9]+)$ ]]; then
+            PART_NUM="${BASH_REMATCH[1]}"
+        elif [[ "${PART_NAME}" =~ [a-z]([0-9]+)$ ]]; then
+            PART_NUM="${BASH_REMATCH[1]}"
+        else
+            PART_NUM=""
+        fi
         [[ -z "${PART_NUM}" ]] && { log "  Skipping ${PART_NAME} — cannot determine partition number"; continue; }
 
-        if [[ "${TARGET_DEVICE}" =~ (nvme|mmcblk) ]]; then
+        # Devices that use p-prefix for partitions (nvme, mmcblk, loop, md, ...)
+        if [[ "${TARGET_DEVICE}" =~ (nvme|mmcblk|loop|md) ]]; then
             TARGET_PART="${TARGET_DEVICE}p${PART_NUM}"
         else
             TARGET_PART="${TARGET_DEVICE}${PART_NUM}"
@@ -884,7 +905,14 @@ if parts:
             case "${_last_fs}" in
                 ext2|ext3|ext4)
                     log "  Checking filesystem before resize..."
-                    sudo e2fsck -f -y "${_last_target}" 2>&1 | tail -5 | sed 's/^/  /' || true
+                    local _fsck_rc=0
+                    sudo e2fsck -f -y "${_last_target}" 2>&1 | sed 's/^/  /' || _fsck_rc=${PIPESTATUS[0]}
+                    # e2fsck exit 0=clean, 1=corrected, 2=reboot needed, 4+=uncorrectable
+                    if [[ ${_fsck_rc} -ge 4 ]]; then
+                        log "  ERROR: e2fsck exited ${_fsck_rc} — filesystem has uncorrectable errors"
+                        log "  Skipping resize. Run manually: sudo e2fsck -f ${_last_target}"
+                        break
+                    fi
                     log "  Expanding filesystem..."
                     sudo resize2fs "${_last_target}" 2>&1 | sed 's/^/  /' || true
                     log "  Filesystem expanded."

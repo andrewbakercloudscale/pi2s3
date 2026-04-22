@@ -318,9 +318,9 @@ if [[ "${PHASE}" == "pre-flash" ]]; then
             MANIFEST_DEVICE=$(echo "${MANIFEST}" | grep -o '"device": *"[^"]*"' | cut -d'"' -f4 || true)
             MANIFEST_OS=$(echo "${MANIFEST}" | grep -o '"os": *"[^"]*"' | cut -d'"' -f4 || true)
 
-            [[ -n "${MANIFEST_HOST}"   ]] && pass "Hostname in manifest: ${MANIFEST_HOST}"   || warn "Hostname missing from manifest"
-            [[ -n "${MANIFEST_DEVICE}" ]] && pass "Boot device: ${MANIFEST_DEVICE}"          || warn "Device missing from manifest"
-            [[ -n "${MANIFEST_OS}"     ]] && pass "OS: ${MANIFEST_OS}"                       || warn "OS missing from manifest"
+            if [[ -n "${MANIFEST_HOST}" ]]; then pass "Hostname in manifest: ${MANIFEST_HOST}"; else warn "Hostname missing from manifest"; fi
+            if [[ -n "${MANIFEST_DEVICE}" ]]; then pass "Boot device: ${MANIFEST_DEVICE}"; else warn "Device missing from manifest"; fi
+            if [[ -n "${MANIFEST_OS}" ]]; then pass "OS: ${MANIFEST_OS}"; else warn "OS missing from manifest"; fi
 
             # Check for SHA256 checksums (per-partition, computed in-flight during upload)
             CHECKSUM_COUNT=$(echo "${MANIFEST}" | grep -o '"sha256": *"[^"]*"' | grep -vc '""' 2>/dev/null || echo "0")
@@ -409,7 +409,9 @@ if [[ "${PHASE}" == "post-boot" ]]; then
     # ── OS & hardware ─────────────────────────────────────────────────────────
     section "OS & hardware"
 
-    PI_MODEL=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || echo "unknown")
+    PI_MODEL=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null \
+        || grep -m1 'Model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2 | xargs \
+        || echo "unknown")
     OS_PRETTY=$(grep PRETTY_NAME /etc/os-release 2>/dev/null | cut -d'"' -f2 || echo "unknown")
     KERNEL=$(uname -r)
     UPTIME_SECS=$(awk '{print int($1)}' /proc/uptime 2>/dev/null || echo "0")
@@ -460,24 +462,27 @@ if [[ "${PHASE}" == "post-boot" ]]; then
         fail "Low free space: ${ROOT_AVAIL_HUMAN} — less than 1GB available"
     fi
 
-    # ── NVMe (if applicable) ──────────────────────────────────────────────────
-    section "NVMe"
+    # ── Extra storage ─────────────────────────────────────────────────────────
+    section "Extra storage"
 
-    if lsblk | grep -q nvme 2>/dev/null; then
-        NVME_DEV=$(lsblk -dno NAME | grep nvme | head -1)
-        pass "NVMe device present: /dev/${NVME_DEV}"
-
-        if mountpoint -q /mnt/nvme 2>/dev/null; then
-            NVME_SIZE=$(df -h /mnt/nvme 2>/dev/null | tail -1 | awk '{print $2}')
-            NVME_AVAIL=$(df -h /mnt/nvme 2>/dev/null | tail -1 | awk '{print $4}')
-            pass "/mnt/nvme mounted (${NVME_SIZE} total, ${NVME_AVAIL} free)"
-        else
-            fail "/mnt/nvme is NOT mounted"
-            echo "         Check: cat /etc/fstab | grep nvme"
-            echo "         Try:   sudo mount -a"
-        fi
+    if mountpoint -q /mnt/nvme 2>/dev/null; then
+        _nvme_src=$(findmnt -n -o SOURCE /mnt/nvme 2>/dev/null || echo "unknown")
+        NVME_SIZE=$(df -h /mnt/nvme 2>/dev/null | tail -1 | awk '{print $2}')
+        NVME_AVAIL=$(df -h /mnt/nvme 2>/dev/null | tail -1 | awk '{print $4}')
+        pass "/mnt/nvme mounted (${_nvme_src}: ${NVME_SIZE} total, ${NVME_AVAIL} free)"
     else
-        warn "No NVMe device detected — running from SD card only"
+        # Check for any non-boot disk (nvme*, sdX that isn't the root device, etc.)
+        _root_dev=$(findmnt -n -o SOURCE / 2>/dev/null | xargs lsblk -no PKNAME 2>/dev/null || echo "")
+        _extra_disks=$(lsblk -dno NAME,TYPE 2>/dev/null \
+            | awk '$2=="disk" {print $1}' \
+            | grep -vE '^(loop|'"${_root_dev:-^$}"')' || true)
+        if [[ -n "${_extra_disks}" ]]; then
+            warn "Extra disk(s) detected but /mnt/nvme not mounted: ${_extra_disks}"
+            echo "         Check: grep nvme /etc/fstab"
+            echo "         Try:   sudo mount -a"
+        else
+            warn "No extra storage at /mnt/nvme — running from boot device only"
+        fi
     fi
 
     # ── Docker ────────────────────────────────────────────────────────────────
@@ -525,19 +530,20 @@ if [[ "${PHASE}" == "post-boot" ]]; then
         echo "         Try: docker compose up -d (if compose file present)"
     fi
 
-    # Check specific expected containers (common Pi stack)
-    for container in mariadb wordpress nginx redis; do
-        if docker ps --format '{{.Names}}' 2>/dev/null | grep -qi "${container}"; then
-            pass "Container '${container}' running"
-        else
-            # Not a hard failure — user may not run this stack
-            if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qi "${container}"; then
+    # Check expected containers (set EXPECTED_CONTAINERS in config.env, space-separated)
+    if [[ -n "${EXPECTED_CONTAINERS:-}" ]]; then
+        read -ra _exp_list <<< "${EXPECTED_CONTAINERS}"
+        for container in "${_exp_list[@]}"; do
+            if docker ps --format '{{.Names}}' 2>/dev/null | grep -qF "${container}"; then
+                pass "Container '${container}' running"
+            elif docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qF "${container}"; then
                 fail "Container '${container}' exists but is NOT running"
                 echo "         Try: docker start ${container}"
+            else
+                fail "Container '${container}' not found (listed in EXPECTED_CONTAINERS)"
             fi
-            # Silently skip if container doesn't exist at all (different stack)
-        fi
-    done
+        done
+    fi
 
     # ── Connectivity ──────────────────────────────────────────────────────────
     section "Connectivity"
@@ -607,45 +613,36 @@ if [[ "${PHASE}" == "post-boot" ]]; then
     # ── MariaDB (if applicable) ───────────────────────────────────────────────
     section "Database"
 
-    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qi mariadb; then
-        # Try to load .env for credentials
-        ENV_FILE=""
-        for f in ~/andrewbakerninja-pi/.env ~/.env; do
-            [[ -f "${f}" ]] && ENV_FILE="${f}" && break
-        done
-
-        if [[ -n "${ENV_FILE}" ]]; then
-            # shellcheck disable=SC1090
-            source "${ENV_FILE}" 2>/dev/null || true
-            MYSQL_USER="${MYSQL_USER:-wordpress}"
-            MYSQL_PASSWORD="${MYSQL_PASSWORD:-}"
-            MYSQL_DATABASE="${MYSQL_DATABASE:-wordpress}"
-            MARIADB_CONTAINER=$(docker ps --format '{{.Names}}' 2>/dev/null \
-                | grep -i mariadb | head -1)
-
+    MARIADB_CONTAINER=$(docker ps --format '{{.Names}}' 2>/dev/null \
+        | grep -i mariadb | head -1 || true)
+    if [[ -n "${MARIADB_CONTAINER}" ]]; then
+        # Use DB_ROOT_PASSWORD from config.env (same credential used by pi2s3 backups)
+        _db_root="${DB_ROOT_PASSWORD:-${FPM_DB_ROOT_PASSWORD:-}}"
+        if [[ -n "${_db_root}" ]]; then
             DB_PING=$(docker exec "${MARIADB_CONTAINER}" \
-                sh -c "mysqladmin -u${MYSQL_USER} -p${MYSQL_PASSWORD} ping 2>/dev/null" \
-                2>/dev/null || echo "FAIL")
-
-            if echo "${DB_PING}" | grep -q "alive"; then
-                pass "MariaDB ping: ${DB_PING}"
+                mariadb -uroot -p"${_db_root}" -e "SELECT 1;" 2>/dev/null \
+                | grep -c "1" || echo "0")
+            if [[ "${DB_PING}" -gt 0 ]]; then
+                pass "MariaDB responding (container: ${MARIADB_CONTAINER})"
             else
-                fail "MariaDB not responding: ${DB_PING}"
+                fail "MariaDB not responding in container ${MARIADB_CONTAINER}"
             fi
 
             TABLE_COUNT=$(docker exec "${MARIADB_CONTAINER}" \
-                sh -c "mysql -u${MYSQL_USER} -p${MYSQL_PASSWORD} ${MYSQL_DATABASE} \
-                    -e 'SHOW TABLES;' 2>/dev/null | wc -l" 2>/dev/null || echo "0")
-            if [[ "${TABLE_COUNT}" -gt 5 ]]; then
-                pass "Database has ${TABLE_COUNT} tables"
+                mariadb -uroot -p"${_db_root}" \
+                -e "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA NOT IN ('information_schema','performance_schema','mysql','sys');" \
+                --batch --silent 2>/dev/null | tail -1 || echo "0")
+            if [[ "${TABLE_COUNT:-0}" -gt 5 ]]; then
+                pass "Database has ${TABLE_COUNT} user table(s)"
             else
-                fail "Database has only ${TABLE_COUNT} tables — may be empty or not restored"
+                fail "Database has only ${TABLE_COUNT:-0} user table(s) — may be empty or not restored"
             fi
         else
-            warn "No .env found — skipping DB credentials check"
+            warn "DB_ROOT_PASSWORD not set in config.env — skipping DB health check"
+            echo "         Set DB_ROOT_PASSWORD in ${CONFIG_FILE} to enable this check"
         fi
     else
-        warn "MariaDB container not running — skipping DB check"
+        warn "No MariaDB container running — skipping DB check"
     fi
 
     # ── System resources ──────────────────────────────────────────────────────
