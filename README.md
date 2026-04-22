@@ -114,7 +114,7 @@ This is still far better than the old `dd` approach (60–90 minutes on a full N
 - AWS CLI v2 — installed automatically by `install.sh`
 - `partclone` — installed automatically by `install.sh`
 - `pigz` — installed automatically by `install.sh` (parallel gzip, much faster than `gzip` on Pi 5's quad-core)
-- AWS credentials with `s3:PutObject`, `s3:GetObject`, `s3:ListBucket`, `s3:DeleteObject`
+- AWS credentials — see [IAM policy](#aws-iam-policy) below
 
 **For restore (Linux):**
 - Linux machine with `sfdisk` (util-linux) and `partclone` installed
@@ -127,23 +127,94 @@ This is still far better than the old `dd` approach (60–90 minutes on a full N
 
 ---
 
+## Support matrix
+
+| Hardware | OS | Status | Notes |
+|---|---|---|---|
+| Pi 5 + NVMe | Raspberry Pi OS Bookworm 64-bit | ✅ Tested | Reference platform |
+| Pi 5 + SD card | Raspberry Pi OS Bookworm 64-bit | ✅ Tested | Slower upload (~90 min for full card) |
+| Pi 4 + USB SSD | Raspberry Pi OS Bookworm 64-bit | ✅ Expected | Same kernel, same tools |
+| Pi 4 + SD card | Raspberry Pi OS Bookworm 64-bit | ✅ Expected | |
+| Pi 4 + NVMe (via HAT) | Raspberry Pi OS Bookworm 64-bit | ✅ Expected | HAT presents as `/dev/nvme0n1` |
+| Pi 3B/3B+ | Raspberry Pi OS Bookworm 64-bit | ⚠️ Expected | Single-core pigz, no parallel imaging; expect 2–4× slower |
+| Pi Zero 2W | Raspberry Pi OS Bookworm 64-bit | ⚠️ Expected | 512 MB RAM; 1-core compression; slow but functional |
+| Any Pi + 32-bit OS (armv7l) | Raspberry Pi OS Legacy 32-bit | ⚠️ Limited | AWS CLI v2 has no official armv7l build; install may fail |
+| Non-Raspberry Pi Linux (x86_64, etc.) | Any 64-bit Linux | 🔬 Untested | `partclone` must be installed manually; no Pi model detection |
+
+**64-bit OS strongly recommended** — AWS CLI v2 has full aarch64 support; the 32-bit (armv7l) path requires manual AWS CLI install from source or a third-party build.
+
+---
+
+## AWS IAM policy
+
+Minimum permissions required. Create a dedicated IAM user and attach this policy:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["s3:ListBucket"],
+      "Resource": "arn:aws:s3:::YOUR-BUCKET-NAME"
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"],
+      "Resource": "arn:aws:s3:::YOUR-BUCKET-NAME/*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["s3:PutLifecycleConfiguration", "s3:GetLifecycleConfiguration"],
+      "Resource": "arn:aws:s3:::YOUR-BUCKET-NAME"
+    }
+  ]
+}
+```
+
+The policy file is included at [`iam-policy.json`](iam-policy.json). Print it with your bucket name substituted:
+
+```bash
+bash ~/pi2s3/install.sh --iam-policy
+```
+
+Apply via AWS CLI (one-time setup from any machine with IAM access):
+
+```bash
+# Create a dedicated user
+aws iam create-user --user-name pi2s3
+
+# Attach the policy (replace YOUR-BUCKET-NAME first)
+aws iam put-user-policy --user-name pi2s3 \
+  --policy-name pi2s3 \
+  --policy-document file://iam-policy.json
+
+# Generate credentials — paste output into 'aws configure' on the Pi
+aws iam create-access-key --user-name pi2s3
+```
+
+---
+
 ## Quick start
 
-### 1. Clone on the Pi
+### One-liner
+
+```bash
+curl -sL pi2s3.com/install | bash
+```
+
+SSH into your Pi and paste. Handles everything — installs dependencies, prompts for S3 bucket and region, configures cron, runs a dry-run test.
+
+### Manual install
 
 ```bash
 git clone https://github.com/andrewbakercloudscale/pi2s3.git ~/pi2s3
 cd ~/pi2s3
-```
-
-### 2. Install
-
-```bash
 bash install.sh
 ```
 
 `install.sh` will:
-- Prompt for your S3 bucket, AWS region, and ntfy notification URL
+- Prompt for your S3 bucket and AWS region (ntfy URL is optional)
 - Write `config.env` (gitignored — never committed)
 - Install `partclone`, `pigz`, and AWS CLI v2 if not present
 - Verify AWS access to your bucket
@@ -157,7 +228,7 @@ bash install.sh
 bash ~/pi2s3/pi-image-backup.sh --force
 ```
 
-Takes 3–10 minutes depending on how full the device is and your network speed. You'll get an ntfy push notification when done.
+Takes 3–10 minutes depending on how full the device is and your network speed. You'll get an ntfy push notification when done (if `NTFY_URL` is configured).
 
 ---
 
@@ -169,7 +240,9 @@ All settings live in `config.env` (copy from `config.env.example`):
 # Required
 S3_BUCKET="your-bucket-name"
 S3_REGION="us-east-1"
-NTFY_URL="https://ntfy.sh/your-topic"
+
+# Optional — push notifications via ntfy.sh (free hosted service)
+NTFY_URL=""   # e.g. https://ntfy.sh/my-pi-backups  (blank = silent)
 
 # Retention (default: 60 images)
 MAX_IMAGES=60
@@ -804,6 +877,8 @@ Check credentials and IAM permissions:
 ```bash
 aws s3 ls s3://your-bucket/
 aws sts get-caller-identity
+# Print the required policy with your bucket name:
+bash ~/pi2s3/install.sh --iam-policy
 ```
 
 **`aws CLI not found`**
@@ -841,6 +916,13 @@ bash ~/pi2s3/install.sh --status     # show cron, log tail, dependency versions,
 bash ~/pi2s3/install.sh --uninstall  # remove all cron jobs and logrotate config
 bash ~/pi2s3/install.sh --upgrade    # git pull + redeploy watchdog binary + refresh cron
 ```
+
+---
+
+## Roadmap
+
+- [ ] **GitHub Releases / version pinning** — tag stable releases so `curl pi2s3.com/install | bash` installs a specific version rather than `main` HEAD
+- [ ] **Client-side encryption by default** — prompt for an encryption passphrase during install; make `age` the default instead of an opt-in
 
 ---
 
