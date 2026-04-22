@@ -15,21 +15,15 @@ jobs:
 
       - name: Check all shell scripts
         run: |
-          scripts=(
-            pi-image-backup.sh
-            pi-image-restore.sh
-            install.sh
-            cf-tunnel-watchdog.sh
-            test-recovery.sh
-            deploy-website.sh
-          )
           failed=0
-          for f in "${scripts[@]}"; do
-            if bash -n "$f"; then
+          while IFS= read -r -d '' f; do
+            if bash -n "$f" 2>&1; then
               echo "  OK  $f"
             else
               echo "  FAIL  $f"
               failed=1
             fi
-          done
+          done < <(grep -rl '#!/usr/bin/env bash\|#!/bin/bash' . \
+            --include="*.sh" --exclude-dir=".git" --exclude-dir="node_modules" \
+            -Z 2>/dev/null)
           exit $failed
