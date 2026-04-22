@@ -1031,13 +1031,31 @@
 <section id="restore">
   <div class="section-label">Disaster recovery</div>
   <h2>Restore to a new Pi</h2>
-  <p class="section-intro">When your Pi dies: validate from your Mac, flash a minimal SD card, attach the target NVMe, SSH in, and restore. Full runbook in RECOVERY.md.</p>
+  <p class="section-intro">Flash a minimal SD card, boot the new Pi, run one command. Full runbook in <a href="https://github.com/andrewbakercloudscale/pi2s3/blob/main/RECOVERY.md" target="_blank" style="color:var(--accent2)">RECOVERY.md</a>.</p>
 
   <div class="qs-step">
     <div class="qs-num">1</div>
     <div class="qs-content">
-      <h3>Validate from Mac (before touching hardware)</h3>
-      <p>Confirms S3 image exists, reads the manifest, estimates flash time, prints the exact restore command.</p>
+      <h3>Flash Raspberry Pi OS Lite (64-bit) to an SD card</h3>
+      <p>Use <a href="https://www.raspberrypi.com/software/" target="_blank" style="color:var(--accent2)">Raspberry Pi Imager</a>. Enable SSH in the imager settings. Boot the new Pi and SSH in.</p>
+    </div>
+  </div>
+
+  <div class="qs-step">
+    <div class="qs-num">2</div>
+    <div class="qs-content">
+      <h3>Run the restore one-liner</h3>
+      <p>Installs dependencies and AWS CLI, prompts for your AWS credentials, then streams the backup directly from S3 to the target device. <strong style="color:var(--text)">Have your AWS access key and secret ready</strong> — retrieve them from your password manager first.</p>
+      <pre><span class="kw">curl</span> -sL pi2s3.com/restore | bash</pre>
+      <p style="margin-top:0.6rem; font-size:0.85rem; color:var(--muted)">Interactive: picks your latest backup and target device. Non-interactive: <code>bash ~/pi2s3/pi-image-restore.sh --date 2026-04-16 --device /dev/nvme0n1 --yes</code></p>
+    </div>
+  </div>
+
+  <div class="qs-step">
+    <div class="qs-num">3</div>
+    <div class="qs-content">
+      <h3>Validate (optional, before touching hardware)</h3>
+      <p>Confirm the S3 image exists and is intact from any machine that has AWS access.</p>
       <pre><span class="kw">bash</span> ~/pi2s3/test-recovery.sh <span class="kw">--pre-flash</span>
 
 <span class="out">✔ AWS access OK
@@ -1045,18 +1063,6 @@
 ✔ Manifest: raspberrypi · Pi 5 · Bookworm · nvme0n1
   Estimated restore time: ~12 min
   Run: pi-image-restore.sh --date 2026-04-16 --device /dev/nvme0n1</span></pre>
-    </div>
-  </div>
-
-  <div class="qs-step">
-    <div class="qs-num">2</div>
-    <div class="qs-content">
-      <h3>Restore (on Linux / new Pi)</h3>
-      <p>Interactive: pick backup date and target device. Or non interactive for scripted recovery. Streams directly from S3 with no local storage needed.</p>
-      <pre><span class="kw">bash</span> ~/pi2s3/pi-image-restore.sh
-
-<span class="cmt"># Or non interactively:</span>
-<span class="kw">bash</span> ~/pi2s3/pi-image-restore.sh <span class="kw">--date</span> <span class="num">2026-04-16</span> <span class="kw">--device</span> /dev/nvme0n1 <span class="kw">--yes</span></pre>
     </div>
   </div>
 

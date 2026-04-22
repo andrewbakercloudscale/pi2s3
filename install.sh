@@ -29,7 +29,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKUP_SCRIPT="${SCRIPT_DIR}/pi-image-backup.sh"
-WATCHDOG_SCRIPT="${SCRIPT_DIR}/cf-tunnel-watchdog.sh"
+WATCHDOG_SCRIPT="${SCRIPT_DIR}/extras/cf-tunnel-watchdog.sh"
 WATCHDOG_BIN="/usr/local/bin/pi2s3-watchdog.sh"
 CONFIG_FILE="${SCRIPT_DIR}/config.env"
 CONFIG_EXAMPLE="${SCRIPT_DIR}/config.env.example"
