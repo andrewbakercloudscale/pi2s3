@@ -86,6 +86,7 @@ VERIFY_DATE_FOR_VERIFY=""
 EXTRACT_PATH=""
 EXTRACT_PARTITION=""
 HOST_FILTER=""
+POST_RESTORE_SCRIPT=""
 _GPG_PASS_FILE=""
 
 while [[ $# -gt 0 ]]; do
@@ -105,6 +106,8 @@ while [[ $# -gt 0 ]]; do
         --host)           shift; HOST_FILTER="${1:-}" ;;
         --host=*)         HOST_FILTER="${1#--host=}" ;;
         --resize)         RESIZE=true ;;
+        --post-restore)   shift; POST_RESTORE_SCRIPT="${1:-}" ;;
+        --post-restore=*) POST_RESTORE_SCRIPT="${1#--post-restore=}" ;;
         --help)
             echo "Usage: pi-image-restore.sh [options]
 
@@ -118,6 +121,9 @@ while [[ $# -gt 0 ]]; do
   --extract <path>           Extract a file or directory — no target device needed
   --partition <name>         Partition to use for --extract (default: largest non-boot)
   --verify /dev/...          Verify a flashed device against the S3 manifest
+  --post-restore <script>    Run a script inside the restored filesystem before reboot
+                             RESTORE_ROOT is exported pointing to the mounted root.
+                             See extras/post-restore-example.sh for a template.
   --help                     Show this help
 
 Requires: Linux with partclone, sfdisk, gunzip, AWS CLI v2
@@ -126,7 +132,7 @@ Optional: pv (progress bar), gpg (if backup is encrypted)"
             ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--list] [--date YYYY-MM-DD] [--device /dev/...] [--yes] [--resize] [--verify /dev/...] [--extract <path>] [--partition <name>] [--host <hostname>]"
+            echo "Usage: $0 [--list] [--date YYYY-MM-DD] [--device /dev/...] [--yes] [--resize] [--verify /dev/...] [--extract <path>] [--partition <name>] [--host <hostname>] [--post-restore <script>]"
             exit 1
             ;;
     esac
@@ -1008,6 +1014,62 @@ ELAPSED=$(( END_TIME - START_TIME ))
 
 echo ""
 log "Flash complete in ${ELAPSED}s."
+
+# ── Post-restore hook ────────────────────────────────────────────────────────
+if [[ -n "${POST_RESTORE_SCRIPT}" ]]; then
+    if [[ ! -f "${POST_RESTORE_SCRIPT}" ]]; then
+        log "WARNING: --post-restore script not found: ${POST_RESTORE_SCRIPT}"
+        log "         Skipping post-restore hook."
+    else
+        # Find the root partition: last non-FAT partition in the manifest
+        local _pr_name _pr_num _pr_target _pr_mount
+        IFS=$'\t' read -r _pr_name < <(echo "${MANIFEST}" | python3 -c "
+import json, sys
+m = json.load(sys.stdin)
+parts = [p for p in m.get('partitions', []) if p.get('fstype','') not in ('vfat','fat32','fat16','')]
+if parts:
+    print(parts[-1].get('name',''))
+" 2>/dev/null || true)
+
+        if [[ -z "${_pr_name:-}" ]]; then
+            log "WARNING: --post-restore: could not identify root partition from manifest."
+            log "         Skipping post-restore hook."
+        else
+            _pr_num=$(echo "${_pr_name}" | grep -o '[0-9]*$' || true)
+            if [[ "${TARGET_DEVICE}" =~ (nvme|mmcblk) ]]; then
+                _pr_target="${TARGET_DEVICE}p${_pr_num}"
+            else
+                _pr_target="${TARGET_DEVICE}${_pr_num}"
+            fi
+
+            sudo partprobe "${TARGET_DEVICE}" 2>/dev/null || true
+            sleep 1
+
+            _pr_mount=$(mktemp -d)
+            log ""
+            log "Post-restore: mounting ${_pr_target} at ${_pr_mount}..."
+            if sudo mount -o rw "${_pr_target}" "${_pr_mount}" 2>&1 | sed 's/^/  /'; then
+                export RESTORE_ROOT="${_pr_mount}"
+                log "Post-restore: running ${POST_RESTORE_SCRIPT}..."
+                echo ""
+                local _pr_rc=0
+                bash "${POST_RESTORE_SCRIPT}" "${_pr_mount}" || _pr_rc=$?
+                echo ""
+                if [[ ${_pr_rc} -eq 0 ]]; then
+                    log "Post-restore: script completed successfully."
+                else
+                    log "WARNING: post-restore script exited with code ${_pr_rc}."
+                    log "         Review the output above and re-run manually if needed."
+                fi
+                sudo umount "${_pr_mount}" 2>/dev/null || true
+            else
+                log "WARNING: could not mount ${_pr_target} — skipping post-restore hook."
+                log "         Run manually: sudo mount ${_pr_target} /mnt && bash ${POST_RESTORE_SCRIPT} /mnt"
+            fi
+            rmdir "${_pr_mount}" 2>/dev/null || true
+        fi
+    fi
+fi
 
 if [[ "${OS_TYPE}" == "Darwin" ]]; then
     log "Ejecting ${TARGET_DEVICE}..."
