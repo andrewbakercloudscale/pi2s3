@@ -155,7 +155,7 @@ Minimum permissions required. Create a dedicated IAM user and attach this policy
   "Statement": [
     {
       "Effect": "Allow",
-      "Action": ["s3:ListBucket"],
+      "Action": ["s3:CreateBucket", "s3:ListBucket"],
       "Resource": "arn:aws:s3:::YOUR-BUCKET-NAME"
     },
     {
