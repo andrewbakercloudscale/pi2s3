@@ -1,0 +1,7 @@
+# Copy to terraform.tfvars and fill in your values.
+# terraform.tfvars is gitignored — never commit it.
+
+domain        = "boot.pi2s3.com"
+bucket_name   = "boot.pi2s3.com"
+bucket_region = "us-east-1"   # us-east-1 is cheapest; CloudFront caches globally anyway
+aws_profile   = ""            # leave blank to use default AWS credentials
