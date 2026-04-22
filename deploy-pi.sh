@@ -2,24 +2,41 @@
 # =============================================================
 # deploy-pi.sh — Upgrade pi2s3 on the Pi
 #
-# Pulls latest code from GitHub and redeploys install.sh.
-# Uses the CF tunnel (ssh.andrewbaker.ninja) with the service key.
+# Pulls latest code from GitHub on the Pi and runs install.sh --upgrade.
+# Tries direct LAN SSH first; falls back to Cloudflare tunnel.
 #
 # Usage: bash deploy-pi.sh
 # =============================================================
 set -euo pipefail
 
-PI_HOST="ssh.andrewbaker.ninja"
-PI_USER="pi"
+PI_KEY="REPO_BASE/pi-monitor/deploy/pi_key"
+PI_LOCAL="andrew-pi-5.local"
 PI_DIR="~/pi2s3"
-CF_KEY="${HOME}/.cloudflared/pi-service-key"
-CF_PROXY="${HOME}/.cloudflared/cf-ssh-proxy.sh"
-SSH_OPTS=(-i "${CF_KEY}" -o "ProxyCommand=${CF_PROXY}" -o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o ServerAliveCountMax=10)
 
+_PI_CF_HOST="ssh.andrewbaker.ninja"
+_PI_CF_USER="YOUR-CF-USERNAME"
+
+# ── Pick connection (LAN first, CF tunnel fallback) ───────────────────────────
+if ssh -i "${PI_KEY}" -o StrictHostKeyChecking=no -o ConnectTimeout=4 -o BatchMode=yes \
+       "pi@${PI_LOCAL}" "exit" 2>/dev/null; then
+    echo "Network: home — direct SSH"
+    PI_HOST="${PI_LOCAL}"; PI_USER="pi"
+    SSH_OPTS=(-i "${PI_KEY}" -o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o ServerAliveCountMax=10)
+else
+    echo "Network: remote — Cloudflare tunnel"
+    PI_HOST="${_PI_CF_HOST}"; PI_USER="${_PI_CF_USER}"
+    SSH_OPTS=(-i "${HOME}/.cloudflared/pi-service-key" \
+              -o "ProxyCommand=${HOME}/.cloudflared/cf-ssh-proxy.sh" \
+              -o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o ServerAliveCountMax=10)
+fi
+
+pi_ssh() { ssh "${SSH_OPTS[@]}" "${PI_USER}@${PI_HOST}" "$@"; }
+
+echo ""
 echo "── pi2s3 deploy to ${PI_USER}@${PI_HOST}:${PI_DIR} ──"
 echo ""
 
-ssh "${SSH_OPTS[@]}" "${PI_USER}@${PI_HOST}" "
+pi_ssh "
     set -e
     cd ${PI_DIR}
     echo '  git pull...'
