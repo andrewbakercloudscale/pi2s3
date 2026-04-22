@@ -200,6 +200,67 @@
       margin-bottom: 2.5rem;
     }
 
+    .hero-install {
+      background: rgba(0,0,0,0.35);
+      border: 1px solid rgba(94,234,212,0.3);
+      border-radius: 12px;
+      padding: 1rem 1.4rem;
+      margin-bottom: 1.75rem;
+      max-width: 520px;
+      width: 100%;
+      text-align: left;
+    }
+
+    .hero-install-label {
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--accent2);
+      margin-bottom: 0.55rem;
+    }
+
+    .hero-install-row {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .hero-install-cmd {
+      flex: 1;
+      font-family: var(--mono);
+      font-size: 0.95rem;
+      color: #e2e8f0;
+      background: none;
+      border: none;
+      padding: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      user-select: all;
+    }
+
+    .hero-copy-btn {
+      flex-shrink: 0;
+      background: rgba(99,179,237,0.15);
+      border: 1px solid rgba(99,179,237,0.4);
+      color: #93c5fd;
+      font-size: 0.78rem;
+      font-weight: 600;
+      padding: 0.3rem 0.75rem;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .hero-copy-btn:hover { background: rgba(99,179,237,0.28); }
+
+    .hero-install-sub {
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-top: 0.55rem;
+    }
+
     .hero-actions {
       display: flex;
       gap: 1rem;
@@ -634,12 +695,20 @@
   </div>
   <h1>The <span class="gradient">AMI</span> for your<br>Raspberry Pi</h1>
   <p class="hero-sub">Nightly block-level backup to S3. <strong style="color:var(--text);">Zero downtime</strong>. MariaDB is in read-only mode, not stopped. <strong style="color:var(--accent2);">Zero config needed</strong>, it detects your DB automatically. Restore a complete bootable Pi to new hardware in one command.</p>
+  <div class="hero-install">
+    <div class="hero-install-label">Install on your Pi</div>
+    <div class="hero-install-row">
+      <code class="hero-install-cmd">curl -sL pi2s3.com/install | bash</code>
+      <button class="hero-copy-btn" onclick="(function(b){var t=b.textContent;navigator.clipboard.writeText('curl -sL pi2s3.com/install | bash').then(function(){b.textContent='Copied!';setTimeout(function(){b.textContent=t},1500)});})(this)" aria-label="Copy install command">Copy</button>
+    </div>
+    <div class="hero-install-sub">SSH into your Pi and paste. Handles everything — dependencies, config, cron, dry-run test.</div>
+  </div>
   <div class="hero-actions">
     <a href="https://github.com/andrewbakercloudscale/pi2s3" target="_blank" class="btn-primary">
       <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
       View on GitHub
     </a>
-    <a href="#quickstart" class="btn-outline">Get started ↓</a>
+    <a href="#quickstart" class="btn-outline">See what it does ↓</a>
   </div>
 
   <div style="display:flex; flex-wrap:wrap; gap:0.75rem; justify-content:center; margin-top:2rem; margin-bottom:0.5rem;">
@@ -911,27 +980,14 @@
   <div class="qs-step">
     <div class="qs-num">1</div>
     <div class="qs-content">
-      <h3>Clone on the Pi</h3>
-      <p>SSH into your Pi and clone the repo.</p>
-      <pre><span class="kw">git</span> clone https://github.com/andrewbakercloudscale/pi2s3.git ~/pi2s3
-<span class="kw">cd</span> ~/pi2s3</pre>
+      <h3>Run the installer on your Pi</h3>
+      <p>SSH into your Pi and paste one command. It detects your hardware, installs dependencies, prompts for your S3 bucket and region, configures cron, and runs a dry-run test.</p>
+      <pre><span class="kw">curl</span> -sL pi2s3.com/install | bash</pre>
     </div>
   </div>
 
   <div class="qs-step">
     <div class="qs-num">2</div>
-    <div class="qs-content">
-      <h3>Configure and run the installer</h3>
-      <p>Copy the example config and fill in your values. All available options are documented inline:</p>
-      <pre><span class="kw">cp</span> config.env.example config.env
-<span class="kw">nano</span> config.env   <span class="cmt"># required: S3_BUCKET, S3_REGION, NTFY_URL</span></pre>
-      <p style="margin-top:0.75rem;">Then run the installer. It handles dependencies, AWS verification, lifecycle policy, cron scheduling, and a dry run test:</p>
-      <pre><span class="kw">bash</span> install.sh</pre>
-    </div>
-  </div>
-
-  <div class="qs-step">
-    <div class="qs-num">3</div>
     <div class="qs-content">
       <h3>First backup</h3>
       <p>Force an immediate backup to confirm everything works end to end. You'll get a push notification when done.</p>
@@ -940,7 +996,7 @@
   </div>
 
   <div class="qs-step">
-    <div class="qs-num">4</div>
+    <div class="qs-num">3</div>
     <div class="qs-content">
       <h3>List your backups</h3>
       <pre><span class="kw">bash</span> ~/pi2s3/pi-image-backup.sh <span class="kw">--list</span>
@@ -952,7 +1008,7 @@
   </div>
 
   <div class="qs-step">
-    <div class="qs-num">5</div>
+    <div class="qs-num">4</div>
     <div class="qs-content">
       <h3>Named AWS profile</h3>
       <p>If you use multiple AWS accounts, set a profile in config.env:</p>
@@ -961,7 +1017,7 @@
   </div>
 
   <div class="qs-step">
-    <div class="qs-num">6</div>
+    <div class="qs-num">5</div>
     <div class="qs-content">
       <h3>Check status any time</h3>
       <pre><span class="kw">bash</span> ~/pi2s3/install.sh <span class="kw">--status</span>   <span class="cmt"># cron, log tail, dependency versions</span>

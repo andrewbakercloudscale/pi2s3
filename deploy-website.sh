@@ -55,13 +55,24 @@ SYNC_ARGS=(
     --exclude "*.spec.js"
     --exclude "package.json"
     --exclude "package-lock.json"
+    --exclude "install"
 )
 [[ "${DRY_RUN}" == "true" ]] && SYNC_ARGS+=(--dryrun)
 
 aws_cmd "${SYNC_ARGS[@]}"
 
+# Upload install script separately with explicit content-type so curl | bash works
+if [[ "${DRY_RUN}" == "true" ]]; then
+    echo "  [DRY RUN] s3 cp website/install → s3://${S3_BUCKET}/install (text/plain)"
+else
+    aws_cmd s3 cp "${WEBSITE_DIR}/install" "s3://${S3_BUCKET}/install" \
+        --content-type "text/plain; charset=utf-8" \
+        --cache-control "max-age=60, must-revalidate"
+fi
+
 if [[ "${DRY_RUN}" != "true" ]]; then
     echo ""
     echo "  Deploy complete."
     echo "  https://pi2s3.com"
+    echo "  https://pi2s3.com/install"
 fi
