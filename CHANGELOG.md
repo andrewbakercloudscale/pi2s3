@@ -4,6 +4,32 @@ All notable changes to pi2s3 are documented here.
 
 ---
 
+## [1.7.0] — 2026-04-23
+
+### Added
+
+- **`--post-restore <script>` flag** (`pi-image-restore.sh`) — after a full partclone restore completes, mounts the restored root partition read-write, exports `RESTORE_ROOT`, and runs the user-supplied script. Enables restoring to a second Pi and immediately customising it (hostname, Cloudflare tunnel credentials, `.env` variables, SSH host keys) before the first boot. Template at `extras/post-restore-example.sh`.
+- **Recovery USB image builder** (`extras/build-recovery-usb.sh`) — builds a bootable Raspberry Pi OS Lite ARM64 image with `partclone`, `pigz`, `pv`, AWS CLI v2, and the pi2s3 repo pre-installed. On first boot the Pi auto-logs in, prompts for S3 bucket and AWS credentials if not yet configured, and launches the restore wizard. Supports x86_64 build hosts via `qemu-user-static`.
+- **Recovery launcher** (`extras/recovery-launcher.sh`) — first-boot restore launcher used by the recovery USB image. Creates a minimal `config.env` from interactive prompts, runs `aws configure`, then hands off to `pi-image-restore.sh`.
+- **GitHub Actions: Build Recovery USB Image** (`.github/workflows/release-recovery-usb.yml`) — manual `workflow_dispatch` to build the recovery USB image and publish it as a GitHub Release tagged `recovery-usb/YYYY-MM-DD`.
+- **Pi 5 HTTP netboot** (`extras/setup-netboot.sh`) — configures Pi 5 EEPROM boot order to include HTTP boot (`BOOT_ORDER` entry `7`) pointing at `boot.pi2s3.com`. Modes: `(no args)` adds HTTP as fallback after NVMe; `--force` sets HTTP first for immediate recovery; `--disable` removes HTTP; `--show` prints current EEPROM config.
+- **Netboot image builder** (`extras/build-netboot-image.sh`) — extracts the Pi kernel from Pi OS Lite, builds a minimal initramfs (Pi OS base + partclone + AWS CLI + pi2s3), and writes `config.txt` and `cmdline.txt`. Optionally uploads to S3 with `--upload`.
+- **GitHub Actions: Build Netboot Image** (`.github/workflows/release-netboot.yml`) — manual workflow to build netboot boot files and upload to S3, or save as a GitHub Actions artifact.
+- **Terraform: boot.pi2s3.com** (`extras/terraform/boot-infrastructure/`) — creates a private S3 bucket, CloudFront OAC, CloudFront distribution with `viewer_protocol_policy = allow-all` (required for Pi HTTP boot), ACM certificate (us-east-1, DNS validation), and IAM user `pi2s3-netboot-ci` with write-only access for CI uploads. Outputs ACM validation CNAMEs for Cloudflare and GitHub Actions secrets. `README.md` includes full manual AWS Console walkthrough as an alternative to Terraform.
+- **Fleet deployment** (`extras/fleet-deploy.sh`) — reads a CSV manifest of Pis (`name,host,date,device,post_restore_script`), SSHes into each recovery-mode Pi, copies `config.env` and the per-Pi post-restore script, then runs `pi-image-restore.sh` non-interactively. Supports `--parallel` (all Pis simultaneously), `--dry-run`, `--only <name>`, `--no-resize`. Per-Pi logs saved to `fleet-deploy-logs-<timestamp>/`. Summary table on completion.
+- **Fleet example** (`extras/fleet-example/`) — example `fleet.csv` manifest and `post-restore/classroom.sh` template that auto-derives the hostname from the last octet of the Pi's IP address and clears SSH host keys for per-Pi uniqueness.
+
+### Fixed
+
+- **CI syntax check** — `.github/workflows/ci.yml` was hardcoded to check `cf-tunnel-watchdog.sh` at the repo root. After the file moved to `extras/`, CI failed with "No such file or directory". Fixed by replacing the static list with dynamic grep-based discovery: any `.sh` file with a bash shebang anywhere in the repo is checked automatically.
+- **`release-recovery-usb.yml` parse error** — invalid GitHub Actions expression `${{ steps.image.outputs.name %.xz }}` used bash parameter expansion syntax inside `${{ }}`, causing "No jobs were run". Fixed by computing `name_img` (`.xz`-stripped filename) as a separate step output.
+
+### Changed
+
+- **Docs** — README new sections: `--post-restore`, Recovery USB, HTTP netboot, Fleet deployment. RECOVERY.md: "faster alternatives" note at Step 2 pointing to recovery USB and netboot. Website: new "Go further" section with four feature cards; restore section updated with three recovery-mode options.
+
+---
+
 ## [1.6.0] — 2026-04-22
 
 ### Added
