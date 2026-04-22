@@ -42,8 +42,10 @@ jobs:
         id: image
         run: |
           IMG=$(ls pi2s3-recovery-usb-*.img.xz | head -1)
+          NAME=$(basename "${IMG}")
           echo "path=${IMG}" >> "$GITHUB_OUTPUT"
-          echo "name=$(basename "${IMG}")" >> "$GITHUB_OUTPUT"
+          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+          echo "name_img=${NAME%.xz}" >> "$GITHUB_OUTPUT"
           SIZE=$(du -h "${IMG}" | cut -f1)
           echo "size=${SIZE}" >> "$GITHUB_OUTPUT"
 
@@ -75,7 +77,7 @@ jobs:
             1. Flash `${{ steps.image.outputs.name }}` with [Raspberry Pi Imager](https://www.raspberrypi.com/software/) (choose **Use custom**), or:
                ```bash
                xz -d ${{ steps.image.outputs.name }}
-               sudo dd if=${{ steps.image.outputs.name %.xz }} of=/dev/sdX bs=4M status=progress
+               sudo dd if=${{ steps.image.outputs.name_img }} of=/dev/sdX bs=4M status=progress
                ```
             2. Insert the USB/SD into any Raspberry Pi 5
             3. Power on — the Pi auto-logs in and launches the pi2s3 restore wizard
