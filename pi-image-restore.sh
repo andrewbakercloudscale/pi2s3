@@ -63,6 +63,10 @@ fi
 
 # shellcheck disable=SC1090
 source "${CONFIG_FILE}"
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib/log.sh"
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib/aws.sh"
 
 [[ -z "${S3_BUCKET:-}" ]] && { echo "ERROR: S3_BUCKET is not set in config.env"; exit 1; }
 [[ -z "${S3_REGION:-}" ]] && { echo "ERROR: S3_REGION is not set in config.env"; exit 1; }
@@ -131,8 +135,6 @@ done
 
 OS_TYPE="$(uname -s)"
 
-log()     { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
-die()     { echo "ERROR: $*" >&2; exit 1; }
 confirm() {
     [[ "${YES}" == "true" ]] && return 0
     local answer
@@ -140,17 +142,9 @@ confirm() {
     [[ "${answer,,}" == "y" ]]
 }
 
-aws_cmd() {
-    if [[ -n "${AWS_PROFILE}" ]]; then
-        aws --profile "${AWS_PROFILE}" --region "${S3_REGION}" "$@"
-    else
-        aws --region "${S3_REGION}" "$@"
-    fi
-}
-
 get_manifest_field() {
     local manifest="$1" field="$2"
-    echo "${manifest}" | grep -o "\"${field}\": *\"[^\"]*\"" | cut -d'"' -f4 || true
+    echo "${manifest}" | jq -r ".${field} // empty" 2>/dev/null || true
 }
 
 # ── List backups ──────────────────────────────────────────────────────────────
@@ -569,6 +563,9 @@ if [[ -n "${VERIFY_DEVICE}" ]]; then
         exit 1
     fi
 fi
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+main() {
 
 # ── Header ────────────────────────────────────────────────────────────────────
 log "========================================================"
@@ -1045,3 +1042,7 @@ log "    systemctl status cloudflared (tunnel up?)"
 log "    df -h                        (filesystem expanded to full device?)"
 log "    crontab -l                   (backup cron intact?)"
 log "========================================================"
+
+} # end main
+
+[[ "${BASH_SOURCE[0]}" == "${0}" ]] && main "$@"

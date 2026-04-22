@@ -175,6 +175,9 @@ diag_snapshot() {
     echo "=== END DIAG ==="
 }
 
+# ── Main ──────────────────────────────────────────────────────────────────────
+main() {
+
 # ── Health checks ─────────────────────────────────────────────────────────────
 DOWN_REASONS=()
 
@@ -403,3 +406,7 @@ Diag: ${PREDIAG_LOG}" \
 
     sudo reboot
 fi
+
+} # end main
+
+[[ "${BASH_SOURCE[0]}" == "${0}" ]] && main "$@"
