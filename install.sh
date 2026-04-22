@@ -489,8 +489,13 @@ else
     ARCH=$(uname -m)
     if [[ "${ARCH}" == "aarch64" ]]; then
         AWS_URL="https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip"
-    else
+    elif [[ "${ARCH}" == "x86_64" ]]; then
         AWS_URL="https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip"
+    else
+        warn "AWS CLI v2 has no official build for ${ARCH} (32-bit ARM)."
+        warn "Upgrade to 64-bit Raspberry Pi OS for automatic install, or follow:"
+        warn "  https://github.com/aws/aws-cli/issues/7207"
+        die "Cannot auto-install AWS CLI on ${ARCH}. Install manually then re-run."
     fi
     cd /tmp
     curl -sL "${AWS_URL}" -o awscliv2.zip
@@ -508,23 +513,48 @@ log "Step 3: Verifying AWS access to s3://${S3_BUCKET}/ ..."
 AWS_CMD="aws --region ${S3_REGION}"
 [[ -n "${AWS_PROFILE:-}" ]] && AWS_CMD="${AWS_CMD} --profile ${AWS_PROFILE}"
 
-if ! ${AWS_CMD} s3 ls "s3://${S3_BUCKET}/" > /dev/null 2>&1; then
-    warn "Cannot access s3://${S3_BUCKET}/. Check credentials."
-    echo ""
-    echo "  Required IAM permissions (run to see the exact policy):"
-    echo "    bash install.sh --iam-policy"
-    echo ""
-    read -r -p "  Run 'aws configure' now? [y/N] " do_configure
-    if [[ "${do_configure,,}" == "y" ]]; then
-        aws configure
-        ${AWS_CMD} s3 ls "s3://${S3_BUCKET}/" > /dev/null 2>&1 \
-            && ok "AWS access confirmed." \
-            || die "Still cannot access bucket. Run 'bash install.sh --iam-policy' to see required permissions."
+_aws_ls_err=$(${AWS_CMD} s3 ls "s3://${S3_BUCKET}/" 2>&1)
+_aws_ls_rc=$?
+if [[ ${_aws_ls_rc} -ne 0 ]]; then
+    if echo "${_aws_ls_err}" | grep -qiE "NoSuchBucket|does not exist"; then
+        warn "Bucket s3://${S3_BUCKET}/ does not exist."
+        echo ""
+        read -r -p "  Create it now in ${S3_REGION}? [Y/n] " do_create
+        if [[ "${do_create,,}" != "n" ]]; then
+            if [[ "${S3_REGION}" == "us-east-1" ]]; then
+                ${AWS_CMD} s3 mb "s3://${S3_BUCKET}/" \
+                    && ok "Bucket created: s3://${S3_BUCKET}/" \
+                    || die "Could not create bucket. Check IAM permissions: bash install.sh --iam-policy"
+            else
+                ${AWS_CMD} s3 mb "s3://${S3_BUCKET}/" \
+                    --create-bucket-configuration LocationConstraint="${S3_REGION}" \
+                    && ok "Bucket created: s3://${S3_BUCKET}/" \
+                    || die "Could not create bucket. Check IAM permissions: bash install.sh --iam-policy"
+            fi
+        else
+            warn "Skipping. Create the bucket before the first backup."
+        fi
+    elif echo "${_aws_ls_err}" | grep -qiE "UnableToLocateCredentials|InvalidClientTokenId|ExpiredToken|AccessDenied|AuthorizationError"; then
+        warn "AWS credentials issue: ${_aws_ls_err}"
+        echo ""
+        echo "  Required IAM permissions (run to see the exact policy):"
+        echo "    bash install.sh --iam-policy"
+        echo ""
+        read -r -p "  Run 'aws configure' now? [y/N] " do_configure
+        if [[ "${do_configure,,}" == "y" ]]; then
+            aws configure
+            ${AWS_CMD} s3 ls "s3://${S3_BUCKET}/" > /dev/null 2>&1 \
+                && ok "AWS access confirmed." \
+                || die "Still cannot access bucket. Run 'bash install.sh --iam-policy' to see required permissions."
+        else
+            warn "Skipping. Run 'aws configure' before the first backup."
+        fi
     else
-        warn "Skipping. Run 'aws configure' before the first backup."
+        warn "Cannot access s3://${S3_BUCKET}/: ${_aws_ls_err}"
+        echo "  Required IAM permissions: bash install.sh --iam-policy"
     fi
 else
-    ok "AWS access confirmed."
+    ok "AWS access confirmed: s3://${S3_BUCKET}/"
 fi
 
 # ── Step 4: S3 lifecycle policy ───────────────────────────────────────────────
@@ -673,9 +703,20 @@ ok "Pre-commit hook: direct commits on Pi blocked"
 # ── Step 9: Dry run ───────────────────────────────────────────────────────────
 log ""
 log "Step 9: Dry run..."
-bash "${BACKUP_SCRIPT}" --dry-run \
-    && ok "Dry run successful — everything looks good." \
-    || warn "Dry run had issues. Review the output above before running a real backup."
+if bash "${BACKUP_SCRIPT}" --dry-run; then
+    ok "Dry run successful — everything looks good."
+    echo ""
+    read -r -p "  Run a real backup now? This uploads to S3 immediately. [Y/n] " do_backup
+    if [[ "${do_backup,,}" != "n" ]]; then
+        log ""
+        log "  Running first backup..."
+        bash "${BACKUP_SCRIPT}" --force \
+            && ok "First backup complete. Check s3://${S3_BUCKET}/ to confirm." \
+            || warn "Backup had issues. Review the log: tail -50 ${LOG_FILE}"
+    fi
+else
+    warn "Dry run had issues. Review the output above before running a real backup."
+fi
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
