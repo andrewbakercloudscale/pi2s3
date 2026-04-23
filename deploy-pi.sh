@@ -12,7 +12,7 @@ set -euo pipefail
 # Customise these for your setup, or override via environment variables.
 PI_KEY="${PI_KEY:-${HOME}/.ssh/pi_key}"
 PI_LOCAL="${PI_LOCAL:-raspberrypi.local}"
-PI_DIR=~/pi2s3
+PI_DIR="${PI_DIR:-~/pi2s3}"
 
 _PI_CF_HOST="${PI_CF_HOST:-ssh.andrewbaker.ninja}"
 _PI_CF_USER="${PI_CF_USER:-pi}"
