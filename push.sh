@@ -25,6 +25,7 @@ echo ""
 
 # ── Git status ────────────────────────────────────────────────────────────────
 BRANCH=$(git -C "${SCRIPT_DIR}" rev-parse --abbrev-ref HEAD)
+# shellcheck disable=SC1083  # @{u} is a git upstream refspec, not a bash brace expansion
 AHEAD=$(git -C "${SCRIPT_DIR}" rev-list @{u}..HEAD 2>/dev/null | wc -l | tr -d ' ' || echo "?")
 
 echo "  Branch:  ${BRANCH}"

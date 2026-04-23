@@ -1,6 +1,7 @@
 # pi2s3: Pi to S3
 
 [![CI](https://github.com/andrewbakercloudscale/pi2s3/actions/workflows/ci.yml/badge.svg)](https://github.com/andrewbakercloudscale/pi2s3/actions/workflows/ci.yml)
+[![ShellCheck](https://img.shields.io/badge/shellcheck-passing-brightgreen)](https://www.shellcheck.net/)
 
 Block-level nightly backup of a Raspberry Pi to AWS S3. Restore a complete, bootable Pi to new hardware in one command. No manual setup, no secrets to re-enter, no git clones.
 
