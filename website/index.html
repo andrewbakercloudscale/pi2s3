@@ -692,7 +692,7 @@
   <img src="pi2s3.jpg" alt="pi2s3 logo" class="hero-logo" />
   <div style="display:flex; gap:0.6rem; flex-wrap:wrap; justify-content:center; margin-bottom:1.5rem;">
     <div class="badge" style="margin-bottom:0;">Open Source &nbsp;·&nbsp; MIT License</div>
-    <div class="badge" style="margin-bottom:0; background:rgba(94,234,212,0.1); border-color:rgba(94,234,212,0.4); color:var(--accent2);">&#9679; v1.7.0 &nbsp;·&nbsp; Clone, netboot &amp; fleet deploy</div>
+    <div class="badge" style="margin-bottom:0; background:rgba(94,234,212,0.1); border-color:rgba(94,234,212,0.4); color:var(--accent2);">&#9679; v1.7.1 &nbsp;·&nbsp; Clone, netboot &amp; fleet deploy</div>
   </div>
   <h1>The <span class="gradient">AMI</span> for your<br>Raspberry Pi</h1>
   <p class="hero-sub">Nightly block-level backup to S3. <strong style="color:var(--text);">Zero downtime</strong>. MariaDB is in read-only mode, not stopped. <strong style="color:var(--accent2);">Zero config needed</strong>, it detects your DB automatically. Restore a complete bootable Pi to new hardware in one command.</p>
@@ -712,7 +712,35 @@
     <a href="#quickstart" class="btn-outline">See what it does ↓</a>
   </div>
 
-  <div style="display:flex; flex-wrap:wrap; gap:0.75rem; justify-content:center; margin-top:2rem; margin-bottom:0.5rem;">
+  <!-- v1.7 feature cards -->
+  <div style="margin: 2rem auto 0; max-width: 680px; width: 100%;">
+    <div style="text-align:center; font-size:0.72rem; text-transform:uppercase; letter-spacing:0.1em; color:var(--muted); font-weight:600; margin-bottom:0.75rem;">New in v1.7</div>
+    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(290px, 1fr)); gap:0.6rem;">
+
+      <div style="background:rgba(94,234,212,0.04); border:1px solid rgba(94,234,212,0.25); border-radius:10px; padding:0.85rem 1rem;">
+        <div style="font-size:0.82rem; font-weight:700; color:var(--accent2); margin-bottom:0.25rem;">&#128225; HTTP Netboot &nbsp;<span style="font-size:0.7rem; opacity:0.7; font-weight:500;">Pi 5 only</span></div>
+        <div style="font-size:0.78rem; color:var(--muted); line-height:1.45;">Power&nbsp;+&nbsp;ethernet only. Pi&nbsp;5 fetches the restore environment from <code style="font-size:0.74rem; color:var(--accent2);">boot.pi2s3.com</code> at boot — no SD card, no USB, no media of any kind.</div>
+      </div>
+
+      <div style="background:rgba(255,255,255,0.02); border:1px solid var(--border); border-radius:10px; padding:0.85rem 1rem;">
+        <div style="font-size:0.82rem; font-weight:700; color:var(--text); margin-bottom:0.25rem;">&#128190; Recovery USB</div>
+        <div style="font-size:0.78rem; color:var(--muted); line-height:1.45;">Pre-built bootable image — flash to any USB or SD, boot, and the restore wizard launches automatically. <a href="https://github.com/andrewbakercloudscale/pi2s3/releases" target="_blank" style="color:var(--accent2); text-decoration:none;">Download from Releases&nbsp;→</a></div>
+      </div>
+
+      <div style="background:rgba(255,255,255,0.02); border:1px solid var(--border); border-radius:10px; padding:0.85rem 1rem;">
+        <div style="font-size:0.82rem; font-weight:700; color:var(--text); margin-bottom:0.25rem;">&#128260; Clone &amp; stage</div>
+        <div style="font-size:0.78rem; color:var(--muted); line-height:1.45;">Restore to a second Pi and customise it before first boot — rename the hostname, swap Cloudflare tunnel credentials, or set env vars — all with <code style="font-size:0.74rem;">--post-restore</code>.</div>
+      </div>
+
+      <div style="background:rgba(255,255,255,0.02); border:1px solid var(--border); border-radius:10px; padding:0.85rem 1rem;">
+        <div style="font-size:0.82rem; font-weight:700; color:var(--text); margin-bottom:0.25rem;">&#128640; Fleet deploy</div>
+        <div style="font-size:0.78rem; color:var(--muted); line-height:1.45;">CSV manifest&nbsp;→&nbsp;SSH&nbsp;→&nbsp;restore in parallel. Classroom rollouts, office deployments, or any number of Pis at once with <code style="font-size:0.74rem;">--parallel</code>.</div>
+      </div>
+
+    </div>
+  </div>
+
+  <div style="display:flex; flex-wrap:wrap; gap:0.75rem; justify-content:center; margin-top:1.75rem; margin-bottom:0.5rem;">
     <span style="display:inline-flex; align-items:center; gap:0.4rem; font-size:0.85rem; color:var(--accent2); font-weight:600;">
       <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 8 5 12 15 4"/></svg>
       Zero-downtime by default. No config needed
