@@ -108,7 +108,7 @@ install_watchdog() {
 
     # Enable persistent journal so watchdog logs survive reboots
     sudo mkdir -p /var/log/journal /etc/systemd/journald.conf.d
-    cat | sudo tee /etc/systemd/journald.conf.d/99-pi2s3-persistent.conf > /dev/null <<'JOURNALEOF'
+    sudo tee /etc/systemd/journald.conf.d/99-pi2s3-persistent.conf > /dev/null <<'JOURNALEOF'
 [Journal]
 Storage=persistent
 SystemMaxUse=300M
@@ -470,8 +470,11 @@ if command -v pv &>/dev/null; then
     ok "pv: $(pv --version 2>&1 | head -1)"
 else
     log "  Installing pv (progress viewer)..."
-    pkg_install pv 2>/dev/null && ok "pv installed." \
-        || warn "pv unavailable — restore will work without it."
+    if pkg_install pv 2>/dev/null; then
+        ok "pv installed."
+    else
+        warn "pv unavailable — restore will work without it."
+    fi
 fi
 
 if command -v partclone.ext4 &>/dev/null || [[ -x /usr/sbin/partclone.ext4 ]]; then
@@ -522,14 +525,18 @@ if [[ ${_aws_ls_rc} -ne 0 ]]; then
         read -r -p "  Create it now in ${S3_REGION}? [Y/n] " do_create
         if [[ "${do_create,,}" != "n" ]]; then
             if [[ "${S3_REGION}" == "us-east-1" ]]; then
-                ${AWS_CMD} s3 mb "s3://${S3_BUCKET}/" \
-                    && ok "Bucket created: s3://${S3_BUCKET}/" \
-                    || die "Could not create bucket. Check IAM permissions: bash install.sh --iam-policy"
+                if ${AWS_CMD} s3 mb "s3://${S3_BUCKET}/"; then
+                    ok "Bucket created: s3://${S3_BUCKET}/"
+                else
+                    die "Could not create bucket. Check IAM permissions: bash install.sh --iam-policy"
+                fi
             else
-                ${AWS_CMD} s3 mb "s3://${S3_BUCKET}/" \
-                    --create-bucket-configuration LocationConstraint="${S3_REGION}" \
-                    && ok "Bucket created: s3://${S3_BUCKET}/" \
-                    || die "Could not create bucket. Check IAM permissions: bash install.sh --iam-policy"
+                if ${AWS_CMD} s3 mb "s3://${S3_BUCKET}/" \
+                        --create-bucket-configuration LocationConstraint="${S3_REGION}"; then
+                    ok "Bucket created: s3://${S3_BUCKET}/"
+                else
+                    die "Could not create bucket. Check IAM permissions: bash install.sh --iam-policy"
+                fi
             fi
         else
             warn "Skipping. Create the bucket before the first backup."
@@ -543,9 +550,11 @@ if [[ ${_aws_ls_rc} -ne 0 ]]; then
         read -r -p "  Run 'aws configure' now? [y/N] " do_configure
         if [[ "${do_configure,,}" == "y" ]]; then
             aws configure
-            ${AWS_CMD} s3 ls "s3://${S3_BUCKET}/" > /dev/null 2>&1 \
-                && ok "AWS access confirmed." \
-                || die "Still cannot access bucket. Run 'bash install.sh --iam-policy' to see required permissions."
+            if ${AWS_CMD} s3 ls "s3://${S3_BUCKET}/" > /dev/null 2>&1; then
+                ok "AWS access confirmed."
+            else
+                die "Still cannot access bucket. Run 'bash install.sh --iam-policy' to see required permissions."
+            fi
         else
             warn "Skipping. Run 'aws configure' before the first backup."
         fi
@@ -560,9 +569,11 @@ fi
 # ── Step 4: S3 lifecycle policy ───────────────────────────────────────────────
 log ""
 log "Step 4: Configuring S3 lifecycle policy..."
-bash "${BACKUP_SCRIPT}" --setup 2>/dev/null \
-    && ok "S3 lifecycle policy set." \
-    || warn "Could not set lifecycle policy (needs s3:PutLifecycleConfiguration)."
+if bash "${BACKUP_SCRIPT}" --setup 2>/dev/null; then
+    ok "S3 lifecycle policy set."
+else
+    warn "Could not set lifecycle policy (needs s3:PutLifecycleConfiguration)."
+fi
 log "  Script-managed retention: ${MAX_IMAGES} images."
 
 # ── Step 5: Log file (must exist before cron fires) ──────────────────────────
@@ -710,9 +721,11 @@ if bash "${BACKUP_SCRIPT}" --dry-run; then
     if [[ "${do_backup,,}" != "n" ]]; then
         log ""
         log "  Running first backup..."
-        bash "${BACKUP_SCRIPT}" --force \
-            && ok "First backup complete. Check s3://${S3_BUCKET}/ to confirm." \
-            || warn "Backup had issues. Review the log: tail -50 ${LOG_FILE}"
+        if bash "${BACKUP_SCRIPT}" --force; then
+            ok "First backup complete. Check s3://${S3_BUCKET}/ to confirm."
+        else
+            warn "Backup had issues. Review the log: tail -50 ${LOG_FILE}"
+        fi
     fi
 else
     warn "Dry run had issues. Review the output above before running a real backup."
