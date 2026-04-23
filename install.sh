@@ -61,6 +61,7 @@ _ROOT_CRONTAB_SNAPSHOT=""
 root_crontab_snapshot() {
     if [[ -z "${_ROOT_CRONTAB_SNAPSHOT}" ]]; then
         _ROOT_CRONTAB_SNAPSHOT="/tmp/pi2s3-root-crontab-backup-$(date +%Y%m%d-%H%M%S)"
+        # shellcheck disable=SC2024  # redirect goes to user-owned /tmp file, not a privileged path
         sudo crontab -l > "${_ROOT_CRONTAB_SNAPSHOT}" 2>/dev/null || true
         log "  Root crontab snapshot saved to ${_ROOT_CRONTAB_SNAPSHOT}"
     fi

@@ -1241,7 +1241,7 @@ if [[ ${#EXTRA_PART_NAMES[@]} -gt 0 ]]; then
         EP_COMPRESSED=$(grep '^compressed=' "${_ERFILE}" | cut -d= -f2-)
         EP_COMPRESSED_H=$(numfmt --to=iec "${EP_COMPRESSED}" 2>/dev/null || echo "?")
         TOTAL_COMPRESSED_BYTES=$(( TOTAL_COMPRESSED_BYTES + EP_COMPRESSED ))
-        TOTAL_USED_BYTES=$(( TOTAL_USED_BYTES + EXTRA_PART_USED_B[$_ei] ))
+        TOTAL_USED_BYTES=$(( TOTAL_USED_BYTES + EXTRA_PART_USED_B[_ei] ))
         UPLOADED_KEYS+=("${_EKEY}")
         EXTRA_PARTS_JSON+="    {\"name\":\"${_EPNAME}\",\"device\":\"${BACKUP_EXTRA_DEVICE}\",\"fstype\":\"${EXTRA_PART_FSTYPES[$_ei]}\",\"tool\":\"${EXTRA_PART_TOOLS[$_ei]}\",\"size_bytes\":${EXTRA_PART_SIZE_B[$_ei]},\"size_human\":\"${EXTRA_PART_SIZE_H[$_ei]}\",\"used_bytes\":${EXTRA_PART_USED_B[$_ei]},\"used_human\":\"${EXTRA_PART_USED_H[$_ei]}\",\"compressed_bytes\":${EP_COMPRESSED:-0},\"sha256\":\"${EP_SHA256:-}\",\"key\":\"${_EKEY}\"},"$'\n'
         log "  ${_EPNAME}: ${EP_COMPRESSED_H} compressed  SHA256: ${EP_SHA256}"
