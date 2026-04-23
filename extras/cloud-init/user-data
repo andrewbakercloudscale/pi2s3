@@ -41,7 +41,7 @@ runcmd:
 
   # Install pi2s3 dependencies
   - apt-get update -qq
-  - apt-get install -y -qq --no-install-recommends partclone pigz pv python3 git awscli
+  - apt-get install -y -qq --no-install-recommends partclone pigz pv python3 git awscli jq
 
   # Clone pi2s3
   - git clone --depth 1 https://github.com/andrewbakercloudscale/pi2s3.git /home/pi/pi2s3

@@ -40,6 +40,7 @@
 #   - Linux with sfdisk (util-linux) and partclone installed
 #   - AWS CLI v2 with read access to the S3 bucket
 #   - python3 (for manifest parsing)
+#   - jq (for manifest field parsing): sudo apt install jq
 #   - pv optional (progress bar): sudo apt install pv
 #
 # Requirements (dd legacy format):
@@ -769,6 +770,7 @@ if [[ "${BACKUP_TYPE}" == "partclone" ]]; then
     { command -v partclone.ext4 &>/dev/null || [[ -x /usr/sbin/partclone.ext4 ]]; } \
         || die "partclone not found. Install: sudo apt install partclone"
     command -v python3     &>/dev/null || die "python3 not found (required for manifest parsing)"
+    command -v jq          &>/dev/null || die "jq not found. Install: sudo apt install jq"
 
     # 1. Restore partition table
     PTABLE_KEY=$(get_manifest_field "${MANIFEST}" "partition_table_key")
