@@ -1322,6 +1322,8 @@ log "Uploading manifest..."
 # Trim trailing comma+newline from last partition entries
 PARTITIONS_JSON_CLEAN="${PARTITIONS_JSON%,$'\n'}"
 EXTRA_PARTS_JSON_CLEAN="${EXTRA_PARTS_JSON%,$'\n'}"
+EXTRA_DEVICE_JSON=${BACKUP_EXTRA_DEVICE:+"\"${BACKUP_EXTRA_DEVICE}\""}
+EXTRA_DEVICE_JSON=${EXTRA_DEVICE_JSON:-null}
 
 MANIFEST_JSON=$(cat <<EOF
 {
@@ -1346,7 +1348,7 @@ MANIFEST_JSON=$(cat <<EOF
 ${PARTITIONS_JSON_CLEAN}
   ],
   "boot_firmware": ${BOOT_FW_JSON:-null},
-  "extra_device": ${BACKUP_EXTRA_DEVICE:+"\"${BACKUP_EXTRA_DEVICE}\""},
+  "extra_device": ${EXTRA_DEVICE_JSON},
   "extra_device_partitions": [
 ${EXTRA_PARTS_JSON_CLEAN:-}
   ],
