@@ -914,7 +914,7 @@ if parts:
                     if [[ ${_fsck_rc} -ge 4 ]]; then
                         log "  ERROR: e2fsck exited ${_fsck_rc} — filesystem has uncorrectable errors"
                         log "  Skipping resize. Run manually: sudo e2fsck -f ${_last_target}"
-                        break
+                        return 1
                     fi
                     log "  Expanding filesystem..."
                     sudo resize2fs "${_last_target}" 2>&1 | sed 's/^/  /' || true

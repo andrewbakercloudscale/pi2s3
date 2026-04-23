@@ -218,10 +218,16 @@ if [[ "${PHASE}" == "pre-flash" ]]; then
         summary; exit 1
     fi
 
-    [[ -n "${S3_BUCKET}" ]] && pass "S3_BUCKET = ${S3_BUCKET}" \
-                             || { fail "S3_BUCKET is empty in config.env"; summary; exit 1; }
-    [[ -n "${S3_REGION}" ]] && pass "S3_REGION = ${S3_REGION}" \
-                             || { fail "S3_REGION is empty in config.env"; summary; exit 1; }
+    if [[ -n "${S3_BUCKET}" ]]; then
+        pass "S3_BUCKET = ${S3_BUCKET}"
+    else
+        fail "S3_BUCKET is empty in config.env"; summary; exit 1
+    fi
+    if [[ -n "${S3_REGION}" ]]; then
+        pass "S3_REGION = ${S3_REGION}"
+    else
+        fail "S3_REGION is empty in config.env"; summary; exit 1
+    fi
 
     # ── AWS connectivity ──────────────────────────────────────────────────────
     section "AWS access"
@@ -390,12 +396,9 @@ if [[ "${PHASE}" == "post-boot" ]]; then
         # Source it for later checks
         # shellcheck disable=SC1090
         source "${CONFIG_FILE}" 2>/dev/null || true
-        [[ -n "${S3_BUCKET:-}" ]] && pass "S3_BUCKET = ${S3_BUCKET}" \
-            || warn "S3_BUCKET is empty — backup cron will fail"
-        [[ -n "${S3_REGION:-}" ]] && pass "S3_REGION = ${S3_REGION}" \
-            || warn "S3_REGION is empty — backup cron will fail"
-        [[ -n "${NTFY_URL:-}"  ]] && pass "NTFY_URL configured" \
-            || warn "NTFY_URL is empty — no push notifications"
+        if [[ -n "${S3_BUCKET:-}" ]]; then pass "S3_BUCKET = ${S3_BUCKET}"; else warn "S3_BUCKET is empty — backup cron will fail"; fi
+        if [[ -n "${S3_REGION:-}" ]]; then pass "S3_REGION = ${S3_REGION}"; else warn "S3_REGION is empty — backup cron will fail"; fi
+        if [[ -n "${NTFY_URL:-}" ]];  then pass "NTFY_URL configured";       else warn "NTFY_URL is empty — no push notifications"; fi
     else
         fail "config.env not found at ${CONFIG_FILE}"
         echo "         The backup cron will silently fail without this file."
