@@ -586,6 +586,60 @@
     .stat-label { font-size: 0.85rem; color: var(--muted); margin-top: 0.25rem; }
     .stat-context { font-size: 0.72rem; color: #6b7a99; margin-top: 0.35rem; line-height: 1.4; }
 
+    /* FEATURE CARDS (v1.7 hero panel) */
+    .feat-card {
+      border-radius: 12px;
+      padding: 1rem 1.1rem;
+      transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+      will-change: transform;
+      cursor: default;
+    }
+    .feat-card:hover { transform: translateY(-7px) scale(1.025); }
+
+    .feat-card--teal {
+      background: rgba(94,234,212,0.13);
+      border: 1px solid rgba(94,234,212,0.6);
+      box-shadow: 0 0 20px rgba(94,234,212,0.1);
+    }
+    .feat-card--teal:hover {
+      background: rgba(94,234,212,0.18);
+      border-color: rgba(94,234,212,0.85);
+      box-shadow: 0 20px 48px rgba(0,0,0,0.5), 0 0 0 1px rgba(94,234,212,0.7), 0 8px 32px rgba(94,234,212,0.3);
+    }
+
+    .feat-card--amber {
+      background: rgba(251,191,36,0.12);
+      border: 1px solid rgba(251,191,36,0.55);
+      box-shadow: 0 0 20px rgba(251,191,36,0.08);
+    }
+    .feat-card--amber:hover {
+      background: rgba(251,191,36,0.18);
+      border-color: rgba(251,191,36,0.85);
+      box-shadow: 0 20px 48px rgba(0,0,0,0.5), 0 0 0 1px rgba(251,191,36,0.7), 0 8px 32px rgba(251,191,36,0.25);
+    }
+
+    .feat-card--purple {
+      background: rgba(167,139,250,0.12);
+      border: 1px solid rgba(167,139,250,0.55);
+      box-shadow: 0 0 20px rgba(124,106,247,0.1);
+    }
+    .feat-card--purple:hover {
+      background: rgba(167,139,250,0.18);
+      border-color: rgba(167,139,250,0.85);
+      box-shadow: 0 20px 48px rgba(0,0,0,0.5), 0 0 0 1px rgba(167,139,250,0.7), 0 8px 32px rgba(124,106,247,0.3);
+    }
+
+    .feat-card--green {
+      background: rgba(74,222,128,0.11);
+      border: 1px solid rgba(74,222,128,0.5);
+      box-shadow: 0 0 20px rgba(34,197,94,0.09);
+    }
+    .feat-card--green:hover {
+      background: rgba(74,222,128,0.17);
+      border-color: rgba(74,222,128,0.85);
+      box-shadow: 0 20px 48px rgba(0,0,0,0.5), 0 0 0 1px rgba(74,222,128,0.7), 0 8px 32px rgba(34,197,94,0.25);
+    }
+
     /* SECTION DIVIDERS WITH LINE */
     .section-divider {
       display: flex;
@@ -722,7 +776,7 @@
     </div>
     <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:0.7rem;">
 
-      <div style="background:rgba(94,234,212,0.13); border:1px solid rgba(94,234,212,0.6); border-radius:12px; padding:1rem 1.1rem; box-shadow:0 0 20px rgba(94,234,212,0.1);">
+      <div class="feat-card feat-card--teal">
         <div style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.45rem;">
           <span style="font-size:1.05rem;">📡</span>
           <span style="font-size:0.87rem; font-weight:700; color:#5eead4; letter-spacing:-0.01em;">HTTP Netboot</span>
@@ -731,7 +785,7 @@
         <div style="font-size:0.8rem; color:#cbd5e1; line-height:1.55;">Power&nbsp;+&nbsp;ethernet only. Pi&nbsp;5 fetches the restore environment from <code style="font-size:0.76rem; color:#5eead4; background:rgba(94,234,212,0.15); padding:0.1em 0.35em; border-radius:3px;">boot.pi2s3.com</code> — no SD card, no USB, no media.</div>
       </div>
 
-      <div style="background:rgba(251,191,36,0.12); border:1px solid rgba(251,191,36,0.55); border-radius:12px; padding:1rem 1.1rem; box-shadow:0 0 20px rgba(251,191,36,0.08);">
+      <div class="feat-card feat-card--amber">
         <div style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.45rem;">
           <span style="font-size:1.05rem;">💾</span>
           <span style="font-size:0.87rem; font-weight:700; color:#fbbf24; letter-spacing:-0.01em;">Recovery USB</span>
@@ -739,7 +793,7 @@
         <div style="font-size:0.8rem; color:#cbd5e1; line-height:1.55;">Pre-built bootable image — flash, boot, wizard launches automatically. <a href="https://github.com/andrewbakercloudscale/pi2s3/releases" target="_blank" style="color:#fbbf24; text-decoration:none; font-weight:600;">Download from Releases&nbsp;→</a></div>
       </div>
 
-      <div style="background:rgba(167,139,250,0.12); border:1px solid rgba(167,139,250,0.55); border-radius:12px; padding:1rem 1.1rem; box-shadow:0 0 20px rgba(124,106,247,0.1);">
+      <div class="feat-card feat-card--purple">
         <div style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.45rem;">
           <span style="font-size:1.05rem;">🔁</span>
           <span style="font-size:0.87rem; font-weight:700; color:#c4b5fd; letter-spacing:-0.01em;">Clone &amp; stage</span>
@@ -747,7 +801,7 @@
         <div style="font-size:0.8rem; color:#cbd5e1; line-height:1.55;">Restore to a second Pi, rename hostname, swap CF tunnel credentials and env vars before first boot — via <code style="font-size:0.76rem; color:#c4b5fd; background:rgba(167,139,250,0.18); padding:0.1em 0.35em; border-radius:3px;">--post-restore</code>.</div>
       </div>
 
-      <div style="background:rgba(74,222,128,0.11); border:1px solid rgba(74,222,128,0.5); border-radius:12px; padding:1rem 1.1rem; box-shadow:0 0 20px rgba(34,197,94,0.09);">
+      <div class="feat-card feat-card--green">
         <div style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.45rem;">
           <span style="font-size:1.05rem;">🚀</span>
           <span style="font-size:0.87rem; font-weight:700; color:#4ade80; letter-spacing:-0.01em;">Fleet deploy</span>
