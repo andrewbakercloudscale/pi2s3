@@ -54,7 +54,7 @@ echo ""
 
 CURRENT=$(sudo rpi-eeprom-config)
 echo "  Current EEPROM config:"
-echo "${CURRENT}" | sed 's/^/    /'
+while IFS= read -r _line; do echo "    ${_line}"; done <<< "${CURRENT}"
 echo ""
 
 [[ "${MODE}" == "show" ]] && exit 0
@@ -86,6 +86,7 @@ read -r -p "  Apply? [y/N] " answer
 
 # Write new config via temp file
 TMPCONF=$(mktemp)
+# shellcheck disable=SC2064  # TMPCONF is final at this point; expand-at-set-time is correct
 trap "rm -f '${TMPCONF}'" EXIT
 
 echo "${CURRENT}" \

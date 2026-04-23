@@ -4,6 +4,34 @@ All notable changes to pi2s3 are documented here.
 
 ---
 
+## [1.7.1] — 2026-04-23
+
+### Fixed
+
+- **`break` in resize function** (`pi-image-restore.sh`) — `break` with no enclosing loop skipped the fsck abort guard and allowed `resize2fs` to run on a filesystem with uncorrectable errors. Replaced with `return 1`.
+- **Spurious `cat |` before heredoc** (`install.sh`) — `cat | sudo tee file <<HEREDOC` made `cat` read from the terminal while `tee` read from the heredoc. Removed the `cat |`.
+- **`A && ok || die/warn` patterns** (`install.sh`, `test-recovery.sh`, `website/restore`) — the `||` branch could fire even on success if the intermediate command returned non-zero. All nine occurrences rewritten as explicit `if/else`.
+- **Startup error messages going to stdout** (`pi-image-backup.sh`, `pi-image-restore.sh`, `extras/fleet-deploy.sh`) — fatal early-exit errors now correctly go to stderr.
+- **Dead variable `VERIFY_DATE_FOR_VERIFY`** (`pi-image-restore.sh`) — removed unused declaration.
+- **Unused `REPO_DIR`** (`extras/build-recovery-usb.sh`, `extras/build-netboot-image.sh`) — removed unused variable (left over from earlier draft).
+- **Unused `SCRIPT_DIR`** (`extras/build-recovery-usb.sh`, `extras/build-netboot-image.sh`) — after `REPO_DIR` was removed, `SCRIPT_DIR` also became unused and was removed.
+- **`ls *.img` for filename assignment** (`extras/build-recovery-usb.sh`, `extras/build-netboot-image.sh`) — replaced with `find -maxdepth 1 -name '*.img'` to handle filenames with spaces.
+- **Hardcoded absolute paths** (`deploy-pi.sh`) — `PI_KEY`, `PI_LOCAL`, `PI_CF_HOST`, `PI_CF_USER` now default to sensible values and can be overridden via environment variables.
+- **Missing `set -e` explanation** (`extras/cf-tunnel-watchdog.sh`, `extras/fpm-saturation-monitor.sh`) — added comment explaining why `-e` is intentionally omitted (both scripts must survive partial failures and continue recovery/monitoring).
+- **SC2015 in fleet-deploy arg parser** (`extras/fleet-deploy.sh`) — `[[ -z ... ]] && x="$1" || { error; exit }` rewritten as `if/else`.
+- **40-line DONE comment block** (`pi-image-backup.sh`) — removed completed-feature notes from script header; history is in CHANGELOG.
+- **Boot firmware compressed size not logged** (`pi-image-backup.sh`) — `FW_COMPRESSED_HUMAN` was computed but never used; now logged alongside SHA256.
+- **Arithmetic `$` on array index** (`pi-image-backup.sh`) — removed unnecessary `$` on array subscript inside `$((...))`.
+- **`trap` double-quote SC2064** (`extras/setup-netboot.sh`) — added `shellcheck disable` comment explaining expand-at-set-time is intentional.
+- **`sed` for indentation** (`extras/setup-netboot.sh`) — replaced `echo | sed 's/^/    /'` with a plain `while read` loop.
+- **SC1083 false positive on `@{u}`** (`push.sh`) — added `shellcheck disable` comment; `@{u}` is a git upstream refspec, not a bash brace expansion.
+
+### Added
+
+- **`QUALITY-TODO.md`** — full code quality analysis report (21 findings) with per-script health scores. All items now resolved.
+
+---
+
 ## [1.7.0] — 2026-04-23
 
 ### Added

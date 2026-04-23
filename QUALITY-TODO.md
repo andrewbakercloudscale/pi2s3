@@ -36,12 +36,12 @@ Generated from bash repository analysis (2026-04-23). 21 findings across 10 scri
 
 ## 🔵 Low
 
-- [ ] **[L1]** `extras/build-recovery-usb.sh:109` / `extras/build-netboot-image.sh:102,253` — `ls *.img | head -1` breaks on filenames with spaces. Replace with `find ... -name '*.img' | head -1`.
-- [ ] **[L2]** `deploy-pi.sh:14` — `PI_DIR="~/pi2s3"` — tilde in double quotes doesn't expand locally. Use `PI_DIR=~/pi2s3` (no quotes).
-- [ ] **[L3]** `extras/setup-netboot.sh:89` — `trap "rm -f '${TMPCONF}'" EXIT` with double quotes (SC2064). Add `# shellcheck disable=SC2064` comment since expansion-at-set-time is intentional here.
-- [ ] **[L4]** `extras/setup-netboot.sh:57` — `echo "${CURRENT}" | sed 's/^/    /'` — sed where a bash loop or printf would do. Minor.
-- [ ] **[L5]** `pi-image-backup.sh:1283` — `$(( TOTAL_USED_BYTES + EXTRA_PART_USED_B[$_ei] ))` — unnecessary `$` on arithmetic array index (SC2004). Use `EXTRA_PART_USED_B[_ei]`.
-- [ ] **[L6]** `push.sh:28` — `@{u}` triggers SC1083 (literal braces false positive). Add `# shellcheck disable=SC1083` comment.
+- [x] **[L1]** `extras/build-recovery-usb.sh:109` / `extras/build-netboot-image.sh:102,253` — `ls *.img | head -1` breaks on filenames with spaces. Replace with `find ... -name '*.img' | head -1`.
+- [x] **[L2]** `deploy-pi.sh:14` — `PI_DIR="~/pi2s3"` — tilde in double quotes doesn't expand locally. Use `PI_DIR=~/pi2s3` (no quotes).
+- [x] **[L3]** `extras/setup-netboot.sh:89` — `trap "rm -f '${TMPCONF}'" EXIT` with double quotes (SC2064). Add `# shellcheck disable=SC2064` comment since expansion-at-set-time is intentional here.
+- [x] **[L4]** `extras/setup-netboot.sh:57` — `echo "${CURRENT}" | sed 's/^/    /'` — sed where a bash loop or printf would do. Minor.
+- [x] **[L5]** `pi-image-backup.sh:1283` — `$(( TOTAL_USED_BYTES + EXTRA_PART_USED_B[$_ei] ))` — unnecessary `$` on arithmetic array index (SC2004). Use `EXTRA_PART_USED_B[_ei]`.
+- [x] **[L6]** `push.sh:28` — `@{u}` triggers SC1083 (literal braces false positive). Add `# shellcheck disable=SC1083` comment.
 
 ---
 

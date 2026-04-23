@@ -29,7 +29,6 @@
 # =============================================================
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DATE="$(date +%Y-%m-%d)"
 WORK_DIR="${TMPDIR:-/tmp}/pi2s3-build-$$"
 OUTPUT_FILE="${PWD}/pi2s3-recovery-usb-${BUILD_DATE}.img.xz"
@@ -105,7 +104,7 @@ log "Decompressing..."
 xz -d "${IMG_XZ}"
 IMAGE_FILE="${IMG_XZ%.xz}"
 # Pi OS releases may be wrapped in a zip or named differently — handle .img directly
-IMAGE_FILE="$(ls "${WORK_DIR}"/*.img 2>/dev/null | head -1)"
+IMAGE_FILE="$(find "${WORK_DIR}" -maxdepth 1 -name '*.img' | head -1)"
 [[ -f "${IMAGE_FILE}" ]] || { echo "ERROR: Could not find .img file in ${WORK_DIR}"; exit 1; }
 
 # ── Step 2: Expand image to fit packages ─────────────────────────────────────
