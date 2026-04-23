@@ -46,7 +46,7 @@ PI_MODEL=""
 if [[ -f /proc/device-tree/model ]]; then
     PI_MODEL=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || true)
 fi
-[[ -n "${PI_MODEL}" ]] && ok "${PI_MODEL} — ${ARCH}" || ok "Linux — ${ARCH}"
+if [[ -n "${PI_MODEL}" ]]; then ok "${PI_MODEL} — ${ARCH}"; else ok "Linux — ${ARCH}"; fi
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
 section "Dependencies"
