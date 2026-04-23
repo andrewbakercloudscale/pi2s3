@@ -714,43 +714,44 @@
 
   <!-- v1.7 feature cards -->
   <div style="margin: 2.5rem auto 0; max-width: 700px; width: 100%;">
-    <div style="display:inline-flex; align-items:center; gap:0.45rem; background:rgba(124,106,247,0.15); border:1px solid rgba(124,106,247,0.45); border-radius:99px; padding:0.25rem 0.85rem; margin-bottom:1rem; font-size:0.72rem; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:var(--accent);">
-      <span style="width:6px; height:6px; background:var(--accent); border-radius:50%; display:inline-block;"></span>
-      New in v1.7
+    <div style="display:flex; align-items:center; justify-content:center; gap:0.5rem; margin-bottom:1.1rem;">
+      <div style="height:1px; width:2rem; background:rgba(124,106,247,0.5);"></div>
+      <span style="font-size:0.72rem; font-weight:800; letter-spacing:0.12em; text-transform:uppercase; color:#a78bfa;">New in v1.7</span>
+      <div style="height:1px; width:2rem; background:rgba(124,106,247,0.5);"></div>
     </div>
-    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:0.65rem;">
+    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:0.7rem;">
 
-      <div style="background:rgba(94,234,212,0.09); border:1px solid rgba(94,234,212,0.45); border-radius:12px; padding:1rem 1.1rem;">
-        <div style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.4rem;">
-          <span style="font-size:1rem;">📡</span>
-          <span style="font-size:0.85rem; font-weight:700; color:#5eead4;">HTTP Netboot</span>
-          <span style="font-size:0.68rem; background:rgba(94,234,212,0.15); border:1px solid rgba(94,234,212,0.35); border-radius:4px; padding:0.1rem 0.4rem; color:#5eead4; font-weight:600; margin-left:auto;">Pi 5 only</span>
+      <div style="background:rgba(94,234,212,0.13); border:1px solid rgba(94,234,212,0.6); border-radius:12px; padding:1rem 1.1rem; box-shadow:0 0 20px rgba(94,234,212,0.1);">
+        <div style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.45rem;">
+          <span style="font-size:1.05rem;">📡</span>
+          <span style="font-size:0.87rem; font-weight:700; color:#5eead4; letter-spacing:-0.01em;">HTTP Netboot</span>
+          <span style="font-size:0.67rem; background:rgba(94,234,212,0.2); border:1px solid rgba(94,234,212,0.5); border-radius:4px; padding:0.1rem 0.45rem; color:#5eead4; font-weight:700; margin-left:auto; white-space:nowrap;">Pi 5 only</span>
         </div>
-        <div style="font-size:0.8rem; color:var(--text); line-height:1.5;">Power&nbsp;+&nbsp;ethernet only. Pi&nbsp;5 fetches the restore environment from <code style="font-size:0.76rem; color:#5eead4; background:rgba(94,234,212,0.12); padding:0.1em 0.35em; border-radius:3px;">boot.pi2s3.com</code> — no SD card, no USB, no media.</div>
+        <div style="font-size:0.8rem; color:#cbd5e1; line-height:1.55;">Power&nbsp;+&nbsp;ethernet only. Pi&nbsp;5 fetches the restore environment from <code style="font-size:0.76rem; color:#5eead4; background:rgba(94,234,212,0.15); padding:0.1em 0.35em; border-radius:3px;">boot.pi2s3.com</code> — no SD card, no USB, no media.</div>
       </div>
 
-      <div style="background:rgba(251,191,36,0.09); border:1px solid rgba(251,191,36,0.4); border-radius:12px; padding:1rem 1.1rem;">
-        <div style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.4rem;">
-          <span style="font-size:1rem;">💾</span>
-          <span style="font-size:0.85rem; font-weight:700; color:#fbbf24;">Recovery USB</span>
+      <div style="background:rgba(251,191,36,0.12); border:1px solid rgba(251,191,36,0.55); border-radius:12px; padding:1rem 1.1rem; box-shadow:0 0 20px rgba(251,191,36,0.08);">
+        <div style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.45rem;">
+          <span style="font-size:1.05rem;">💾</span>
+          <span style="font-size:0.87rem; font-weight:700; color:#fbbf24; letter-spacing:-0.01em;">Recovery USB</span>
         </div>
-        <div style="font-size:0.8rem; color:var(--text); line-height:1.5;">Pre-built bootable image — flash, boot, wizard launches automatically. <a href="https://github.com/andrewbakercloudscale/pi2s3/releases" target="_blank" style="color:#fbbf24; text-decoration:none; font-weight:600;">Download from Releases&nbsp;→</a></div>
+        <div style="font-size:0.8rem; color:#cbd5e1; line-height:1.55;">Pre-built bootable image — flash, boot, wizard launches automatically. <a href="https://github.com/andrewbakercloudscale/pi2s3/releases" target="_blank" style="color:#fbbf24; text-decoration:none; font-weight:600;">Download from Releases&nbsp;→</a></div>
       </div>
 
-      <div style="background:rgba(124,106,247,0.1); border:1px solid rgba(124,106,247,0.45); border-radius:12px; padding:1rem 1.1rem;">
-        <div style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.4rem;">
-          <span style="font-size:1rem;">🔁</span>
-          <span style="font-size:0.85rem; font-weight:700; color:#a78bfa;">Clone &amp; stage</span>
+      <div style="background:rgba(167,139,250,0.12); border:1px solid rgba(167,139,250,0.55); border-radius:12px; padding:1rem 1.1rem; box-shadow:0 0 20px rgba(124,106,247,0.1);">
+        <div style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.45rem;">
+          <span style="font-size:1.05rem;">🔁</span>
+          <span style="font-size:0.87rem; font-weight:700; color:#c4b5fd; letter-spacing:-0.01em;">Clone &amp; stage</span>
         </div>
-        <div style="font-size:0.8rem; color:var(--text); line-height:1.5;">Restore to a second Pi, rename hostname, swap CF tunnel credentials and env vars before first boot — all via <code style="font-size:0.76rem; color:#a78bfa; background:rgba(124,106,247,0.15); padding:0.1em 0.35em; border-radius:3px;">--post-restore</code>.</div>
+        <div style="font-size:0.8rem; color:#cbd5e1; line-height:1.55;">Restore to a second Pi, rename hostname, swap CF tunnel credentials and env vars before first boot — via <code style="font-size:0.76rem; color:#c4b5fd; background:rgba(167,139,250,0.18); padding:0.1em 0.35em; border-radius:3px;">--post-restore</code>.</div>
       </div>
 
-      <div style="background:rgba(34,197,94,0.09); border:1px solid rgba(34,197,94,0.4); border-radius:12px; padding:1rem 1.1rem;">
-        <div style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.4rem;">
-          <span style="font-size:1rem;">🚀</span>
-          <span style="font-size:0.85rem; font-weight:700; color:#4ade80;">Fleet deploy</span>
+      <div style="background:rgba(74,222,128,0.11); border:1px solid rgba(74,222,128,0.5); border-radius:12px; padding:1rem 1.1rem; box-shadow:0 0 20px rgba(34,197,94,0.09);">
+        <div style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.45rem;">
+          <span style="font-size:1.05rem;">🚀</span>
+          <span style="font-size:0.87rem; font-weight:700; color:#4ade80; letter-spacing:-0.01em;">Fleet deploy</span>
         </div>
-        <div style="font-size:0.8rem; color:var(--text); line-height:1.5;">CSV manifest&nbsp;→&nbsp;SSH&nbsp;→&nbsp;restore in parallel. Classroom rollouts, office deployments, any number of Pis at once with <code style="font-size:0.76rem; color:#4ade80; background:rgba(34,197,94,0.12); padding:0.1em 0.35em; border-radius:3px;">--parallel</code>.</div>
+        <div style="font-size:0.8rem; color:#cbd5e1; line-height:1.55;">CSV manifest&nbsp;→&nbsp;SSH&nbsp;→&nbsp;restore in parallel. Classroom rollouts, office deployments, any number of Pis at once with <code style="font-size:0.76rem; color:#4ade80; background:rgba(74,222,128,0.14); padding:0.1em 0.35em; border-radius:3px;">--parallel</code>.</div>
       </div>
 
     </div>
