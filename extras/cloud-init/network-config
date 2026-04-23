@@ -1,0 +1,27 @@
+# =============================================================
+# pi2s3 DR/QA Pi — cloud-init network-config for Pi OS Bookworm
+#
+# EDIT before first boot:
+#   - Replace YOUR_WIFI_SSID with your WiFi network name
+#   - Replace YOUR_WIFI_PASSWORD with your WiFi password
+#   - Set regulatory_domain to your country code (e.g. ZA, US, GB)
+#
+# Pi OS Bookworm uses NetworkManager — renderer: NetworkManager is required.
+# Without it, wlan0 will show as "unavailable" in nmcli.
+# =============================================================
+
+network:
+  version: 2
+  renderer: NetworkManager
+  ethernets:
+    eth0:
+      dhcp4: true
+      optional: true
+  wifis:
+    wlan0:
+      dhcp4: true
+      optional: true
+      regulatory-domain: ZA
+      access-points:
+        "YOUR_WIFI_SSID":
+          password: "YOUR_WIFI_PASSWORD"

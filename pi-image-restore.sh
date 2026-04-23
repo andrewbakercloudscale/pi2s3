@@ -51,6 +51,14 @@ set -euo pipefail
 # partclone installs to /usr/sbin on Debian/Ubuntu; ensure it's reachable
 export PATH="/usr/sbin:${PATH}"
 
+# When run as sudo, AWS CLI looks in /root/.aws/ instead of the real user's
+# home directory. Point it at the invoking user's credentials instead.
+if [[ -n "${SUDO_USER:-}" ]]; then
+    REAL_HOME=$(getent passwd "${SUDO_USER}" | cut -d: -f6)
+    export AWS_CONFIG_FILE="${AWS_CONFIG_FILE:-${REAL_HOME}/.aws/config}"
+    export AWS_SHARED_CREDENTIALS_FILE="${AWS_SHARED_CREDENTIALS_FILE:-${REAL_HOME}/.aws/credentials}"
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="${SCRIPT_DIR}/config.env"
 

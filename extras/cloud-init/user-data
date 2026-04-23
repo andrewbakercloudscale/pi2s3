@@ -1,0 +1,62 @@
+#cloud-config
+# =============================================================
+# pi2s3 DR/QA Pi — cloud-init user-data for Pi OS Bookworm
+#
+# Usage:
+#   Copy to the FAT32 boot partition of a freshly-flashed Pi OS Lite card:
+#     cp extras/cloud-init/user-data   /Volumes/bootfs/user-data
+#     cp extras/cloud-init/network-config /Volumes/bootfs/network-config
+#     cp extras/cloud-init/meta-data   /Volumes/bootfs/meta-data
+#
+# Then edit network-config with your WiFi SSID/password before booting.
+#
+# IMPORTANT: Edit meta-data and set a unique instance_id before each
+# re-flash — cloud-init skips runcmd if it sees the same instance_id twice.
+# =============================================================
+
+hostname: andrewninja-pi-qa
+
+users:
+  - name: pi
+    groups: sudo,adm,dialout,cdrom,audio,video,netdev,games,users,input,render,bluetooth,plugdev,gpio,i2c,spi
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    lock_passwd: false
+    # Default password: pi2s3-dr  — change this or use ssh_authorized_keys instead
+    passwd: "$6$rounds=4096$pi2s3$Edr6kvJpxGmDyW3GqNKG3w6V1eoFRLLV.mXWMFHaXIQQa.ZYj8bLHTzH5fLQBvR0nS/uafCmH5RZVLW6CkHj1"
+
+ssh_pwauth: true
+
+# Packages and setup run AFTER SSH is enabled (via runcmd)
+# Do NOT use top-level `packages:` or `package_update: true` — they run
+# before the ssh module and delay SSH coming up by 5–10 minutes.
+runcmd:
+  # Enable SSH immediately — before package installs
+  - systemctl enable ssh --now
+
+  # Set WiFi regulatory domain — Pi 5 soft-blocks WiFi (wlan0 "unavailable")
+  # until a country code is applied. Adjust ZA to your country code.
+  - iw reg set ZA 2>/dev/null || true
+  - nmcli radio wifi on 2>/dev/null || true
+
+  # Install pi2s3 dependencies
+  - apt-get update -qq
+  - apt-get install -y -qq --no-install-recommends partclone pigz pv python3 git awscli
+
+  # Clone pi2s3
+  - git clone --depth 1 https://github.com/andrewbakercloudscale/pi2s3.git /home/pi/pi2s3
+  - chown -R pi:pi /home/pi/pi2s3
+
+  # Write config.env — edit S3_BUCKET and S3_REGION to match your setup
+  - |
+    cat > /home/pi/pi2s3/config.env << 'EOF'
+    S3_BUCKET="your-s3-bucket-name"
+    S3_REGION="af-south-1"
+    AWS_PROFILE="personal"
+    NTFY_URL=""
+    STOP_DOCKER="true"
+    MAX_IMAGES="60"
+    EOF
+  - chown pi:pi /home/pi/pi2s3/config.env
+
+  - loginctl enable-linger pi

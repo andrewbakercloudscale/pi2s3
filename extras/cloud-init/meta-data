@@ -1,0 +1,11 @@
+# =============================================================
+# pi2s3 DR/QA Pi — cloud-init meta-data for Pi OS Bookworm
+#
+# IMPORTANT: Change instance_id to a unique value each time you re-flash
+# the SD card. cloud-init skips runcmd if it sees the same instance_id
+# from a previous boot. Use any unique string, e.g. the current date:
+#   instance_id: pi2s3-dr-20260423
+# =============================================================
+
+instance_id: pi2s3-dr-20260423
+local-hostname: andrewninja-pi-qa
