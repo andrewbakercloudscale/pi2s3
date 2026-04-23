@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# -e intentionally omitted: watchdog must survive partial check failures and continue recovery phases
 set -uo pipefail
 # =============================================================
 # cf-tunnel-watchdog.sh — Cloudflare tunnel + site health watchdog

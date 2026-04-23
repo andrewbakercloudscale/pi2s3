@@ -27,9 +27,9 @@ Generated from bash repository analysis (2026-04-23). 21 findings across 10 scri
 - [ ] **[M4]** `deploy-pi.sh:12–13` — `PI_KEY` and `PI_LOCAL` hardcoded to machine-specific paths. Document or parameterise.
 - [ ] **[M5]** `extras/cf-tunnel-watchdog.sh:1` / `extras/fpm-saturation-monitor.sh:2` — `set -uo pipefail` without `-e`. Add `-e` or document why it's omitted.
 - [ ] **[M6]** `extras/fleet-deploy.sh:83` — `[[ -z ... ]] && MANIFEST_FILE="$1" || { echo; exit 1 }` — SC2015 A&&B||C pattern. Rewrite as `if/else`.
-- [ ] **[M7]** `website/restore:49` — `[[ -n ... ]] && ok ... || ok ...` — SC2015 pattern (benign here but inconsistent). Rewrite as `if/else`.
+- [x] **[M7]** `website/restore:49` — `[[ -n ... ]] && ok ... || ok ...` — SC2015 pattern (benign here but inconsistent). Rewrite as `if/else`.
 - [ ] **[M8]** `pi-image-backup.sh:36–76` — 40-line block of `DONE(...)` dev notes in the script header. Move to CHANGELOG, remove from script.
-- [ ] **[M9]** `install.sh:529–532` — Same `&& ok || die` pattern for the non-`us-east-1` bucket-create branch (duplicate of H2).
+- [x] **[M9]** `install.sh:529–532` — Same `&& ok || die` pattern for the non-`us-east-1` bucket-create branch (duplicate of H2).
 - [ ] **[M10]** `pi-image-backup.sh:1265` — `FW_COMPRESSED_HUMAN` computed but never logged or used. Log it or remove it.
 
 ---

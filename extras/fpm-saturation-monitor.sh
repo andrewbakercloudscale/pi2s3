@@ -12,6 +12,7 @@
 #   FPM_ALERT_COOLDOWN        seconds between repeat alerts (default: 1800)
 #   NTFY_URL                  ntfy.sh topic URL (shared with pi2s3 config)
 
+# -e intentionally omitted: monitor must survive individual probe failures and continue checking
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

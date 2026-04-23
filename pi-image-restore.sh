@@ -55,9 +55,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="${SCRIPT_DIR}/config.env"
 
 if [[ ! -f "${CONFIG_FILE}" ]]; then
-    echo "ERROR: config.env not found."
-    echo "  cp ${SCRIPT_DIR}/config.env.example ${SCRIPT_DIR}/config.env"
-    echo "  nano ${SCRIPT_DIR}/config.env"
+    echo "ERROR: config.env not found." >&2
+    echo "  cp ${SCRIPT_DIR}/config.env.example ${SCRIPT_DIR}/config.env" >&2
+    echo "  nano ${SCRIPT_DIR}/config.env" >&2
     exit 1
 fi
 
@@ -68,8 +68,8 @@ source "${SCRIPT_DIR}/lib/log.sh"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/lib/aws.sh"
 
-[[ -z "${S3_BUCKET:-}" ]] && { echo "ERROR: S3_BUCKET is not set in config.env"; exit 1; }
-[[ -z "${S3_REGION:-}" ]] && { echo "ERROR: S3_REGION is not set in config.env"; exit 1; }
+[[ -z "${S3_BUCKET:-}" ]] && { echo "ERROR: S3_BUCKET is not set in config.env" >&2; exit 1; }
+[[ -z "${S3_REGION:-}" ]] && { echo "ERROR: S3_REGION is not set in config.env" >&2; exit 1; }
 
 AWS_PROFILE="${AWS_PROFILE:-}"
 BACKUP_ENCRYPTION_PASSPHRASE="${BACKUP_ENCRYPTION_PASSPHRASE:-}"
@@ -82,7 +82,6 @@ YES=false
 LIST_ONLY=false
 RESIZE=false
 VERIFY_DEVICE=""
-VERIFY_DATE_FOR_VERIFY=""
 EXTRACT_PATH=""
 EXTRACT_PARTITION=""
 HOST_FILTER=""
