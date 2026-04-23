@@ -584,6 +584,7 @@
     }
 
     .stat-label { font-size: 0.85rem; color: var(--muted); margin-top: 0.25rem; }
+    .stat-context { font-size: 0.72rem; color: #6b7a99; margin-top: 0.35rem; line-height: 1.4; }
 
     /* SECTION DIVIDERS WITH LINE */
     .section-divider {
@@ -861,19 +862,23 @@
   <div class="stats">
     <div class="stat">
       <div class="stat-num" style="color:var(--accent2);">0 min</div>
-      <div class="stat-label">Downtime during backup. Site stays live</div>
+      <div class="stat-label">Downtime during backup</div>
+      <div class="stat-context">FTWRL holds writes for &lt;10 s · containers stay up · site stays live</div>
     </div>
     <div class="stat">
       <div class="stat-num">~35 min</div>
       <div class="stat-label">Pi death to fully operational</div>
+      <div class="stat-context">Pi 5 · 954 GB NVMe · S3 af-south-1</div>
     </div>
     <div class="stat">
       <div class="stat-num">3–5 GB</div>
       <div class="stat-label">Compressed backup size</div>
+      <div class="stat-context">954 GB NVMe at 28% full · 267 GB of data → 4 GB · 67:1 ratio · partclone + pigz</div>
     </div>
     <div class="stat">
       <div class="stat-num">~$3/mo</div>
-      <div class="stat-label">60-day retention (STANDARD_IA)</div>
+      <div class="stat-label">60-day retention</div>
+      <div class="stat-context">60 nightly images · S3 STANDARD_IA · af-south-1</div>
     </div>
   </div>
 </section>
