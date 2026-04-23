@@ -366,13 +366,13 @@ for p in m.get('partitions', []):
             | pv -s "${sel_csize}" \
             | ${_decrypt_cmd} \
             | gunzip \
-            | sudo "${sel_tool}" -r -s - -o "${_loop}"
+            | ionice -c 3 nice -n 19 sudo "${sel_tool}" -r -s - -o "${_loop}"
     else
         log "  (Install pv for a progress bar: sudo apt install pv)"
         aws_cmd s3 cp "s3://${S3_BUCKET}/${sel_key}" - \
             | ${_decrypt_cmd} \
             | gunzip \
-            | sudo "${sel_tool}" -r -s - -o "${_loop}"
+            | ionice -c 3 nice -n 19 sudo "${sel_tool}" -r -s - -o "${_loop}"
     fi
 
     [[ -n "${_extract_gpg_pass_file}" ]] && rm -f "${_extract_gpg_pass_file}"
@@ -857,17 +857,19 @@ for p in m.get('partitions', []):
         done
         [[ ! -b "${TARGET_PART}" ]] && die "Partition ${TARGET_PART} did not appear after partition table restore."
 
+        # ionice/nice prevent the restore from starving the network stack and
+        # crashing SSH (or triggering OOM) on low-resource machines like Pi.
         if command -v pv &>/dev/null; then
             aws_cmd s3 cp "s3://${S3_BUCKET}/${PART_KEY}" - \
                 | pv -s "${PART_CSIZE}" \
                 | ${DECRYPT_CMD} \
                 | gunzip \
-                | sudo "${PART_TOOL}" -r -s - -o "${TARGET_PART}"
+                | ionice -c 3 nice -n 19 sudo "${PART_TOOL}" -r -s - -o "${TARGET_PART}"
         else
             aws_cmd s3 cp "s3://${S3_BUCKET}/${PART_KEY}" - \
                 | ${DECRYPT_CMD} \
                 | gunzip \
-                | sudo "${PART_TOOL}" -r -s - -o "${TARGET_PART}"
+                | ionice -c 3 nice -n 19 sudo "${PART_TOOL}" -r -s - -o "${TARGET_PART}"
         fi
 
         log "  ${TARGET_PART} restored."
