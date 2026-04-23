@@ -95,6 +95,7 @@ EXTRACT_PARTITION=""
 HOST_FILTER=""
 POST_RESTORE_SCRIPT=""
 _GPG_PASS_FILE=""
+RATE_LIMIT=""   # e.g. "50m" to cap at 50 MB/s — helps prevent NVMe write storms on Pi 5
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -113,6 +114,8 @@ while [[ $# -gt 0 ]]; do
         --host)           shift; HOST_FILTER="${1:-}" ;;
         --host=*)         HOST_FILTER="${1#--host=}" ;;
         --resize)         RESIZE=true ;;
+        --rate-limit)     shift; RATE_LIMIT="${1:-}" ;;
+        --rate-limit=*)   RATE_LIMIT="${1#--rate-limit=}" ;;
         --post-restore)   shift; POST_RESTORE_SCRIPT="${1:-}" ;;
         --post-restore=*) POST_RESTORE_SCRIPT="${1#--post-restore=}" ;;
         --help)
@@ -859,9 +862,13 @@ for p in m.get('partitions', []):
 
         # ionice/nice prevent the restore from starving the network stack and
         # crashing SSH (or triggering OOM) on low-resource machines like Pi.
+        # --rate-limit caps NVMe write throughput to prevent PCIe write storms
+        # on Pi 5 (which can trigger kernel panics at full NVMe speed).
+        local _pv_rate_flag=""
+        [[ -n "${RATE_LIMIT}" ]] && _pv_rate_flag="-L ${RATE_LIMIT}"
         if command -v pv &>/dev/null; then
             aws_cmd s3 cp "s3://${S3_BUCKET}/${PART_KEY}" - \
-                | pv -s "${PART_CSIZE}" \
+                | pv -s "${PART_CSIZE}" ${_pv_rate_flag} \
                 | ${DECRYPT_CMD} \
                 | gunzip \
                 | ionice -c 3 nice -n 19 sudo "${PART_TOOL}" -r -s - -o "${TARGET_PART}"
