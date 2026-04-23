@@ -864,21 +864,37 @@ for p in m.get('partitions', []):
 
         # ionice/nice prevent the restore from starving the network stack and
         # crashing SSH (or triggering OOM) on low-resource machines like Pi.
-        # --rate-limit caps NVMe write throughput to prevent PCIe write storms
-        # on Pi 5 (which can trigger kernel panics at full NVMe speed).
-        local _pv_rate_flag=""
-        [[ -n "${RATE_LIMIT}" ]] && _pv_rate_flag="-L ${RATE_LIMIT}"
+        # --rate-limit applies AFTER gunzip so it directly caps the uncompressed
+        # byte rate into partclone, which equals the NVMe write rate.
+        # (Limiting the compressed stream would cap ~0.7x the actual write rate.)
         if command -v pv &>/dev/null; then
-            aws_cmd s3 cp "s3://${S3_BUCKET}/${PART_KEY}" - \
-                | pv -s "${PART_CSIZE}" ${_pv_rate_flag} \
-                | ${DECRYPT_CMD} \
-                | gunzip \
-                | ionice -c 3 nice -n 19 sudo "${PART_TOOL}" -r -s - -o "${TARGET_PART}"
+            if [[ -n "${RATE_LIMIT}" ]]; then
+                aws_cmd s3 cp "s3://${S3_BUCKET}/${PART_KEY}" - \
+                    | pv -s "${PART_CSIZE}" \
+                    | ${DECRYPT_CMD} \
+                    | gunzip \
+                    | pv -L "${RATE_LIMIT}" -N "rate-limit" \
+                    | ionice -c 3 nice -n 19 sudo "${PART_TOOL}" -r -s - -o "${TARGET_PART}"
+            else
+                aws_cmd s3 cp "s3://${S3_BUCKET}/${PART_KEY}" - \
+                    | pv -s "${PART_CSIZE}" \
+                    | ${DECRYPT_CMD} \
+                    | gunzip \
+                    | ionice -c 3 nice -n 19 sudo "${PART_TOOL}" -r -s - -o "${TARGET_PART}"
+            fi
         else
-            aws_cmd s3 cp "s3://${S3_BUCKET}/${PART_KEY}" - \
-                | ${DECRYPT_CMD} \
-                | gunzip \
-                | ionice -c 3 nice -n 19 sudo "${PART_TOOL}" -r -s - -o "${TARGET_PART}"
+            if [[ -n "${RATE_LIMIT}" ]]; then
+                aws_cmd s3 cp "s3://${S3_BUCKET}/${PART_KEY}" - \
+                    | ${DECRYPT_CMD} \
+                    | gunzip \
+                    | pv -L "${RATE_LIMIT}" -q \
+                    | ionice -c 3 nice -n 19 sudo "${PART_TOOL}" -r -s - -o "${TARGET_PART}"
+            else
+                aws_cmd s3 cp "s3://${S3_BUCKET}/${PART_KEY}" - \
+                    | ${DECRYPT_CMD} \
+                    | gunzip \
+                    | ionice -c 3 nice -n 19 sudo "${PART_TOOL}" -r -s - -o "${TARGET_PART}"
+            fi
         fi
 
         log "  ${TARGET_PART} restored."
