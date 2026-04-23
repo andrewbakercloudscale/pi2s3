@@ -26,7 +26,6 @@
 # =============================================================
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK_DIR="${TMPDIR:-/tmp}/pi2s3-netboot-$$"
 OUTPUT_DIR="${PWD}/pi2s3-netboot-$(date +%Y-%m-%d)"
 UPLOAD_TARGET=""
@@ -98,7 +97,7 @@ IMG_XZ="${WORK_DIR}/pi-os.img.xz"
 curl -L --progress-bar "${PI_OS_URL}" -o "${IMG_XZ}"
 log "Decompressing..."
 xz -d "${IMG_XZ}"
-IMAGE_FILE="$(ls "${WORK_DIR}"/*.img | head -1)"
+IMAGE_FILE="$(find "${WORK_DIR}" -maxdepth 1 -name '*.img' | head -1)"
 
 log "Step 2: Mounting Pi OS image..."
 LOOP=$(sudo losetup --show -fP "${IMAGE_FILE}")
@@ -249,6 +248,7 @@ EOF
 # ── Done ─────────────────────────────────────────────────────────────────────
 echo ""
 log "Build complete. Output files:"
+# shellcheck disable=SC2012  # ls -lh for human-readable display only
 ls -lh "${OUTPUT_DIR}/" | sed 's/^/    /'
 echo ""
 
