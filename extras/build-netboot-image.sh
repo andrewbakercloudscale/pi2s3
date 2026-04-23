@@ -27,7 +27,6 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(dirname "${SCRIPT_DIR}")"
 WORK_DIR="${TMPDIR:-/tmp}/pi2s3-netboot-$$"
 OUTPUT_DIR="${PWD}/pi2s3-netboot-$(date +%Y-%m-%d)"
 UPLOAD_TARGET=""

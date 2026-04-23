@@ -9,12 +9,13 @@
 # =============================================================
 set -euo pipefail
 
-PI_KEY="REPO_BASE/pi-monitor/deploy/pi_key"
-PI_LOCAL="andrew-pi-5.local"
-PI_DIR="~/pi2s3"
+# Customise these for your setup, or override via environment variables.
+PI_KEY="${PI_KEY:-${HOME}/.ssh/pi_key}"
+PI_LOCAL="${PI_LOCAL:-raspberrypi.local}"
+PI_DIR=~/pi2s3
 
-_PI_CF_HOST="ssh.andrewbaker.ninja"
-_PI_CF_USER="pi"
+_PI_CF_HOST="${PI_CF_HOST:-ssh.andrewbaker.ninja}"
+_PI_CF_USER="${PI_CF_USER:-pi}"
 
 # ── Pick connection (LAN first, CF tunnel fallback) ───────────────────────────
 if ssh -i "${PI_KEY}" -o StrictHostKeyChecking=no -o ConnectTimeout=4 -o BatchMode=yes \

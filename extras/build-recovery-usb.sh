@@ -30,7 +30,6 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(dirname "${SCRIPT_DIR}")"
 BUILD_DATE="$(date +%Y-%m-%d)"
 WORK_DIR="${TMPDIR:-/tmp}/pi2s3-build-$$"
 OUTPUT_FILE="${PWD}/pi2s3-recovery-usb-${BUILD_DATE}.img.xz"

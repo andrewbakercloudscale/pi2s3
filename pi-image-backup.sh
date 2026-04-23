@@ -33,46 +33,6 @@
 #   - partclone: sudo apt install partclone
 #   - pigz recommended (falls back to gzip): sudo apt install pigz
 #
-# TODO — planned features (priority order):
-#   DONE(1-missed-backup-alert): --stale-check mode + cron via install.sh.
-#     Ntfys if latest backup in S3 is older than STALE_BACKUP_HOURS (default 25h).
-#
-#   DONE(2-sha256): Per-partition SHA256 computed in-flight via tee >(sha256sum).
-#
-#   DONE(3-partial-restore): --extract flag on pi-image-restore.sh.
-#     Streams partition from S3, loop-mounts it, copies requested path out.
-#
-#   DONE(4-per-host-namespacing): S3 keys now pi-image-backup/<hostname>/<date>/.
-#     pi-image-restore.sh auto-discovers host or prompts when multiple exist.
-#
-#   DONE(5-bandwidth-throttle): AWS_TRANSFER_RATE_LIMIT in config.env caps upload speed.
-#     Uses pv -q -L to throttle the compressed stream before aws s3 cp.
-#     Gracefully falls back to cat if unset or pv not installed.
-#
-#   DONE(6-preflight-health): preflight_health() runs before Docker stop.
-#     Checks: stopped/unhealthy containers, free disk space (<PREFLIGHT_MIN_FREE_MB),
-#     recent I/O errors in dmesg. PREFLIGHT_ABORT_ON_WARN=true to abort on warnings.
-#
-#   DROPPED(7-incremental): Incremental backup adds restore complexity with little
-#     cost benefit at 3-5 GB/day compressed. Full images restore in one command
-#     with no history dependency. Keeping full images only.
-#
-#   DONE(8-cross-device-restore): --resize flag on pi-image-restore.sh.
-#     growpart expands the last partition entry; resize2fs/xfs_growfs expands the
-#     filesystem. Works for ext2/3/4 (online). XFS and btrfs: manual step noted.
-#
-#   DONE(9-per-host-retention): Per-hostname MAX_IMAGES_<hostname> in config.env.
-#     Hyphens in hostname replaced with underscores (bash var name constraint).
-#     e.g. MAX_IMAGES_my_pi_5=30 overrides the global MAX_IMAGES for that host.
-#
-#   DONE(10-auto-verify): BACKUP_AUTO_VERIFY=true runs a post-upload S3 check
-#     after every backup. Verifies all partition files and manifest are non-zero
-#     in S3. Result included in ntfy success notification.
-#
-#   DONE(11-client-side-encryption): BACKUP_ENCRYPTION_PASSPHRASE in config.env.
-#     gpg --symmetric AES-256 encrypts each partition image before S3 upload.
-#     Passphrase stored only in config.env, never in S3. Restore detects
-#     encryption from manifest "encryption" field and decrypts inline.
 # =============================================================
 set -euo pipefail
 
@@ -83,9 +43,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="${SCRIPT_DIR}/config.env"
 
 if [[ ! -f "${CONFIG_FILE}" ]]; then
-    echo "ERROR: config.env not found."
-    echo "  cp ${SCRIPT_DIR}/config.env.example ${SCRIPT_DIR}/config.env"
-    echo "  nano ${SCRIPT_DIR}/config.env"
+    echo "ERROR: config.env not found." >&2
+    echo "  cp ${SCRIPT_DIR}/config.env.example ${SCRIPT_DIR}/config.env" >&2
+    echo "  nano ${SCRIPT_DIR}/config.env" >&2
     exit 1
 fi
 
@@ -99,8 +59,8 @@ source "${SCRIPT_DIR}/lib/aws.sh"
 source "${SCRIPT_DIR}/lib/containers.sh"
 
 # ── Validate required config ─────────────────────────────────────────────────
-[[ -z "${S3_BUCKET:-}"  ]] && { echo "ERROR: S3_BUCKET is not set in config.env"; exit 1; }
-[[ -z "${S3_REGION:-}"  ]] && { echo "ERROR: S3_REGION is not set in config.env"; exit 1; }
+[[ -z "${S3_BUCKET:-}"  ]] && { echo "ERROR: S3_BUCKET is not set in config.env" >&2; exit 1; }
+[[ -z "${S3_REGION:-}"  ]] && { echo "ERROR: S3_REGION is not set in config.env" >&2; exit 1; }
 [[ -z "${NTFY_URL:-}"   ]] && echo "WARNING: NTFY_URL is not set — backups will run silently with no push notifications."
 
 # ── Defaults for optional config ─────────────────────────────────────────────
@@ -1265,6 +1225,7 @@ if [[ -n "${BOOT_FW_PART}" ]]; then
     FW_COMPRESSED_HUMAN=$(numfmt --to=iec "${FW_COMPRESSED}" 2>/dev/null || echo "?")
     TOTAL_COMPRESSED_BYTES=$(( TOTAL_COMPRESSED_BYTES + FW_COMPRESSED ))
     UPLOADED_KEYS+=("${FW_KEY}")
+    log "  boot fw: ${FW_COMPRESSED_HUMAN} compressed  SHA256: ${FW_SHA256:-?}"
     BOOT_FW_JSON="{\"name\":\"${FW_NAME}\",\"device\":\"${BOOT_FW_PART}\",\"fstype\":\"${FW_FSTYPE}\",\"key\":\"${FW_KEY}\",\"compressed_bytes\":${FW_COMPRESSED},\"sha256\":\"${FW_SHA256:-}\"}"
 fi
 

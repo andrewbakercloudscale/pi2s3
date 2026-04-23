@@ -80,15 +80,15 @@ while [[ $# -gt 0 ]]; do
         -*)
             echo "Unknown option: $1"; exit 1 ;;
         *)
-            [[ -z "${MANIFEST_FILE}" ]] && MANIFEST_FILE="$1" || { echo "Unexpected argument: $1"; exit 1; }
+            if [[ -z "${MANIFEST_FILE}" ]]; then MANIFEST_FILE="$1"; else echo "Unexpected argument: $1" >&2; exit 1; fi
             ;;
     esac
     shift
 done
 
 [[ -z "${MANIFEST_FILE}" ]] && { echo "Usage: $0 <manifest.csv> [options]"; exit 1; }
-[[ -f "${MANIFEST_FILE}" ]] || { echo "ERROR: manifest file not found: ${MANIFEST_FILE}"; exit 1; }
-[[ -f "${CONFIG_FILE}"   ]] || { echo "ERROR: config.env not found: ${CONFIG_FILE}"; echo "  Use --config to specify its location."; exit 1; }
+[[ -f "${MANIFEST_FILE}" ]] || { echo "ERROR: manifest file not found: ${MANIFEST_FILE}" >&2; exit 1; }
+[[ -f "${CONFIG_FILE}"   ]] || { echo "ERROR: config.env not found: ${CONFIG_FILE}" >&2; echo "  Use --config to specify its location." >&2; exit 1; }
 
 SSH_OPTS=(-o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes)
 [[ -n "${SSH_KEY}" ]] && SSH_OPTS+=(-i "${SSH_KEY}")
@@ -119,7 +119,7 @@ while IFS= read -r line || [[ -n "${line}" ]]; do
     (( ROW++ )) || true
 done < "${MANIFEST_FILE}"
 
-[[ ${ROW} -eq 0 ]] && { echo "ERROR: no matching entries in manifest."; exit 1; }
+[[ ${ROW} -eq 0 ]] && { echo "ERROR: no matching entries in manifest." >&2; exit 1; }
 
 # ── Print plan ─────────────────────────────────────────────────────────────────
 echo ""
