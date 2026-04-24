@@ -1207,6 +1207,29 @@
   </div>
 
   <div class="qs-step">
+    <div class="qs-num qs-num--alt">or</div>
+    <div class="qs-content">
+      <h3>Pi 5 NVMe: throttle writes to prevent PCIe crashes</h3>
+      <p>Some Pi 5 + NVMe combinations trigger a PCIe watchdog reset under sustained writes. <code>--rate-limit 10m</code> caps the uncompressed byte rate into <code>partclone</code> at 10 MB/s — applied after <code>gunzip</code> for direct write-rate control. Increase if stable. Requires <code>pv</code>.</p>
+      <pre><span class="kw">sudo apt install</span> pv
+<span class="kw">bash</span> ~/pi2s3/pi-image-restore.sh <span class="kw">--device</span> /dev/nvme0n1 <span class="kw">--resize --yes \
+  --rate-limit</span> 10m</pre>
+    </div>
+  </div>
+
+  <div class="qs-step">
+    <div class="qs-num qs-num--alt">or</div>
+    <div class="qs-content">
+      <h3>Wire NVMe boot on a new Pi (--post-restore)</h3>
+      <p>When restoring to a bare NVMe on a different Pi, the SD card PARTUUID in <code>/etc/fstab</code> and the <code>root=</code> in <code>/boot/firmware/cmdline.txt</code> need updating for the new hardware. <code>post-restore-nvme-boot.sh</code> handles both automatically — no manual editing.</p>
+      <pre><span class="kw">bash</span> ~/pi2s3/pi-image-restore.sh <span class="kw">--device</span> /dev/nvme0n1 <span class="kw">--resize --yes \
+  --rate-limit</span> 10m \
+  <span class="kw">--post-restore</span> extras/post-restore-nvme-boot.sh</pre>
+      <p style="margin-top:0.5rem; font-size:0.85rem; color:var(--muted)">Set <code>NEW_HOSTNAME=my-pi-qa</code> to rename the clone in the same step.</p>
+    </div>
+  </div>
+
+  <div class="qs-step">
     <div class="qs-num">3</div>
     <div class="qs-content">
       <h3>Boot &amp; clear stale SSH key</h3>
@@ -1260,11 +1283,12 @@
   <div class="card-grid">
     <div class="card">
       <h3>Clone / staging environments</h3>
-      <p>Restore a backup to a second Pi and have it come up as a different site — different Cloudflare tunnel, hostname, and <code>.env</code> values — without manual editing after reboot.</p>
+      <p>Restore a backup to a second Pi and have it come up as a different site — different Cloudflare tunnel, hostname, and <code>.env</code> values — without manual editing after reboot. <code>post-restore-nvme-boot.sh</code> handles the SD PARTUUID and <code>cmdline.txt</code> differences between Pi hardware automatically.</p>
       <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="kw">bash</span> pi-image-restore.sh \
   <span class="kw">--date</span> latest <span class="kw">--device</span> /dev/nvme0n1 \
-  <span class="kw">--post-restore</span> ~/post-restore-office.sh</pre>
-      <p style="margin-top:0.5rem; color:var(--muted); font-size:0.85rem;">A template covering hostname, CF tunnel, <code>.env</code>, and SSH keys is at <code>extras/post-restore-example.sh</code>.</p>
+  <span class="kw">--resize --yes --rate-limit</span> 10m \
+  <span class="kw">--post-restore</span> extras/post-restore-nvme-boot.sh</pre>
+      <p style="margin-top:0.5rem; color:var(--muted); font-size:0.85rem;">For app customisation (hostname, CF tunnel, <code>.env</code>, SSH keys): <code>extras/post-restore-example.sh</code>.</p>
     </div>
 
     <div class="card">

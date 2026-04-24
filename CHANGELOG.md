@@ -4,6 +4,32 @@ All notable changes to pi2s3 are documented here.
 
 ---
 
+## [1.8.0] — 2026-04-24
+
+### Added
+
+- **`--rate-limit <speed>` flag** (`pi-image-restore.sh`) — caps the uncompressed byte rate into `partclone` (applied after `gunzip`, directly controlling NVMe write throughput). Prevents PCIe watchdog resets on Pi 5 + NVMe combinations that crash under sustained writes. Example: `--rate-limit 10m` = 10 MB/s to the NVMe. Requires `pv`.
+- **`extras/post-restore-nvme-boot.sh`** — post-restore script that wires up NVMe as the boot target without any manual steps: (1) swaps the original Pi's SD card PARTUUID in `/etc/fstab` with the new Pi's SD PARTUUID; (2) updates `/boot/firmware/cmdline.txt` `root=` to point at the restored NVMe root partition. Pass `NEW_HOSTNAME=<name>` to rename the clone in the same step. Full error handling and per-step logging.
+- **`extras/cloud-init/`** — Pi OS Bookworm cloud-init templates for a DR/QA Pi (`user-data`, `network-config`, `meta-data`). Enables a factory-fresh Pi to SSH-ready in ~1 min with all pi2s3 dependencies installed and the repo cloned.
+- **`extras/DR-quickstart.md`** — end-to-end DR runbook: flash SD → cloud-init → AWS credentials → restore → NVMe boot → Cloudflare tunnel.
+- **ionice + nice on partclone pipeline** (`pi-image-restore.sh`) — `ionice -c 3 nice -n 19` prevents the restore from starving the SSH session's network stack on memory-constrained machines.
+- **fsck after every restored ext partition** (`pi-image-restore.sh`) — runs `e2fsck -f -y` on each ext2/3/4 partition immediately after `partclone` completes, clearing the dirty-journal state left by a live backup. Exit codes 0/1 = clean, 2 = warn, 4+ = error logged.
+
+### Fixed
+
+- **`jq` not listed as a required dependency** (`pi-image-restore.sh`) — `get_manifest_field()` uses `jq` to parse `backup_type` from the manifest. Without `jq`, it returned empty and `BACKUP_TYPE` silently fell back to `"dd"`, causing every partclone-format restore to write a single raw partition to the whole device with no partition table. Added explicit `command -v jq || die` check and added `jq` to the cloud-init package list.
+- **`--rate-limit` applied to compressed stream** (`pi-image-restore.sh`) — the rate-limiting `pv -L` was positioned before `gunzip`, limiting the compressed byte rate. After expansion (~1.3–1.4× for typical ext4 data), the actual NVMe write rate exceeded the specified limit by 30–40%. Moved the rate-limiting `pv` to after `gunzip` for direct write-rate control; the progress-display `pv` remains before `gunzip`.
+- **Invalid JSON in manifest when `extra_device` is unset** (`pi-image-backup.sh`) — the manifest heredoc produced `"extra_device": ,` when `BACKUP_EXTRA_DEVICE` was unset, failing `python3`/`jq` JSON parsing on every standard (single-device) backup. Pre-compute `EXTRA_DEVICE_JSON` with a `null` fallback before the heredoc.
+- **`fstype` not passed to partition restore loop** (`pi-image-restore.sh`) — the Python manifest parser only extracted `name`, `tool`, `key`, `compressed_bytes`. Added `fstype` so the new post-restore fsck can identify which partitions are ext2/3/4.
+
+### Changed
+
+- **SUDO_USER credential forwarding** (`pi-image-restore.sh`) — when run as `sudo`, AWS CLI looked in `/root/.aws/` instead of the real user's home directory. Now detects `SUDO_USER` via `getent passwd` and sets `AWS_CONFIG_FILE` / `AWS_SHARED_CREDENTIALS_FILE` to the real user's paths.
+- **`jq` added to cloud-init package list** (`extras/cloud-init/user-data`) — `jq` is now installed alongside `partclone pigz pv python3 git awscli` so the restore script works out of the box on a freshly cloud-init-provisioned Pi.
+- **Next-steps section** (`pi-image-restore.sh`) — updated to distinguish NVMe-on-SD-card boot setups from standalone device restores, and to reference `post-restore-nvme-boot.sh`.
+
+---
+
 ## [1.7.1] — 2026-04-23
 
 ### Fixed

@@ -121,6 +121,7 @@ This is still far better than the old `dd` approach (60–90 minutes on a full N
 - Linux machine with `sfdisk` (util-linux) and `partclone` installed
 - AWS CLI v2 with read access to your bucket
 - `python3` (for manifest parsing — standard on all modern Linux distros)
+- `jq` — required for manifest field parsing: `sudo apt install jq`
 - `pv` optional for a live progress bar: `sudo apt install pv`
 - `losetup` (util-linux) — required for `--extract` partial restores (standard on all Linux distros)
 
@@ -443,9 +444,15 @@ pi-image-restore.sh [options]
   --extract <path>            Extract a file or directory from a backup (Linux only)
   --partition <name>          Partition to mount for --extract (default: largest non-boot)
   --verify /dev/...           Verify a flashed device against S3 manifest (dd format)
-  --post-restore <script>     Run a script inside the restored root before reboot
+  --rate-limit <speed>        Cap NVMe write throughput (e.g. 10m = 10 MB/s).
+                              Prevents PCIe write storms on Pi 5 that can cause
+                              kernel panics. Applied after gunzip for direct control
+                              over the uncompressed write rate. Requires pv.
+  --post-restore <script>     Run a script inside the restored root before reboot.
                               RESTORE_ROOT is exported pointing to the mounted partition.
-                              See extras/post-restore-example.sh for a template.
+                              extras/post-restore-nvme-boot.sh wires up NVMe boot:
+                                updates fstab + cmdline.txt for the new Pi's SD card.
+                              extras/post-restore-example.sh: hostname, tunnel, .env.
 ```
 
 ---
@@ -499,7 +506,15 @@ sudo apt install pv
 What happens during restore:
 1. Partition table downloaded from S3 and applied to target device with `sfdisk`
 2. Each partition streamed from S3 → `gunzip` → `partclone.restore` with inline checksum verification
-3. Boot firmware partition restored separately (if it was on a separate device)
+3. `fsck` run on each ext2/3/4 partition to clear journal state from live backup
+4. Boot firmware partition restored separately (if it was on a separate device)
+
+**Pi 5 with NVMe — throttle writes to prevent kernel panics:**
+```bash
+sudo apt install pv
+bash ~/pi2s3/pi-image-restore.sh --device /dev/nvme0n1 --resize --yes --rate-limit 10m
+```
+`--rate-limit 10m` caps the uncompressed byte rate into `partclone` at 10 MB/s. Increase if stable — full speed is fine on most setups; some Pi 5 + NVMe combinations trigger PCIe watchdog resets at sustained high write rates.
 
 ### Step 2b — Partial restore (recover a single file or directory)
 
@@ -553,13 +568,19 @@ Restore a backup to a second Pi and have it come up as a different site — diff
 
 ```bash
 bash ~/pi2s3/pi-image-restore.sh \
-  --date latest --device /dev/nvme0n1 \
-  --post-restore ~/post-restore-office.sh
+  --date latest --device /dev/nvme0n1 --resize --yes \
+  --post-restore extras/post-restore-nvme-boot.sh
 ```
 
 After restore completes, `pi-image-restore.sh` mounts the restored root partition, exports `RESTORE_ROOT` pointing to it, and runs your script. Changes are written directly to the target device before the first boot.
 
-**Template:** [`extras/post-restore-example.sh`](extras/post-restore-example.sh) — covers hostname rename, Cloudflare tunnel credential swap, `.env` substitution, and SSH host key regeneration.
+**NVMe boot wiring:** [`extras/post-restore-nvme-boot.sh`](extras/post-restore-nvme-boot.sh) — handles the two things that differ between Pi hardware:
+1. Updates `/etc/fstab` on the restored root — swaps the original Pi's SD card PARTUUID with the new Pi's SD card PARTUUID for `/boot/firmware`.
+2. Updates `/boot/firmware/cmdline.txt` on the running SD card so the next boot roots into the NVMe instead of the SD card.
+
+Optionally renames the hostname: `NEW_HOSTNAME=my-pi-qa bash pi-image-restore.sh ...`
+
+**App customisation:** [`extras/post-restore-example.sh`](extras/post-restore-example.sh) — covers hostname rename, Cloudflare tunnel credential swap, `.env` substitution, and SSH host key regeneration.
 
 ---
 
