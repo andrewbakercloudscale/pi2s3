@@ -99,7 +99,14 @@ else
                 CMDLINE="/boot/firmware/cmdline.txt"
                 if [[ -f "${CMDLINE}" ]]; then
                     OLD_ROOT=$(grep -oP 'root=\S+' "${CMDLINE}" | head -1 || echo "root=<none>")
+                    # Update root= to NVMe partition
                     sudo sed -i "s|root=[^ ]*|root=PARTUUID=${ROOT_PARTUUID}|" "${CMDLINE}"
+                    # Add rootdelay if not already present — gives the NVMe PCIe link
+                    # time to enumerate before the kernel looks for the root partition.
+                    if ! grep -q 'rootdelay' "${CMDLINE}"; then
+                        sudo sed -i "s|rootwait|rootdelay=5 rootwait|" "${CMDLINE}"
+                        log "cmdline.txt: added rootdelay=5 for NVMe enumeration"
+                    fi
                     log "cmdline.txt: ${OLD_ROOT} → root=PARTUUID=${ROOT_PARTUUID}"
                 else
                     warn "${CMDLINE} not found — cannot update boot target."
