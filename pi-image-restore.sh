@@ -132,9 +132,12 @@ while [[ $# -gt 0 ]]; do
   --extract <path>           Extract a file or directory — no target device needed
   --partition <name>         Partition to use for --extract (default: largest non-boot)
   --verify /dev/...          Verify a flashed device against the S3 manifest
-  --post-restore <script>    Run a script inside the restored filesystem before reboot
+  --post-restore <script>    Run a script inside the restored filesystem before reboot.
                              RESTORE_ROOT is exported pointing to the mounted root.
-                             See extras/post-restore-example.sh for a template.
+                             extras/post-restore-nvme-boot.sh wires up NVMe boot:
+                               - updates /etc/fstab with this SD card's PARTUUID
+                               - updates /boot/firmware/cmdline.txt to root= NVMe
+                             Set NEW_HOSTNAME=<name> env var to rename the clone.
   --help                     Show this help
 
 Requires: Linux with partclone, sfdisk, gunzip, AWS CLI v2
@@ -821,12 +824,13 @@ for p in m.get('partitions', []):
         p.get('name',''),
         p.get('tool','partclone.dd'),
         p.get('key',''),
-        str(p.get('compressed_bytes', 0))
+        str(p.get('compressed_bytes', 0)),
+        p.get('fstype','')
     ]))
 ") || die "Failed to parse manifest partitions (python3 error)"
 
     # 3. Restore each partition
-    while IFS=$'\t' read -r PART_NAME PART_TOOL PART_KEY PART_CSIZE; do
+    while IFS=$'\t' read -r PART_NAME PART_TOOL PART_KEY PART_CSIZE PART_FS; do
         [[ -z "${PART_NAME}" || -z "${PART_KEY}" ]] && continue
 
         # Map source partition name to target partition device by number.
@@ -898,6 +902,23 @@ for p in m.get('partitions', []):
         fi
 
         log "  ${TARGET_PART} restored."
+
+        # fsck clears the dirty journal state left by a live backup.
+        # e2fsck exits: 0=clean, 1=corrected, 2=reboot needed, 4+=errors remain.
+        if [[ "${PART_FS:-}" == ext* ]]; then
+            log ""
+            log "  Checking filesystem on ${TARGET_PART}..."
+            local _fsck_rc=0
+            sudo e2fsck -f -y "${TARGET_PART}" 2>&1 | sed 's/^/    /' || _fsck_rc=${PIPESTATUS[0]}
+            if [[ ${_fsck_rc} -eq 0 || ${_fsck_rc} -eq 1 ]]; then
+                log "  Filesystem OK."
+            elif [[ ${_fsck_rc} -eq 2 ]]; then
+                log "  WARNING: fsck made corrections that require a reboot before the filesystem is used."
+            else
+                log "  ERROR: fsck exited ${_fsck_rc} on ${TARGET_PART} — uncorrectable errors remain."
+                log "         Run manually: sudo e2fsck -f -y ${TARGET_PART}"
+            fi
+        fi
     done <<< "${PART_DATA}"
 
     # 3b. Resize last partition to fill device (--resize)
@@ -1116,27 +1137,29 @@ log "========================================================"
 log "  Restore complete!"
 log ""
 log "  Next steps:"
-log "    1. Remove the storage from this machine"
-log "    2. Insert into the new Raspberry Pi"
-log "    3. Boot — root filesystem expands automatically"
-log "       on first boot to fill the new device"
 log ""
-log "  Connecting to the restored Pi:"
-log "    The restored Pi has the SAME SSH host key as the original."
-log "    If you've connected to the original before, clear the old key:"
-log "      ssh-keygen -R raspberrypi.local"
-log "      ssh-keygen -R <ip-address>"
-log "    Then: ssh pi@raspberrypi.local  (or check router DHCP for IP)"
+log "  If restoring to a bare NVMe on a Pi with a boot SD card:"
+log "    Run the boot-wiring step (if not done via --post-restore):"
+log "      sudo bash extras/post-restore-nvme-boot.sh"
+log "    Or manually:"
+log "      sudo sed -i 's|root=[^ ]*|root=PARTUUID=<nvme-root-partuuid>|' /boot/firmware/cmdline.txt"
+log "      sudo sed -i 's|PARTUUID=<old-sd>|PARTUUID=<this-sd>|g' /mnt/etc/fstab"
+log "    Then reboot — Pi will root into the restored NVMe."
 log ""
-log "  If running original + clone simultaneously:"
-log "    Change the hostname to avoid conflicts:"
-log "      sudo raspi-config  → System Options → Hostname"
+log "  If restoring to a full replacement SD card or standalone device:"
+log "    1. Remove the device from this machine"
+log "    2. Insert into the target Pi and power on"
+log "    3. Root filesystem expands automatically on first boot (if --resize was used)"
+log ""
+log "  SSH host key note:"
+log "    The restored Pi has the SAME SSH key as the original."
+log "    Clear the old entry if needed:"
+log "      ssh-keygen -R <hostname-or-ip>"
 log ""
 log "  Verify after boot:"
-log "    docker ps                    (containers running?)"
-log "    systemctl status cloudflared (tunnel up?)"
-log "    df -h                        (filesystem expanded to full device?)"
-log "    crontab -l                   (backup cron intact?)"
+log "    df -h              (filesystem at expected size?)"
+log "    docker ps          (containers running?)"
+log "    crontab -l         (backup cron intact?)"
 log "========================================================"
 
 } # end main
