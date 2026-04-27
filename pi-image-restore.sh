@@ -77,6 +77,15 @@ source "${SCRIPT_DIR}/lib/log.sh"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/lib/aws.sh"
 
+# ── Persistent restore log ────────────────────────────────────────────────────
+# Tee all output to /var/log/ so the log survives a watchdog reboot.
+# /tmp is cleared on boot; /var/log persists.
+RESTORE_LOG="/var/log/pi2s3-restore-$(date +%Y%m%d_%H%M%S).log"
+if [[ -w /var/log ]]; then
+    exec > >(tee -a "${RESTORE_LOG}") 2>&1
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Restore log: ${RESTORE_LOG}"
+fi
+
 [[ -z "${S3_BUCKET:-}" ]] && { echo "ERROR: S3_BUCKET is not set in config.env" >&2; exit 1; }
 [[ -z "${S3_REGION:-}" ]] && { echo "ERROR: S3_REGION is not set in config.env" >&2; exit 1; }
 
@@ -821,18 +830,27 @@ if [[ -n "${_WDOG}" ]]; then
     WATCHDOG_PID=$!
 fi
 
+# ── Undervoltage check ────────────────────────────────────────────────────────
+# Pi 5 requires 27W (5.1V / 5A) USB-C. Undervoltage causes mid-restore crashes.
+_throttle=$(vcgencmd get_throttled 2>/dev/null | cut -d= -f2 || echo "0x0")
+if [[ "${_throttle}" != "0x0" ]]; then
+    log "WARNING: Undervoltage or throttling detected (get_throttled=${_throttle})."
+    log "WARNING: Pi 5 requires a 27W (5.1V/5A) USB-C PSU. Restore may crash mid-run."
+fi
+
 # ── System monitor (background) ───────────────────────────────────────────────
-# Logs network rx/tx, CPU, and memory every 10s to diagnose SSH dropout under load.
+# Logs network rx/tx, CPU, memory, and throttle state every 10s.
 MONITOR_LOG="/var/log/pi2s3-restore-monitor-$(date +%Y%m%d_%H%M%S).log"
 if [[ -w /var/log ]]; then
     (
-        echo "timestamp,net_rx_bytes,net_tx_bytes,cpu_idle_pct,mem_free_mb" > "${MONITOR_LOG}"
+        echo "timestamp,net_rx_bytes,net_tx_bytes,cpu_idle_pct,mem_free_mb,throttled" > "${MONITOR_LOG}"
         while true; do
             TS=$(date +%s)
             NET=$(awk '/eth0|wlan0/{rx+=$2; tx+=$10} END{print rx","tx}' /proc/net/dev 2>/dev/null || echo "0,0")
             CPU=$(awk '/cpu /{idle=$5; total=$2+$3+$4+$5+$6+$7+$8; printf "%.1f", idle/total*100}' /proc/stat 2>/dev/null || echo "0")
             MEM=$(awk '/MemFree/{printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo "0")
-            echo "${TS},${NET},${CPU},${MEM}" >> "${MONITOR_LOG}"
+            THROT=$(vcgencmd get_throttled 2>/dev/null | cut -d= -f2 || echo "n/a")
+            echo "${TS},${NET},${CPU},${MEM},${THROT}" >> "${MONITOR_LOG}"
             sleep 10
         done
     ) &
