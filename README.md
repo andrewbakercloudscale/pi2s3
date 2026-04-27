@@ -1002,13 +1002,25 @@ Both are complementary. pi2s3 for disaster recovery; app-layer for day-to-day da
 
 ### Diagnostic script
 
-If a restore fails or produces unexpected results, run the built-in diagnostic. It covers power/voltage, hardware health, restore log completeness, WiFi config, corporate proxy detection, AWS reachability, and packet loss:
+If a restore fails or produces unexpected results, run the built-in diagnostic:
 
 ```bash
 sudo bash ~/pi2s3/extras/diagnose-restore.sh
 ```
 
+10 sections: power/voltage (throttle state, rail voltages, dmesg UV count), hardware (NVMe SMART, EEPROM boot order, watchdog), restore log completeness (UV events per interval, download speed), WiFi (SSID, signal, password encoding), corporate proxy/firewall, internet + AWS reachability (10-ping packet loss), active processes, boot config with PARTUUID cross-check, kernel messages, and S3 manifest JSON validation.
+
 Saves a full report to `/var/log/pi2s3-diagnose-TIMESTAMP.log`. Attach that file when opening a GitHub issue.
+
+### Pi won't boot after restore (solid red LED, no green blink)
+
+Solid red with no green ACT LED means the Pi firmware can't read the SD card or `cmdline.txt` has a bad `root=PARTUUID=` value. Run this on your Mac with the SD card inserted:
+
+```bash
+bash ~/pi2s3/extras/recover-sd-boot.sh
+```
+
+Auto-detects the SD card at `/Volumes/bootfs`. Shows the current `cmdline.txt`, diagnoses the `root=` parameter, and restores from `cmdline.txt.bak` (saved automatically by `post-restore-nvme-boot.sh` before any edits). If no backup exists, prints step-by-step instructions for all recovery scenarios.
 
 ---
 

@@ -4,6 +4,30 @@ All notable changes to pi2s3 are documented here.
 
 ---
 
+## [1.9.0] — 2026-04-27
+
+### Added
+
+- **`extras/diagnose-restore.sh`** — 10-section diagnostic script. Covers: (1) power/voltage with decoded throttle state, per-rail voltages, CPU temp, dmesg undervoltage event count; (2) hardware — CPU, memory, NVMe presence + SMART, EEPROM boot order, watchdog device; (3) restore log completeness — per-log pass/fail, monitor CSV with undervoltage-per-interval analysis, download speed; (4) WiFi — saved connections, active SSID + signal, password special-character encoding check; (5) corporate proxy/firewall — env vars, `/etc/environment`, iptables/nftables output rules; (6) internet + AWS — 10-ping packet loss to gateway/8.8.8.8/1.1.1.1, HTTPS TCP checks, S3 bucket access, STS identity; (7) active restore processes + taskset affinity; (8) boot config — SD card and NVMe cmdline.txt with PARTUUID cross-check (verifies `root=PARTUUID=` matches an actual attached block device, prints exact `sed` fix command if not); (9) recent kernel messages; (10) S3 manifest JSON validation — downloads the latest manifest, validates JSON with `jq`, detects malformed fields (the silent `dd`-vs-partclone fallback bug), shows detected `backup_type`, and prints the `sed` auto-repair command.
+- **`extras/recover-sd-boot.sh`** — Mac-side recovery script for a Pi showing solid red LED (won't boot after restore). Auto-detects the SD card at `/Volumes/bootfs`; shows and diagnoses `cmdline.txt`; restores from `cmdline.txt.bak` if the automatic backup is present; otherwise prints step-by-step options (USB NVMe adapter, fresh flash, manual PARTUUID lookup).
+- **`cmdline.txt.bak` automatic backup** (`extras/post-restore-nvme-boot.sh`) — before editing `/boot/firmware/cmdline.txt`, the original is backed up to `cmdline.txt.bak`. Used by `recover-sd-boot.sh` to restore a working boot when the PARTUUID write fails.
+- **`rootdelay=5` in `post-restore-nvme-boot.sh`** — added to `/boot/firmware/cmdline.txt` if not present; gives the NVMe PCIe link time to enumerate before the kernel searches for the root partition.
+- **Hardware watchdog** (`pi-image-restore.sh`) — opens `/dev/watchdog` (with `/dev/watchdog0` fallback for Pi OS Trixie where systemd holds the primary device) and kicks it every 30 s during restore. On hang, the watchdog fires a hardware reboot.
+- **Background system monitor** (`pi-image-restore.sh`) — samples network bytes, CPU idle %, free memory, and throttle state every 10 s during restore. Saves CSV to `/var/log/pi2s3-restore-monitor-TIMESTAMP.log`. `diagnose-restore.sh` parses this to count undervoltage intervals and compute average download speed.
+- **Persistent restore log** (`pi-image-restore.sh`) — `exec > >(tee /var/log/pi2s3-restore-TIMESTAMP.log)` at startup; log survives reboots and is analysed by `diagnose-restore.sh`.
+- **Restore pinned to 1 CPU** (`pi-image-restore.sh`) — `taskset` pins the entire restore pipeline to the last CPU; OS, SSH, and network stack keep all remaining cores. Reduces sustained power draw, preventing undervoltage on marginal PSUs.
+- **`CLONE_SUFFIX` variable** (`extras/post-restore-nvme-boot.sh`) — configurable hostname suffix when cloning a Pi. Default is `-2` (e.g. `andrewninja-pi-5` → `andrewninja-pi-5-2`). Set `NEW_HOSTNAME` for an exact name or `CLONE_SUFFIX=-qa` for a suffix override. Prevents hostname conflicts without manual post-boot renaming.
+- **`config.env` auto-exported to subprocesses** (`pi-image-restore.sh`) — `set -a; source config.env; set +a` exports every variable (including `NEW_HOSTNAME`) so `--post-restore` scripts inherit them without any extra plumbing.
+
+### Fixed
+
+- **Undervoltage abort too aggressive** (`pi-image-restore.sh`) — `0x50005` (undervoltage + throttle) is a common boot-time transient that clears within seconds. Aborting immediately blocked restores on healthy PSUs with a brief startup dip. Changed to: warn with banner → sleep 10 s → re-check; only abort if still undervolted after 10 s.
+- **Manifest JSON malformation causes silent `dd` fallback** (`pi-image-restore.sh`) — a `"extra_device": ,` field in the manifest (produced by `pi-image-backup.sh` when `BACKUP_EXTRA_DEVICE` is unset) caused `jq` to fail silently, `BACKUP_TYPE` defaulted to `"dd"`, and the partclone backup was streamed raw to the device producing an unbootable NVMe. Fixed: auto-repair with `sed 's/:\s*,/: null,/g'` applied before all parsing; grep regex fallback added to `get_manifest_field()`.
+- **IRQ pinning glob** (`pi-image-restore.sh`) — glob was too broad; narrowed to only CPU-bound IRQs.
+- **Watchdog device held by systemd** (`pi-image-restore.sh`) — Pi OS Trixie's systemd holds `/dev/watchdog` exclusively. Added `exec 3>` probe loop that falls back to `/dev/watchdog0` automatically.
+
+---
+
 ## [1.8.0] — 2026-04-24
 
 ### Added
