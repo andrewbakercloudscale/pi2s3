@@ -454,6 +454,54 @@ for p in /boot/firmware/cmdline.txt /boot/cmdline.txt; do
 done
 
 echo ""
+echo "  PARTUUID cross-check (root= in cmdline.txt vs actual block device):"
+sd_cmdline_file=""
+for p in /boot/firmware/cmdline.txt /boot/cmdline.txt; do
+    [[ -f "${p}" ]] && sd_cmdline_file="${p}" && break
+done
+if [[ -n "${sd_cmdline_file}" ]]; then
+    cmdline_partuuid=$(grep -oP 'root=PARTUUID=\K[a-f0-9-]+' "${sd_cmdline_file}" 2>/dev/null || true)
+    if [[ -z "${cmdline_partuuid}" ]]; then
+        root_val=$(grep -oP 'root=\S+' "${sd_cmdline_file}" | head -1 || echo "")
+        if [[ "${root_val}" == "root=PARTUUID=" ]]; then
+            warn "root=PARTUUID= is EMPTY in ${sd_cmdline_file} — Pi WILL NOT BOOT"
+            warn "post-restore-nvme-boot.sh failed to write the NVMe PARTUUID."
+            NVME_PU=$(blkid -s PARTUUID -o value /dev/nvme0n1p2 2>/dev/null || true)
+            if [[ -n "${NVME_PU}" ]]; then
+                echo "    Fix: sudo sed -i \"s|root=PARTUUID=[^ ]*|root=PARTUUID=${NVME_PU}|\" ${sd_cmdline_file}"
+            fi
+            [[ -f "${sd_cmdline_file}.bak" ]] && \
+                echo "    Or restore backup: sudo cp ${sd_cmdline_file}.bak ${sd_cmdline_file}"
+        else
+            info "root= is not PARTUUID-based: ${root_val}"
+        fi
+    else
+        matched=0
+        for part in /dev/nvme0n1p2 /dev/nvme0n1p1 /dev/mmcblk0p2 /dev/mmcblk0p1; do
+            [[ -b "${part}" ]] || continue
+            actual=$(blkid -s PARTUUID -o value "${part}" 2>/dev/null || true)
+            if [[ "${actual}" == "${cmdline_partuuid}" ]]; then
+                ok "root=PARTUUID=${cmdline_partuuid} → ${part} ✓"
+                matched=1; break
+            fi
+        done
+        if [[ ${matched} -eq 0 ]]; then
+            warn "root=PARTUUID=${cmdline_partuuid} does NOT match any attached partition"
+            warn "Pi will not boot from this cmdline.txt."
+            NVME_PU=$(blkid -s PARTUUID -o value /dev/nvme0n1p2 2>/dev/null || true)
+            if [[ -n "${NVME_PU}" ]]; then
+                echo "    NVMe p2 PARTUUID is: ${NVME_PU}"
+                echo "    Fix: sudo sed -i \"s|root=PARTUUID=[^ ]*|root=PARTUUID=${NVME_PU}|\" ${sd_cmdline_file}"
+            fi
+            [[ -f "${sd_cmdline_file}.bak" ]] && \
+                echo "    Or restore backup to boot from SD: sudo cp ${sd_cmdline_file}.bak ${sd_cmdline_file}"
+        fi
+    fi
+else
+    info "No cmdline.txt found — cannot cross-check PARTUUID"
+fi
+
+echo ""
 echo "  NVMe boot cmdline.txt (if mounted):"
 nvme_boot=""
 for p in /dev/nvme0n1p1 /dev/nvme0n1; do
@@ -482,6 +530,94 @@ done
 section "9. RECENT KERNEL MESSAGES"
 # ══════════════════════════════════════════════════════════════════════════════
 dmesg | tail -40 | sed 's/^/  /'
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "10. BACKUP MANIFEST VALIDATION"
+# ══════════════════════════════════════════════════════════════════════════════
+# Locate config — same search order as pi-image-restore.sh
+cfg=""
+for _c in /tmp/pi2s3-config.env \
+          "$(pwd)/config.env" \
+          "${HOME}/pi2s3/config.env" \
+          /etc/pi2s3/config.env; do
+    [[ -f "${_c}" ]] && cfg="${_c}" && break
+done
+[[ -z "${cfg}" ]] && cfg=$(find /home /root -maxdepth 4 -name 'config.env' 2>/dev/null | head -1 || true)
+
+if [[ -z "${cfg}" ]]; then
+    info "config.env not found — skipping manifest validation"
+    info "Set CONFIG_FILE=/path/to/config.env or re-run from the pi2s3 directory"
+else
+    info "Using config: ${cfg}"
+    # shellcheck disable=SC1090
+    set -a; source "${cfg}"; set +a
+
+    if ! command -v aws &>/dev/null; then
+        warn "aws CLI not installed — cannot fetch manifest from S3"
+    elif [[ -z "${S3_BUCKET:-}" ]]; then
+        warn "S3_BUCKET not set in ${cfg}"
+    else
+        prefix="${S3_PREFIX:-pi-image-backup/andrew-pi-5}"
+        region="${S3_REGION:-af-south-1}"
+        echo "  Checking s3://${S3_BUCKET}/${prefix}/ (region=${region})"
+        echo ""
+
+        # Find latest manifest
+        latest=$(aws s3 ls "s3://${S3_BUCKET}/${prefix}/" --region "${region}" 2>/dev/null | \
+                 grep "manifest.json" | sort | tail -1 | awk '{print $NF}' || true)
+        if [[ -z "${latest}" ]]; then
+            warn "No manifest.json found at s3://${S3_BUCKET}/${prefix}/"
+        else
+            ok "Latest manifest: ${latest}"
+            manifest=$(aws s3 cp "s3://${S3_BUCKET}/${prefix}/${latest}" - \
+                       --region "${region}" 2>/dev/null || true)
+
+            if [[ -z "${manifest}" ]]; then
+                warn "Failed to download manifest (credentials or network?)"
+            elif echo "${manifest}" | jq empty 2>/dev/null; then
+                ok "Manifest JSON is valid"
+                backup_type=$(echo "${manifest}" | jq -r '.backup_type // empty' 2>/dev/null || true)
+                hostname_val=$(echo "${manifest}" | jq -r '.hostname // empty' 2>/dev/null || true)
+                timestamp_val=$(echo "${manifest}" | jq -r '.timestamp // empty' 2>/dev/null || true)
+                echo ""
+                printf "    %-16s %s\n" "backup_type"  "${backup_type:-<missing>}"
+                printf "    %-16s %s\n" "hostname"     "${hostname_val:-<missing>}"
+                printf "    %-16s %s\n" "timestamp"    "${timestamp_val:-<missing>}"
+                echo ""
+                if [[ "${backup_type}" == "partclone" ]]; then
+                    ok "backup_type=partclone — restore will use per-partition images (correct)"
+                elif [[ "${backup_type}" == "dd" ]]; then
+                    warn "backup_type=dd — raw image; restore writes a single stream to the device"
+                    warn "If your backup was made with partclone, this field is wrong — re-run backup"
+                elif [[ -z "${backup_type}" ]]; then
+                    warn "backup_type missing — restore script will default to 'dd' (likely wrong)"
+                    warn "Fix: re-run pi-image-backup.sh to create a fresh backup"
+                fi
+            else
+                warn "Manifest JSON is MALFORMED — jq parse failed"
+                warn "This is the root cause of restore using 'dd' instead of partclone"
+                echo ""
+                echo "  Raw manifest (first 600 chars):"
+                echo "${manifest}" | head -c 600 | sed 's/^/    /'
+                echo ""
+                echo "  Auto-repair attempt (sed 's/: ,/: null,/g'):"
+                fixed=$(echo "${manifest}" | sed 's/:\s*,/: null,/g' || true)
+                if echo "${fixed}" | jq empty 2>/dev/null; then
+                    ok "Auto-repair fixes the JSON — restore script applies this at runtime"
+                    backup_type=$(echo "${fixed}" | jq -r '.backup_type // empty' 2>/dev/null || true)
+                    echo "    After repair, backup_type=${backup_type:-<missing>}"
+                    echo ""
+                    warn "Root fix: re-run pi-image-backup.sh to create a valid manifest"
+                    echo "    aws s3 cp s3://${S3_BUCKET}/${prefix}/${latest} /tmp/manifest.json --region ${region}"
+                    echo "    jq . /tmp/manifest.json   # inspect"
+                else
+                    warn "Auto-repair insufficient — manifest is too corrupted for automatic fix"
+                    warn "Run a fresh backup: sudo bash pi-image-backup.sh"
+                fi
+            fi
+        fi
+    fi
+fi
 
 # ══════════════════════════════════════════════════════════════════════════════
 echo ""
