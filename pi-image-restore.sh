@@ -96,7 +96,9 @@ EXTRACT_PARTITION=""
 HOST_FILTER=""
 POST_RESTORE_SCRIPT=""
 _GPG_PASS_FILE=""
-RATE_LIMIT=""   # e.g. "50m" to cap at 50 MB/s — helps prevent NVMe write storms on Pi 5
+RATE_LIMIT="100m"  # default: cap uncompressed write at 100 MB/s — creates pipe backpressure
+                   # that also throttles aws s3 cp, preventing network saturation and SSH dropout.
+                   # Override: --rate-limit 200m (faster) or --rate-limit 0 (unlimited/dangerous)
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -115,8 +117,8 @@ while [[ $# -gt 0 ]]; do
         --host)           shift; HOST_FILTER="${1:-}" ;;
         --host=*)         HOST_FILTER="${1#--host=}" ;;
         --resize)         RESIZE=true ;;
-        --rate-limit)     shift; RATE_LIMIT="${1:-}" ;;
-        --rate-limit=*)   RATE_LIMIT="${1#--rate-limit=}" ;;
+        --rate-limit)     shift; RATE_LIMIT="${1:-}"; [[ "${RATE_LIMIT}" == "0" ]] && RATE_LIMIT="" ;;
+        --rate-limit=*)   RATE_LIMIT="${1#--rate-limit=}"; [[ "${RATE_LIMIT}" == "0" ]] && RATE_LIMIT="" ;;
         --post-restore)   shift; POST_RESTORE_SCRIPT="${1:-}" ;;
         --post-restore=*) POST_RESTORE_SCRIPT="${1#--post-restore=}" ;;
         --help)
@@ -138,6 +140,9 @@ while [[ $# -gt 0 ]]; do
                                - updates /etc/fstab with this SD card's PARTUUID
                                - updates /boot/firmware/cmdline.txt to root= NVMe
                              Set NEW_HOSTNAME=<name> env var to rename the clone.
+  --rate-limit <rate>        Cap uncompressed write rate (default: 100m). Creates pipe
+                             backpressure that also throttles S3 download, preventing
+                             network saturation and SSH dropout on Pi 5. Use 0 to disable.
   --help                     Show this help
 
 Requires: Linux with partclone, sfdisk, gunzip, AWS CLI v2
@@ -746,6 +751,26 @@ else
     if mount | grep -q "^${TARGET_DEVICE}"; then
         die "${TARGET_DEVICE} is still mounted — cannot write to a mounted device"
     fi
+fi
+
+# ── System monitor (background) ───────────────────────────────────────────────
+# Logs network rx/tx, CPU, and memory every 10s to diagnose SSH dropout under load.
+MONITOR_LOG="/var/log/pi2s3-restore-monitor-$(date +%Y%m%d_%H%M%S).log"
+if [[ -w /var/log ]]; then
+    (
+        echo "timestamp,net_rx_bytes,net_tx_bytes,cpu_idle_pct,mem_free_mb" > "${MONITOR_LOG}"
+        while true; do
+            TS=$(date +%s)
+            NET=$(awk '/eth0|wlan0/{rx+=$2; tx+=$10} END{print rx","tx}' /proc/net/dev 2>/dev/null || echo "0,0")
+            CPU=$(awk '/cpu /{idle=$5; total=$2+$3+$4+$5+$6+$7+$8; printf "%.1f", idle/total*100}' /proc/stat 2>/dev/null || echo "0")
+            MEM=$(awk '/MemFree/{printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo "0")
+            echo "${TS},${NET},${CPU},${MEM}" >> "${MONITOR_LOG}"
+            sleep 10
+        done
+    ) &
+    MONITOR_PID=$!
+    trap 'kill "${MONITOR_PID}" 2>/dev/null || true' EXIT
+    log "System monitor logging to ${MONITOR_LOG}"
 fi
 
 # ── Flash ─────────────────────────────────────────────────────────────────────
