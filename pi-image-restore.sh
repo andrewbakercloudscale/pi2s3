@@ -762,32 +762,32 @@ else
     fi
 fi
 
-# ── CPU affinity — guarantee OS at least 1 CPU, restore gets ≤75% ────────────
-# Algorithm:
-#   OS CPUs  = ceil(NCPUS / 4)        — 25% rounded up, minimum 1
-#   Restore  = NCPUS - OS_CPUS        — remainder (≤75%)
+# ── CPU affinity — restore on 1 CPU, OS keeps the rest ───────────────────────
+# Restore is I/O-bound (S3 download + partclone write), not CPU-bound.
+# Using 1 CPU for restore leaves the OS with all remaining cores for
+# network stack, SSH, and IRQ handling — prevents SSH dropout and
+# reduces peak power draw (important for marginal PSUs).
 #
 #   1 core  → skip (can't split)
-#   2 cores → OS: CPU0        restore: CPU1          (50%)
-#   4 cores → OS: CPU0        restore: CPUs 1-3      (75%)
-#   8 cores → OS: CPUs 0-1    restore: CPUs 2-7      (75%)
+#   2 cores → OS: CPU0        restore: CPU1
+#   4 cores → OS: CPUs 0-2    restore: CPU3
+#   8 cores → OS: CPUs 0-6    restore: CPU7
 #
 # All child processes (aws, gunzip, pv, partclone) inherit affinity.
 # Non-storage IRQs are pinned to OS CPUs so network can't migrate under load.
 _NCPUS=$(nproc 2>/dev/null || echo 1)
-_OS_CPUS=$(( (_NCPUS + 3) / 4 ))          # ceil(NCPUS/4)
-[[ ${_OS_CPUS} -lt 1 ]] && _OS_CPUS=1
-_RESTORE_CPU_COUNT=$(( _NCPUS - _OS_CPUS ))
+_RESTORE_CPU_COUNT=1
+_OS_CPUS=$(( _NCPUS - 1 ))
 
-if [[ ${_RESTORE_CPU_COUNT} -ge 1 ]] && command -v taskset &>/dev/null; then
-    _RESTORE_CPUS="${_OS_CPUS}-$((_NCPUS - 1))"
+if [[ ${_NCPUS} -ge 2 ]] && command -v taskset &>/dev/null; then
+    _RESTORE_CPUS="$((_NCPUS - 1))"
     _OS_CPU_RANGE="0-$((_OS_CPUS - 1))"
     [[ ${_OS_CPUS} -eq 1 ]] && _OS_CPU_RANGE="0"
 
     taskset -cp "${_RESTORE_CPUS}" $$ 2>/dev/null && \
-        log "CPU affinity: restore on CPUs ${_RESTORE_CPUS} (${_RESTORE_CPU_COUNT}/${_NCPUS} = $(( _RESTORE_CPU_COUNT * 100 / _NCPUS ))%), OS on CPUs ${_OS_CPU_RANGE}"
+        log "CPU affinity: restore on CPU ${_RESTORE_CPUS} (1/${_NCPUS}), OS on CPUs ${_OS_CPU_RANGE}"
 
-    # Build smp_affinity bitmask for OS CPUs (e.g. 2 OS CPUs → 0x3)
+    # Build smp_affinity bitmask for OS CPUs (e.g. 3 OS CPUs on 4-core → 0x7)
     _OS_SMP_MASK=0
     for (( _i=0; _i<_OS_CPUS; _i++ )); do
         _OS_SMP_MASK=$(( _OS_SMP_MASK | (1 << _i) ))
@@ -806,7 +806,7 @@ if [[ ${_RESTORE_CPU_COUNT} -ge 1 ]] && command -v taskset &>/dev/null; then
     done < <(find /proc/irq -name actions -print0 2>/dev/null)
     [[ ${_irq_pinned} -gt 0 ]] && log "IRQ affinity: ${_irq_pinned} non-storage IRQs pinned to OS CPUs"
 else
-    [[ ${_NCPUS} -eq 1 ]] && log "Single-core CPU — no affinity split applied"
+    log "Single-core CPU — no affinity split applied"
 fi
 
 # ── Hardware watchdog ─────────────────────────────────────────────────────────
