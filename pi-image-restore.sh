@@ -178,7 +178,11 @@ confirm() {
 
 get_manifest_field() {
     local manifest="$1" field="$2"
-    echo "${manifest}" | jq -r ".${field} // empty" 2>/dev/null || true
+    # Try jq first; fall back to grep for simple string fields if JSON is malformed.
+    local val
+    val=$(echo "${manifest}" | jq -r ".${field} // empty" 2>/dev/null) && echo "${val}" && return
+    # grep fallback: handles "field": "value" — tolerates trailing-comma malformed JSON
+    echo "${manifest}" | grep -oP "\"${field}\"\\s*:\\s*\"\\K[^\"]+" 2>/dev/null | head -1 || true
 }
 
 # ── List backups ──────────────────────────────────────────────────────────────
@@ -649,10 +653,18 @@ MANIFEST_FILE=$(aws_cmd s3 ls "${S3_DATE_PATH}/" 2>/dev/null \
 
 MANIFEST=""
 BACKUP_TYPE="dd"   # default for old backups without a manifest
+MANIFEST_VALID_JSON=false
 
 if [[ -n "${MANIFEST_FILE}" ]]; then
     MANIFEST=$(aws_cmd s3 cp "${S3_DATE_PATH}/${MANIFEST_FILE}" - 2>/dev/null || true)
     if [[ -n "${MANIFEST}" ]]; then
+        if echo "${MANIFEST}" | jq empty 2>/dev/null; then
+            MANIFEST_VALID_JSON=true
+        else
+            log "WARNING: Manifest JSON is malformed — using grep fallback for field extraction."
+            log "         This can happen with backups from older script versions."
+            log "         Update pi-image-backup.sh on the source Pi to fix future backups."
+        fi
         BACKUP_TYPE=$(get_manifest_field "${MANIFEST}" "backup_type")
         [[ -z "${BACKUP_TYPE}" ]] && BACKUP_TYPE="dd"
     fi
