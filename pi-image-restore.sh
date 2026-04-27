@@ -786,26 +786,35 @@ if [[ ${_RESTORE_CPU_COUNT} -ge 1 ]] && command -v taskset &>/dev/null; then
     printf -v _OS_SMP_HEX '%x' "${_OS_SMP_MASK}"
 
     # Pin all non-storage IRQs to OS CPUs — works across all Pi models
-    for _irq_action in /proc/irq/*/actions; do
+    _irq_pinned=0
+    while IFS= read -r -d '' _irq_action; do
         _irq=$(basename "$(dirname "${_irq_action}")")
         _action=$(cat "${_irq_action}" 2>/dev/null || true)
         [[ "${_action}" == *"nvme"* || "${_action}" == *"mmc"* || \
            "${_action}" == *"sata"* || "${_action}" == *"ahci"* ]] && continue
-        echo "${_OS_SMP_HEX}" > "/proc/irq/${_irq}/smp_affinity" 2>/dev/null || true
-    done
+        echo "${_OS_SMP_HEX}" > "/proc/irq/${_irq}/smp_affinity" 2>/dev/null && \
+            (( _irq_pinned++ )) || true
+    done < <(find /proc/irq -name actions -print0 2>/dev/null)
+    [[ ${_irq_pinned} -gt 0 ]] && log "IRQ affinity: ${_irq_pinned} non-storage IRQs pinned to OS CPUs"
 else
     [[ ${_NCPUS} -eq 1 ]] && log "Single-core CPU — no affinity split applied"
 fi
 
 # ── Hardware watchdog ─────────────────────────────────────────────────────────
 # Feed /dev/watchdog so the Pi auto-reboots if the restore hangs or crashes.
-# Without feeding it, the watchdog fires after ~15s and resets the board.
+# Try /dev/watchdog first, fall back to /dev/watchdog0 (used when systemd holds the primary).
 WATCHDOG_PID=""
-if [[ -w /dev/watchdog ]]; then
-    log "Hardware watchdog enabled — Pi will auto-reboot if restore hangs"
+_WDOG=""
+for _wdog_dev in /dev/watchdog /dev/watchdog0; do
+    if ( exec 3>/dev/null && exec 3>"${_wdog_dev}" ) 2>/dev/null; then
+        _WDOG="${_wdog_dev}"; break
+    fi
+done
+if [[ -n "${_WDOG}" ]]; then
+    log "Hardware watchdog enabled (${_WDOG}) — Pi will auto-reboot if restore hangs"
     (
         while true; do
-            printf 'V' > /dev/watchdog 2>/dev/null || true
+            printf 'V' > "${_WDOG}" 2>/dev/null || true
             sleep 10
         done
     ) &
