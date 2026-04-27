@@ -1000,6 +1000,18 @@ Both are complementary. pi2s3 for disaster recovery; app-layer for day-to-day da
 
 ## Troubleshooting
 
+### Diagnostic script
+
+If a restore fails or produces unexpected results, run the built-in diagnostic. It covers power/voltage, hardware health, restore log completeness, WiFi config, corporate proxy detection, AWS reachability, and packet loss:
+
+```bash
+sudo bash ~/pi2s3/extras/diagnose-restore.sh
+```
+
+Saves a full report to `/var/log/pi2s3-diagnose-TIMESTAMP.log`. Attach that file when opening a GitHub issue.
+
+---
+
 **`Cannot detect boot device`**
 The script couldn't identify which device the Pi boots from. Check:
 ```bash

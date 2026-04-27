@@ -855,7 +855,7 @@ _throttled_now=$(( _throttle_current & 0x4 )) # bit 2: CPU throttled right now
 if [[ ${_uv_now} -ne 0 ]] || [[ ${_throttled_now} -ne 0 ]]; then
     echo ""
     echo "╔══════════════════════════════════════════════════════════════════╗"
-    echo "║  ⚡ WARNING: UNDERVOLTAGE DETECTED — RESTORE WILL LIKELY FAIL   ║"
+    echo "║  ⚡ WARNING: UNDERVOLTAGE DETECTED                               ║"
     echo "║                                                                  ║"
     echo "║  get_throttled = ${_throttle_raw} (current bits: ${_throttle_current})"
     echo "║  Pi 5 requires a 27W (5.1V / 5A) USB-C power supply.           ║"
@@ -867,9 +867,20 @@ if [[ ${_uv_now} -ne 0 ]] || [[ ${_throttled_now} -ne 0 ]]; then
     echo "║  cables cause voltage drop even with a good PSU).               ║"
     echo "╚══════════════════════════════════════════════════════════════════╝"
     echo ""
-    log "ABORT: Undervoltage active right now — aborting to prevent partial restore."
-    log "Run: vcgencmd get_throttled  (want 0x0 or 0x5xxxx historical-only)"
-    exit 1
+    # Re-check after 10 s — transient boot spikes usually clear by then.
+    log "Re-checking voltage in 10 s..."
+    sleep 10
+    _throttle_raw=$(vcgencmd get_throttled 2>/dev/null | cut -d= -f2 || echo "0x0")
+    _throttle_current=$(( _throttle_raw & 0xf ))
+    _uv_now=$(( _throttle_current & 0x1 ))
+    _throttled_now=$(( _throttle_current & 0x4 ))
+    if [[ ${_uv_now} -ne 0 ]] || [[ ${_throttled_now} -ne 0 ]]; then
+        log "ABORT: Undervoltage still active after 10 s (get_throttled=${_throttle_raw})."
+        log "       Fix the PSU before running the restore."
+        exit 1
+    else
+        log "NOTE: Undervoltage cleared after 10 s (was boot-time transient) — proceeding."
+    fi
 elif [[ ${_throttle_history} -ne 0 ]]; then
     log "NOTE: Undervoltage occurred during boot (historical only, current=0x0) — proceeding."
     log "      Monitor log will capture any undervoltage during restore."
