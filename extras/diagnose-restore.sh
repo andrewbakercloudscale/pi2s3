@@ -338,18 +338,29 @@ check_host() {
     fi
 }
 
-echo "  Basic connectivity:"
-if ping -c 2 -W 3 8.8.8.8 &>/dev/null 2>&1; then
-    ok "Internet ping (8.8.8.8)"
-else
-    warn "Internet ping (8.8.8.8) — FAILED"
-fi
-
-if ping -c 2 -W 3 1.1.1.1 &>/dev/null 2>&1; then
-    ok "Cloudflare ping (1.1.1.1)"
-else
-    warn "Cloudflare ping (1.1.1.1) — FAILED"
-fi
+echo "  Basic connectivity & packet loss:"
+ping_check() {
+    local label="$1" host="$2"
+    [[ -z "${host}" ]] && { warn "${label} — no host to ping"; return; }
+    local result
+    result=$(ping -c 10 -W 2 -q "${host}" 2>/dev/null | grep -E "packets|rtt" || echo "failed")
+    local loss
+    loss=$(echo "${result}" | grep -oP '\d+(?=% packet loss)' || echo "100")
+    if [[ "${loss}" -eq 0 ]]; then
+        ok "${label} (${host}) — 0% loss"
+    elif [[ "${loss}" -lt 10 ]]; then
+        warn "${label} (${host}) — ${loss}% packet loss (marginal — may cause S3 stalls)"
+    elif [[ "${loss}" -lt 100 ]]; then
+        warn "${label} (${host}) — ${loss}% PACKET LOSS (HIGH — will cause restore failures)"
+    else
+        warn "${label} (${host}) — UNREACHABLE"
+    fi
+    echo "${result}" | grep -E "rtt|round-trip" | sed 's/^/    /' || true
+}
+gateway=$(ip route show default 2>/dev/null | awk '/default/{print $3; exit}')
+ping_check "Gateway"    "${gateway}"
+ping_check "Internet"   "8.8.8.8"
+ping_check "Cloudflare" "1.1.1.1"
 
 echo ""
 echo "  DNS resolution:"
