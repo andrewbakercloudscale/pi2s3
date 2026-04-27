@@ -753,6 +753,21 @@ else
     fi
 fi
 
+# ── Hardware watchdog ─────────────────────────────────────────────────────────
+# Feed /dev/watchdog so the Pi auto-reboots if the restore hangs or crashes.
+# Without feeding it, the watchdog fires after ~15s and resets the board.
+WATCHDOG_PID=""
+if [[ -w /dev/watchdog ]]; then
+    log "Hardware watchdog enabled — Pi will auto-reboot if restore hangs"
+    (
+        while true; do
+            printf 'V' > /dev/watchdog 2>/dev/null || true
+            sleep 10
+        done
+    ) &
+    WATCHDOG_PID=$!
+fi
+
 # ── System monitor (background) ───────────────────────────────────────────────
 # Logs network rx/tx, CPU, and memory every 10s to diagnose SSH dropout under load.
 MONITOR_LOG="/var/log/pi2s3-restore-monitor-$(date +%Y%m%d_%H%M%S).log"
@@ -769,8 +784,10 @@ if [[ -w /var/log ]]; then
         done
     ) &
     MONITOR_PID=$!
-    trap 'kill "${MONITOR_PID}" 2>/dev/null || true' EXIT
+    trap 'kill "${MONITOR_PID}" 2>/dev/null; kill "${WATCHDOG_PID:-}" 2>/dev/null || true' EXIT
     log "System monitor logging to ${MONITOR_LOG}"
+else
+    trap 'kill "${WATCHDOG_PID:-}" 2>/dev/null || true' EXIT
 fi
 
 # ── Flash ─────────────────────────────────────────────────────────────────────
