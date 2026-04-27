@@ -832,10 +832,35 @@ fi
 
 # ── Undervoltage check ────────────────────────────────────────────────────────
 # Pi 5 requires 27W (5.1V / 5A) USB-C. Undervoltage causes mid-restore crashes.
-_throttle=$(vcgencmd get_throttled 2>/dev/null | cut -d= -f2 || echo "0x0")
-if [[ "${_throttle}" != "0x0" ]]; then
-    log "WARNING: Undervoltage or throttling detected (get_throttled=${_throttle})."
-    log "WARNING: Pi 5 requires a 27W (5.1V/5A) USB-C PSU. Restore may crash mid-run."
+# Check current state (lower nibble) separately from historical (upper nibble).
+# Historical flags persist across reboots and are expected; current flags are not.
+_throttle_raw=$(vcgencmd get_throttled 2>/dev/null | cut -d= -f2 || echo "0x0")
+_throttle_current=$(( _throttle_raw & 0xf ))
+_throttle_history=$(( (_throttle_raw >> 16) & 0xf ))
+_uv_now=$(( _throttle_current & 0x1 ))      # bit 0: under-voltage right now
+_throttled_now=$(( _throttle_current & 0x4 )) # bit 2: CPU throttled right now
+
+if [[ ${_uv_now} -ne 0 ]] || [[ ${_throttled_now} -ne 0 ]]; then
+    echo ""
+    echo "╔══════════════════════════════════════════════════════════════════╗"
+    echo "║  ⚡ WARNING: UNDERVOLTAGE DETECTED — RESTORE WILL LIKELY FAIL   ║"
+    echo "║                                                                  ║"
+    echo "║  get_throttled = ${_throttle_raw} (current bits: ${_throttle_current})"
+    echo "║  Pi 5 requires a 27W (5.1V / 5A) USB-C power supply.           ║"
+    echo "║  A marginal PSU or cable causes crashes 30-90s into restore.    ║"
+    echo "║                                                                  ║"
+    echo "║  FIX: Use the official Raspberry Pi 5 PSU (SC1159) or any      ║"
+    echo "║  USB-C PD charger that negotiates 5V / 5A (25W).               ║"
+    echo "║  Also try a shorter, thicker USB-C cable (high-resistance       ║"
+    echo "║  cables cause voltage drop even with a good PSU).               ║"
+    echo "╚══════════════════════════════════════════════════════════════════╝"
+    echo ""
+    log "ABORT: Undervoltage active right now — aborting to prevent partial restore."
+    log "Run: vcgencmd get_throttled  (want 0x0 or 0x5xxxx historical-only)"
+    exit 1
+elif [[ ${_throttle_history} -ne 0 ]]; then
+    log "NOTE: Undervoltage occurred during boot (historical only, current=0x0) — proceeding."
+    log "      Monitor log will capture any undervoltage during restore."
 fi
 
 # ── System monitor (background) ───────────────────────────────────────────────
