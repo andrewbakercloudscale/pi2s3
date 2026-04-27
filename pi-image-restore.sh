@@ -753,6 +753,28 @@ else
     fi
 fi
 
+# ── CPU affinity — pin restore to CPUs 1-N, reserve CPU0 for OS/network ──────
+# On Pi 5 (4 cores): restore runs on CPUs 1-3, CPU0 handles IRQs and SSH.
+# All child processes (aws, gunzip, pv, partclone) inherit this affinity.
+# Also pins network IRQs explicitly to CPU0 so they can't migrate under load.
+_NCPUS=$(nproc 2>/dev/null || echo 1)
+if [[ ${_NCPUS} -ge 2 ]] && command -v taskset &>/dev/null; then
+    _RESTORE_CPUS="1-$((_NCPUS - 1))"
+    taskset -cp "${_RESTORE_CPUS}" $$ 2>/dev/null && \
+        log "CPU affinity: restore on CPUs ${_RESTORE_CPUS}, CPU0 reserved for OS/network"
+    # Pin all non-storage IRQs to CPU0 (smp_affinity bitmask 0x1 = CPU0 only).
+    # Approach: pin everything except nvme/mmc/sata/usb-storage to CPU0.
+    # Works across all Pi models and kernel interface naming schemes.
+    for _irq_action in /proc/irq/*/actions; do
+        _irq=$(basename "$(dirname "${_irq_action}")")
+        _action=$(cat "${_irq_action}" 2>/dev/null || true)
+        # Skip storage IRQs — they belong to the restore CPUs
+        [[ "${_action}" == *"nvme"* || "${_action}" == *"mmc"* || \
+           "${_action}" == *"sata"* || "${_action}" == *"ahci"* ]] && continue
+        echo "1" > "/proc/irq/${_irq}/smp_affinity" 2>/dev/null || true
+    done
+fi
+
 # ── Hardware watchdog ─────────────────────────────────────────────────────────
 # Feed /dev/watchdog so the Pi auto-reboots if the restore hangs or crashes.
 # Without feeding it, the watchdog fires after ~15s and resets the board.
