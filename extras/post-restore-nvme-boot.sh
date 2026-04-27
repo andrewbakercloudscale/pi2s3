@@ -99,6 +99,11 @@ else
                 CMDLINE="/boot/firmware/cmdline.txt"
                 if [[ -f "${CMDLINE}" ]]; then
                     OLD_ROOT=$(grep -oP 'root=\S+' "${CMDLINE}" | head -1 || echo "root=<none>")
+                    # Backup before modifying — recover-sd-boot.sh can restore this if boot fails
+                    if [[ ! -f "${CMDLINE}.bak" ]]; then
+                        sudo cp "${CMDLINE}" "${CMDLINE}.bak"
+                        log "cmdline.txt: original backed up to ${CMDLINE}.bak"
+                    fi
                     # Update root= to NVMe partition
                     sudo sed -i "s|root=[^ ]*|root=PARTUUID=${ROOT_PARTUUID}|" "${CMDLINE}"
                     # Add rootdelay if not already present — gives the NVMe PCIe link
