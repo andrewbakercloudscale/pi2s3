@@ -103,10 +103,47 @@ echo ""
 echo "Current frequency:"
 vcgencmd measure_clock arm 2>/dev/null || cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq 2>/dev/null || echo "  unavailable"
 
-# ── Network ───────────────────────────────────────────────────────────────────
-section "NETWORK"
-ip -brief addr show 2>/dev/null || ifconfig 2>/dev/null | head -30
+# ── WiFi ─────────────────────────────────────────────────────────────────────
+section "WIFI"
+echo "Interfaces:"
+ip -brief addr show 2>/dev/null || ifconfig 2>/dev/null | head -20
 echo ""
+
+echo "Saved WiFi connections (nmcli):"
+if command -v nmcli &>/dev/null; then
+    nmcli -t -f NAME,TYPE,DEVICE connection show 2>/dev/null | grep -i wifi || echo "  (no saved WiFi connections)"
+    echo ""
+    echo "WiFi SSIDs and connection status:"
+    nmcli -t -f NAME,TYPE,DEVICE,STATE connection show 2>/dev/null | grep -i wifi || echo "  none"
+    echo ""
+    echo "Active WiFi device:"
+    nmcli device status 2>/dev/null | grep -i wifi || echo "  none"
+    echo ""
+    echo "Connected SSID:"
+    nmcli -t -f active,ssid dev wifi 2>/dev/null | grep "^yes" || echo "  not connected to WiFi"
+    echo ""
+    # Check for common password encoding issues (special chars in SSID or PSK)
+    echo "WiFi config details (passwords masked):"
+    while IFS= read -r conn_name; do
+        [[ -z "${conn_name}" ]] && continue
+        ssid=$(nmcli -s -g 802-11-wireless.ssid connection show "${conn_name}" 2>/dev/null || echo "unknown")
+        psk=$(nmcli -s -g 802-11-wireless-security.psk connection show "${conn_name}" 2>/dev/null || echo "")
+        # Detect special characters that cause sshpass/shell encoding issues
+        if [[ "${psk}" =~ [\'\"\\@\&\!\$\#\%\^\*\(\)\+] ]]; then
+            special_chars=$(echo "${psk}" | grep -oP '['"'"'"\\@&!$#%^*()+=]' | sort -u | tr -d '\n' || echo "?")
+            echo "  [!] '${conn_name}' SSID='${ssid}' — password contains special chars: ${special_chars}"
+            echo "      Use paramiko/expect for SSH automation; sshpass will fail with these chars."
+        else
+            echo "  [ok] '${conn_name}' SSID='${ssid}' — password has no special chars"
+        fi
+    done < <(nmcli -t -f NAME,TYPE connection show 2>/dev/null | grep -i wifi | cut -d: -f1)
+else
+    echo "nmcli not available."
+    ip link show 2>/dev/null | grep -i wlan || echo "  No wlan interfaces found."
+fi
+
+# ── Network ───────────────────────────────────────────────────────────────────
+section "NETWORK / S3"
 echo "S3 reachability (af-south-1):"
 if command -v aws &>/dev/null; then
     aws s3 ls s3:// --region af-south-1 --profile personal 2>/dev/null | head -3 || \
