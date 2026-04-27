@@ -1572,6 +1572,43 @@
       <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="kw">lsblk</span>   <span class="cmt"># confirm nvme0n1 or mmcblk0</span></pre>
       <p style="margin-top:0.5rem;">Set <code>BOOT_DEV=/dev/mmcblk0</code> explicitly in <code>config.env</code> if auto detection picks the wrong device.</p>
     </div>
+    <div class="card">
+      <h3>Undervoltage / restore crash</h3>
+      <p>Pi 5 requires a <strong>27W (5.1V / 5A) USB-C</strong> power supply. A marginal PSU or long USB-C cable causes the restore to crash 30–90 seconds in. The restore script warns at startup if voltage is low:</p>
+      <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="kw">vcgencmd get_throttled</span>   <span class="cmt"># 0x0 = clean</span></pre>
+      <p style="margin-top:0.5rem;">Use the official Pi 5 PSU (SC1159) or any USB-C PD charger that negotiates 5V/5A. A shorter, thicker USB-C cable helps if the PSU is marginal.</p>
+    </div>
+  </div>
+
+  <div style="margin-top:2.5rem; padding:1.5rem; background:var(--surface2); border:1px solid var(--border); border-radius:8px;">
+    <h3 style="margin-top:0;">Restore diagnostic script</h3>
+    <p>If a restore fails or produces unexpected results, run the built-in diagnostic. It checks everything: power/voltage, hardware, restore log completeness, WiFi config, corporate proxy/firewall, AWS reachability, and packet loss.</p>
+    <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="kw">sudo bash</span> extras/diagnose-restore.sh</pre>
+    <p style="margin-top:0.75rem; font-size:0.85rem; color:var(--muted);">Saves a full report to <code>/var/log/pi2s3-diagnose-TIMESTAMP.log</code>. Share that file when reporting an issue on GitHub.</p>
+    <div style="margin-top:1rem; display:flex; gap:1rem; flex-wrap:wrap;">
+      <div style="flex:1; min-width:180px;">
+        <div style="font-size:0.78rem; font-weight:600; color:var(--accent); margin-bottom:0.4rem;">What it checks</div>
+        <ul style="font-size:0.82rem; color:var(--muted); margin:0; padding-left:1.2rem; line-height:1.8;">
+          <li>Voltage &amp; CPU throttle state</li>
+          <li>CPU temperature &amp; rail voltages</li>
+          <li>NVMe SMART health</li>
+          <li>EEPROM boot order</li>
+          <li>Restore log completeness</li>
+          <li>Under-voltage events per restore interval</li>
+        </ul>
+      </div>
+      <div style="flex:1; min-width:180px;">
+        <div style="font-size:0.78rem; font-weight:600; color:var(--accent); margin-bottom:0.4rem;">&nbsp;</div>
+        <ul style="font-size:0.82rem; color:var(--muted); margin:0; padding-left:1.2rem; line-height:1.8;">
+          <li>WiFi SSID &amp; signal strength</li>
+          <li>Password special-char encoding</li>
+          <li>Corporate proxy &amp; firewall rules</li>
+          <li>Packet loss to gateway, 8.8.8.8, 1.1.1.1</li>
+          <li>AWS S3 + STS reachability</li>
+          <li>NVMe boot cmdline.txt (rootdelay check)</li>
+        </ul>
+      </div>
+    </div>
   </div>
 </section>
 
