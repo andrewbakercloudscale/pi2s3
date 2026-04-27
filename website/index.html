@@ -1609,6 +1609,96 @@
         </ul>
       </div>
     </div>
+
+    <details style="margin-top:1.5rem;">
+      <summary style="cursor:pointer; font-size:0.85rem; font-weight:600; color:var(--accent); user-select:none;">Example output (healthy Pi)</summary>
+      <pre style="margin-top:0.75rem; font-size:0.75rem; line-height:1.6; overflow-x:auto; max-height:420px; overflow-y:auto;">pi2s3 restore diagnostic — Mon Apr 27 19:45:00 UTC 2026
+Host: andrewninja-pi-5  |  Uptime: up 2 hours, 14 minutes
+
+────────────────────────────────────────────────────────────────
+  1. POWER &amp; VOLTAGE
+────────────────────────────────────────────────────────────────
+  get_throttled = 0x0
+
+  Current state:
+  [OK]  No current under-voltage
+  [OK]  ARM not capped
+  [OK]  CPU not throttled
+  [OK]  Temperature OK
+
+  Measured voltages:
+    core         volt=0.8688V
+    sdram_c      volt=1.1000V
+    sdram_i      volt=1.1000V
+    sdram_p      volt=1.1000V
+
+  CPU temperature:
+    temp=48.3'C
+
+  [OK]  No undervoltage events in dmesg
+  [OK]  Power looks healthy
+
+────────────────────────────────────────────────────────────────
+  3. RESTORE SIZE &amp; COMPLETENESS
+────────────────────────────────────────────────────────────────
+  [OK]  Contains 'Restore complete'
+  Download: 17312 MB in 687s = 25.2 MB/s avg
+  [OK]  No active under-voltage during monitored restore intervals
+
+────────────────────────────────────────────────────────────────
+  6. INTERNET &amp; AWS REACHABILITY
+────────────────────────────────────────────────────────────────
+  [OK]  Gateway (192.168.0.1) — 0% loss
+  [OK]  Internet (8.8.8.8) — 0% loss
+  [OK]  Cloudflare (1.1.1.1) — 0% loss
+  [OK]  AWS S3 af-south-1 (s3.af-south-1.amazonaws.com:443) — reachable
+  [OK]  s3://your-s3-bucket-name/ accessible with profile=personal
+
+────────────────────────────────────────────────────────────────
+  8. BOOT CONFIG
+────────────────────────────────────────────────────────────────
+  /dev/nvme0n1p1 → /boot/firmware/cmdline.txt:
+    rootdelay=5 ← present
+  [OK]  rootdelay present in NVMe cmdline.txt — NVMe boot should work
+
+  Diagnostic saved to: /var/log/pi2s3-diagnose-20260427_194500.log</pre>
+    </details>
+
+    <details style="margin-top:0.75rem;">
+      <summary style="cursor:pointer; font-size:0.85rem; font-weight:600; color:#f87171; user-select:none;">Example output (undervoltage problem)</summary>
+      <pre style="margin-top:0.75rem; font-size:0.75rem; line-height:1.6; overflow-x:auto; max-height:320px; overflow-y:auto;">────────────────────────────────────────────────────────────────
+  1. POWER &amp; VOLTAGE
+────────────────────────────────────────────────────────────────
+  get_throttled = 0x50005
+
+  Current state:
+  [!!!] Under-voltage RIGHT NOW — restore will crash. Use 27W (5.1V/5A) USB-C PSU.
+  [OK]  ARM not capped
+  [!!!] CPU throttled RIGHT NOW
+
+  History since boot:
+  [!!!] Under-voltage occurred since boot
+  [!!!] Throttling occurred since boot
+
+  Undervoltage kernel events (dmesg):
+  [!!!] 14 undervoltage events in dmesg:
+    [    5.43] hwmon hwmon3: Undervoltage detected!
+    [   29.62] hwmon hwmon3: Undervoltage detected!
+    [   41.72] hwmon hwmon3: Voltage normalised
+    [   43.93] hwmon hwmon3: Undervoltage detected!
+    ...
+
+  >>> DIAGNOSIS: INTERMITTENT UNDER-VOLTAGE (14 events).
+      PSU is marginal. May crash under sustained NVMe + network load.
+      Upgrade to official Pi 5 PSU or higher-rated USB-C PD charger.
+
+────────────────────────────────────────────────────────────────
+  3. RESTORE SIZE &amp; COMPLETENESS
+────────────────────────────────────────────────────────────────
+  [!!!] No 'Restore complete' — restore may be in progress or crashed
+  [!!!] 8/12 monitor samples had active under-voltage during restore
+  Download: 2401 MB in 30s = 80.0 MB/s avg  ← crashed at 30s</pre>
+    </details>
   </div>
 </section>
 
