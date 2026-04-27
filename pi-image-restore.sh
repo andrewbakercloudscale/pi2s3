@@ -71,7 +71,9 @@ if [[ ! -f "${CONFIG_FILE}" ]]; then
 fi
 
 # shellcheck disable=SC1090
+set -a   # export all variables from config.env so --post-restore scripts see them
 source "${CONFIG_FILE}"
+set +a
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/lib/log.sh"
 # shellcheck disable=SC1091
