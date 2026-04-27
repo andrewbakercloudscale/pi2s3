@@ -117,15 +117,22 @@ else
     fi
 fi
 
-# ── 4. Rename hostname (optional) ────────────────────────────────────────────
-if [[ -n "${NEW_HOSTNAME:-}" ]]; then
-    HOSTNAME_FILE="${RESTORE_ROOT}/etc/hostname"
-    HOSTS_FILE="${RESTORE_ROOT}/etc/hosts"
-    OLD_HOSTNAME=$(cat "${HOSTNAME_FILE}" 2>/dev/null | tr -d '[:space:]' || true)
-    if [[ -z "${OLD_HOSTNAME}" ]]; then
-        warn "Could not read hostname from ${HOSTNAME_FILE}"
-        ERRORS=$(( ERRORS + 1 ))
-    elif [[ "${OLD_HOSTNAME}" == "${NEW_HOSTNAME}" ]]; then
+# ── 4. Rename hostname ───────────────────────────────────────────────────────
+# Always renames to avoid hostname conflicts when cloning to a second Pi.
+# Priority: NEW_HOSTNAME > original + CLONE_SUFFIX (default: "-2")
+#   NEW_HOSTNAME=my-pi-qa  → exact name
+#   CLONE_SUFFIX=-qa        → andrewninja-pi-5-qa
+#   (default)              → andrewninja-pi-5-2
+HOSTNAME_FILE="${RESTORE_ROOT}/etc/hostname"
+HOSTS_FILE="${RESTORE_ROOT}/etc/hosts"
+CLONE_SUFFIX="${CLONE_SUFFIX:--2}"
+OLD_HOSTNAME=$(cat "${HOSTNAME_FILE}" 2>/dev/null | tr -d '[:space:]' || true)
+if [[ -z "${OLD_HOSTNAME}" ]]; then
+    warn "Could not read hostname from ${HOSTNAME_FILE}"
+    ERRORS=$(( ERRORS + 1 ))
+else
+    NEW_HOSTNAME="${NEW_HOSTNAME:-${OLD_HOSTNAME}${CLONE_SUFFIX}}"
+    if [[ "${OLD_HOSTNAME}" == "${NEW_HOSTNAME}" ]]; then
         log "hostname: already '${NEW_HOSTNAME}' — no change."
     else
         echo "${NEW_HOSTNAME}" | sudo tee "${HOSTNAME_FILE}" > /dev/null
