@@ -25,4 +25,4 @@ network:
       access-points:
         "YOUR_WIFI_SSID":
           password: "YOUR_WIFI_PASSWORD"
-        "WorkBetters": {}
+        # "YOUR_SECOND_SSID": {}   # open network — no password needed
