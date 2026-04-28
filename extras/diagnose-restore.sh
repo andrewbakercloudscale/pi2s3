@@ -185,8 +185,23 @@ else
 fi
 
 echo ""
-echo "  DNS:"
-grep "^nameserver" /etc/resolv.conf 2>/dev/null | sed 's/^/    /' || echo "    (none)"
+echo "  DNS (resolv.conf):"
+mapfile -t _ns < <(grep "^nameserver" /etc/resolv.conf 2>/dev/null | awk '{print $2}')
+if [[ ${#_ns[@]} -eq 0 ]]; then
+    fail "No nameservers in /etc/resolv.conf"
+    fix "echo 'nameserver 1.1.1.1' > /etc/resolv.conf  # temporary — NM should set this on connect"
+else
+    for _n in "${_ns[@]}"; do
+        if timeout 3 bash -c "echo >/dev/tcp/${_n}/53" 2>/dev/null; then
+            ok "nameserver ${_n} — reachable (TCP/53)"
+        else
+            fail "nameserver ${_n} — UNREACHABLE — resolv.conf is stale from backup"
+            fix "This IP is from a different network (e.g. home router). NM should overwrite it on connect."
+            fix "Temporary fix: echo 'nameserver 1.1.1.1' > /etc/resolv.conf"
+            fix "Permanent fix: ensure NM manages DNS (dns=default in /etc/NetworkManager/NetworkManager.conf)"
+        fi
+    done
+fi
 
 if command -v nmcli &>/dev/null; then
     echo ""
@@ -545,6 +560,28 @@ else
 fi
 
 echo ""
+echo "  cloud-init instance-id cross-check (meta-data vs NVMe cache):"
+meta_data_id=""
+for p in /boot/firmware/meta-data /boot/meta-data; do
+    [[ -f "${p}" ]] && meta_data_id=$(grep -oP 'instance-id:\s*\K\S+' "${p}" 2>/dev/null || true) && break
+done
+cached_id=$(cat /var/lib/cloud/data/instance-id 2>/dev/null || true)
+if [[ -z "${meta_data_id}" ]]; then
+    warn "No meta-data file found — cloud-init may not run on next boot"
+    fix "Create /boot/firmware/meta-data with: instance-id: $(date +%s)"
+else
+    printf "    %-30s %s\n" "meta-data instance-id:" "${meta_data_id}"
+    printf "    %-30s %s\n" "NVMe cached instance-id:" "${cached_id:-<none>}"
+    if [[ -n "${cached_id}" ]] && [[ "${meta_data_id}" == "${cached_id}" ]]; then
+        fail "meta-data instance-id '${meta_data_id}' matches NVMe cache — cloud-init will SKIP all runcmd on next boot"
+        fix "Update instance-id in /boot/firmware/meta-data to a new value, e.g.:"
+        fix "echo 'instance-id: pi2s3-$(date +%s)' > /boot/firmware/meta-data"
+    else
+        ok "meta-data instance-id '${meta_data_id}' is new — cloud-init will run on next boot"
+    fi
+fi
+
+echo ""
 echo "  NVMe boot cmdline.txt:"
 for p in /dev/nvme0n1p1 /dev/nvme0n1; do
     [[ -b "${p}" ]] || continue
@@ -683,6 +720,22 @@ else
     else
         warn "/run/cloud-init/result.json missing — cloud-init may not have run"
         fix "To force re-run: update ds=nocloud;i=<new-id> in cmdline.txt on the SD card and reboot"
+    fi
+
+    echo ""
+    echo "  meta-data instance-id:"
+    _md_id=""
+    for p in /boot/firmware/meta-data /boot/meta-data; do
+        [[ -f "${p}" ]] && _md_id=$(grep -oP 'instance-id:\s*\K\S+' "${p}" 2>/dev/null || true) && break
+    done
+    _cached_id=$(cat /var/lib/cloud/data/instance-id 2>/dev/null || true)
+    if [[ -z "${_md_id}" ]]; then
+        warn "No meta-data file — cloud-init datasource may not detect new instance"
+    elif [[ "${_md_id}" == "${_cached_id}" ]]; then
+        fail "meta-data instance-id '${_md_id}' == cached '${_cached_id}' — cloud-init WILL SKIP runcmd on next boot"
+        fix "echo 'instance-id: pi2s3-\$(date +%s)' > /boot/firmware/meta-data"
+    else
+        ok "meta-data instance-id '${_md_id}' is new (cached='${_cached_id:-none}')"
     fi
 
     echo ""
