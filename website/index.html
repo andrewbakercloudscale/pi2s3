@@ -1582,34 +1582,42 @@
 
   <div style="margin-top:2.5rem; padding:1.5rem; background:var(--surface2); border:1px solid var(--border); border-radius:8px;">
     <h3 style="margin-top:0;">Restore diagnostic script</h3>
-    <p>If a restore fails or produces unexpected results, run the built-in diagnostic. It checks everything: power/voltage, hardware, restore log completeness, WiFi config, corporate proxy/firewall, AWS reachability, and packet loss.</p>
+    <p>Something went wrong? One command tells you exactly what broke and exactly how to fix it. Every failure prints a colour-coded verdict and a copy-paste fix command. A summary at the end lists every issue — no scrolling required.</p>
     <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="kw">sudo bash</span> extras/diagnose-restore.sh</pre>
-    <p style="margin-top:0.75rem; font-size:0.85rem; color:var(--muted);">Saves a full report to <code>/var/log/pi2s3-diagnose-TIMESTAMP.log</code>. Share that file when reporting an issue on GitHub.</p>
-    <div style="margin-top:1rem; display:flex; gap:1rem; flex-wrap:wrap;">
+    <p style="margin-top:0.75rem; font-size:0.85rem; color:var(--muted);">Saves full output to <code>/var/log/pi2s3-diagnose-TIMESTAMP.log</code>. Share that file when reporting an issue on GitHub.</p>
+
+    <div style="margin-top:1.2rem; display:flex; gap:1rem; flex-wrap:wrap;">
       <div style="flex:1; min-width:180px;">
         <div style="font-size:0.78rem; font-weight:600; color:var(--accent); margin-bottom:0.4rem;">What it checks</div>
-        <ul style="font-size:0.82rem; color:var(--muted); margin:0; padding-left:1.2rem; line-height:1.8;">
-          <li>Voltage &amp; CPU throttle state</li>
+        <ul style="font-size:0.82rem; color:var(--muted); margin:0; padding-left:1.2rem; line-height:1.9;">
+          <li>Voltage &amp; CPU throttle (live + historical)</li>
           <li>CPU temperature &amp; rail voltages</li>
-          <li>NVMe SMART health</li>
-          <li>EEPROM boot order</li>
-          <li>Restore log completeness</li>
-          <li>Under-voltage events per restore interval</li>
+          <li>NVMe SMART health &amp; EEPROM boot order</li>
+          <li>WiFi SSID — connected vs config.env</li>
+          <li>Saved password special-char encoding</li>
+          <li>Corporate proxy &amp; outbound firewall</li>
         </ul>
       </div>
       <div style="flex:1; min-width:180px;">
         <div style="font-size:0.78rem; font-weight:600; color:var(--accent); margin-bottom:0.4rem;">&nbsp;</div>
-        <ul style="font-size:0.82rem; color:var(--muted); margin:0; padding-left:1.2rem; line-height:1.8;">
-          <li>WiFi SSID &amp; signal strength</li>
-          <li>Password special-char encoding</li>
-          <li>Corporate proxy &amp; firewall rules</li>
+        <ul style="font-size:0.82rem; color:var(--muted); margin:0; padding-left:1.2rem; line-height:1.9;">
           <li>Packet loss to gateway, 8.8.8.8, 1.1.1.1</li>
-          <li>AWS S3 + STS reachability</li>
-          <li>NVMe boot cmdline.txt (rootdelay check)</li>
-          <li>cmdline.txt PARTUUID cross-check vs NVMe partition</li>
-          <li>S3 manifest JSON validation (detects dd-vs-partclone bug)</li>
+          <li>AWS S3 + STS reachability &amp; credentials</li>
+          <li>cmdline.txt PARTUUID cross-check + rootdelay</li>
+          <li>S3 manifest JSON (catches dd-vs-partclone bug)</li>
+          <li>cloud-init status, sentinel file, runcmd output</li>
+          <li>Cloudflare Tunnel — service, config, journal</li>
         </ul>
       </div>
+    </div>
+
+    <div style="margin-top:1.2rem; display:flex; gap:0.6rem; flex-wrap:wrap;">
+      <span style="display:inline-flex; align-items:center; gap:0.35rem; font-size:0.78rem; background:rgba(239,68,68,0.12); border:1px solid rgba(239,68,68,0.35); border-radius:4px; padding:3px 9px; color:#f87171; font-family:monospace; font-weight:700;">[FAIL]</span>
+      <span style="font-size:0.8rem; color:var(--muted); align-self:center;">blocks restore — fix immediately</span>
+      <span style="display:inline-flex; align-items:center; gap:0.35rem; font-size:0.78rem; background:rgba(251,191,36,0.12); border:1px solid rgba(251,191,36,0.35); border-radius:4px; padding:3px 9px; color:#fbbf24; font-family:monospace; font-weight:700;">[WARN]</span>
+      <span style="font-size:0.8rem; color:var(--muted); align-self:center;">may cause issues</span>
+      <span style="display:inline-flex; align-items:center; gap:0.35rem; font-size:0.78rem; background:rgba(74,222,128,0.12); border:1px solid rgba(74,222,128,0.35); border-radius:4px; padding:3px 9px; color:#4ade80; font-family:monospace; font-weight:700;">[OK]</span>
+      <span style="font-size:0.8rem; color:var(--muted); align-self:center;">healthy</span>
     </div>
 
     <div style="margin-top:1.5rem; padding:1rem 1.2rem; background:var(--surface2); border:1px solid var(--border); border-radius:8px;">
@@ -1621,100 +1629,95 @@
       </p>
       <pre style="margin:0; font-size:0.8rem;"><span class="kw">bash</span> extras/recover-sd-boot.sh</pre>
       <p style="font-size:0.8rem; color:var(--muted); margin:0.6rem 0 0;">
-        Auto-detects the SD card at <code>/Volumes/bootfs</code>. Shows the broken <code>cmdline.txt</code>,
-        restores from the automatic backup (<code>cmdline.txt.bak</code>) if present, and prints
-        step-by-step instructions for every recovery scenario.
+        Auto-detects the SD card at <code>/Volumes/bootfs</code>, shows the broken <code>cmdline.txt</code>,
+        restores from the automatic backup if present, and prints step-by-step recovery instructions.
       </p>
     </div>
 
     <details style="margin-top:1.5rem;">
-      <summary style="cursor:pointer; font-size:0.85rem; font-weight:600; color:var(--accent); user-select:none;">Example output (healthy Pi)</summary>
-      <pre style="margin-top:0.75rem; font-size:0.75rem; line-height:1.6; overflow-x:auto; max-height:420px; overflow-y:auto;">pi2s3 restore diagnostic — Mon Apr 27 19:45:00 UTC 2026
-Host: andrewninja-pi-5  |  Uptime: up 2 hours, 14 minutes
+      <summary style="cursor:pointer; font-size:0.85rem; font-weight:600; color:var(--accent); user-select:none;">Example output — healthy Pi (all OK)</summary>
+      <pre style="margin-top:0.75rem; font-size:0.75rem; line-height:1.6; overflow-x:auto; max-height:440px; overflow-y:auto;">pi2s3 restore diagnostic
+Generated: Mon Apr 28 08:00:00 SAST 2026
+Host:      andrewninja-pi-5
+Uptime:    up 2 hours, 14 minutes
 
 ────────────────────────────────────────────────────────────────
   1. POWER &amp; VOLTAGE
 ────────────────────────────────────────────────────────────────
   get_throttled = 0x0
-
-  Current state:
-  [OK]  No current under-voltage
-  [OK]  ARM not capped
-  [OK]  CPU not throttled
-  [OK]  Temperature OK
-
-  Measured voltages:
+  [OK]    No under-voltage
+  [OK]    CPU not throttled
+  [OK]    Temperature OK
+  [OK]    No historical under-voltage
     core         volt=0.8688V
-    sdram_c      volt=1.1000V
-    sdram_i      volt=1.1000V
-    sdram_p      volt=1.1000V
-
-  CPU temperature:
     temp=48.3'C
 
-  [OK]  No undervoltage events in dmesg
-  [OK]  Power looks healthy
+────────────────────────────────────────────────────────────────
+  3. WIFI &amp; NETWORK
+────────────────────────────────────────────────────────────────
+  [OK]    Connected to 'Baker' — matches config.env
+  [OK]    'Baker' (SSID=Baker) — password OK (len=12)
 
 ────────────────────────────────────────────────────────────────
-  3. RESTORE SIZE &amp; COMPLETENESS
+  4. INTERNET &amp; AWS REACHABILITY
 ────────────────────────────────────────────────────────────────
-  [OK]  Contains 'Restore complete'
-  Download: 17312 MB in 687s = 25.2 MB/s avg
-  [OK]  No active under-voltage during monitored restore intervals
-
-────────────────────────────────────────────────────────────────
-  6. INTERNET &amp; AWS REACHABILITY
-────────────────────────────────────────────────────────────────
-  [OK]  Gateway (192.168.0.1) — 0% loss
-  [OK]  Internet (8.8.8.8) — 0% loss
-  [OK]  Cloudflare (1.1.1.1) — 0% loss
-  [OK]  AWS S3 af-south-1 (s3.af-south-1.amazonaws.com:443) — reachable
-  [OK]  s3://your-s3-bucket-name/ accessible with profile=personal
+  [OK]    Gateway (192.168.0.1) — 0% packet loss
+  [OK]    Internet (8.8.8.8) — 0% packet loss
+  [OK]    AWS S3 (af-south-1) (s3.af-south-1.amazonaws.com:443)
+  [OK]    s3://mybucket/ accessible (profile=personal)
 
 ────────────────────────────────────────────────────────────────
   8. BOOT CONFIG
 ────────────────────────────────────────────────────────────────
-  /dev/nvme0n1p1 → /boot/firmware/cmdline.txt:
-    rootdelay=5 ← present
-  [OK]  rootdelay present in NVMe cmdline.txt — NVMe boot should work
+  [OK]    root=PARTUUID=21b5924d-0d80-4332-a32c-3b24a6bde370 → /dev/nvme0n1p2
+  [OK]    rootdelay present in cmdline.txt
 
-  Diagnostic saved to: /var/log/pi2s3-diagnose-20260427_194500.log</pre>
+────────────────────────────────────────────────────────────────
+  12. CLOUDFLARE TUNNEL
+────────────────────────────────────────────────────────────────
+  [OK]    cloudflared 2026.3.0
+  [OK]    cloudflared.service  active=active  enabled=enabled
+  [OK]    Credentials file present: /etc/cloudflared/84c2c36c-....json
+
+────────────────────────────────────────────────────────────────
+  SUMMARY
+────────────────────────────────────────────────────────────────
+  Ran in 38s.  Report: /var/log/pi2s3-diagnose-20260428_080000.log
+
+  All checks passed — no issues found.</pre>
     </details>
 
     <details style="margin-top:0.75rem;">
-      <summary style="cursor:pointer; font-size:0.85rem; font-weight:600; color:#f87171; user-select:none;">Example output (undervoltage problem)</summary>
-      <pre style="margin-top:0.75rem; font-size:0.75rem; line-height:1.6; overflow-x:auto; max-height:320px; overflow-y:auto;">────────────────────────────────────────────────────────────────
+      <summary style="cursor:pointer; font-size:0.85rem; font-weight:600; color:#f87171; user-select:none;">Example output — under-voltage + wrong SSID (2 issues)</summary>
+      <pre style="margin-top:0.75rem; font-size:0.75rem; line-height:1.6; overflow-x:auto; max-height:440px; overflow-y:auto;">────────────────────────────────────────────────────────────────
   1. POWER &amp; VOLTAGE
 ────────────────────────────────────────────────────────────────
   get_throttled = 0x50005
-
-  Current state:
-  [!!!] Under-voltage RIGHT NOW — restore will crash. Use 27W (5.1V/5A) USB-C PSU.
-  [OK]  ARM not capped
-  [!!!] CPU throttled RIGHT NOW
-
-  History since boot:
-  [!!!] Under-voltage occurred since boot
-  [!!!] Throttling occurred since boot
-
-  Undervoltage kernel events (dmesg):
-  [!!!] 14 undervoltage events in dmesg:
-    [    5.43] hwmon hwmon3: Undervoltage detected!
-    [   29.62] hwmon hwmon3: Undervoltage detected!
-    [   41.72] hwmon hwmon3: Voltage normalised
-    [   43.93] hwmon hwmon3: Undervoltage detected!
-    ...
-
-  >>> DIAGNOSIS: INTERMITTENT UNDER-VOLTAGE (14 events).
-      PSU is marginal. May crash under sustained NVMe + network load.
-      Upgrade to official Pi 5 PSU or higher-rated USB-C PD charger.
+  [FAIL]  UNDER-VOLTAGE RIGHT NOW — restore WILL crash
+         fix: Use official Pi 5 PSU (5.1V / 5A / 27W, SC1159). Short/thin cable also drops voltage.
+  [WARN]  Under-voltage event(s) since boot — PSU is marginal
+         fix: Upgrade to official Pi 5 PSU or 27W+ USB-C PD charger
 
 ────────────────────────────────────────────────────────────────
-  3. RESTORE SIZE &amp; COMPLETENESS
+  3. WIFI &amp; NETWORK
 ────────────────────────────────────────────────────────────────
-  [!!!] No 'Restore complete' — restore may be in progress or crashed
-  [!!!] 8/12 monitor samples had active under-voltage during restore
-  Download: 2401 MB in 30s = 80.0 MB/s avg  ← crashed at 30s</pre>
+  [FAIL]  Connected to 'C_WIFI' but config.env WIFI_SSID='Baker'
+    Visible networks:
+      Baker                            signal=72
+      C_WIFI                           signal=68
+         fix: Update WIFI_SSID in config.env to 'C_WIFI', or connect to the right network:
+         fix: sudo nmcli dev wifi connect "Baker" password "&lt;password&gt;"
+
+────────────────────────────────────────────────────────────────
+  SUMMARY
+────────────────────────────────────────────────────────────────
+  Ran in 41s.  Report: /var/log/pi2s3-diagnose-20260428_081200.log
+
+  2 issue(s) found:
+
+  ✗ UNDER-VOLTAGE RIGHT NOW — restore WILL crash
+  △ Under-voltage event(s) since boot — PSU is marginal
+  ✗ Connected to 'C_WIFI' but config.env WIFI_SSID='Baker'</pre>
     </details>
   </div>
 </section>
