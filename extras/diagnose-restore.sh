@@ -24,6 +24,25 @@ echo "Generated: $(date)"
 echo "Host:      $(hostname)"
 echo "Uptime:    $(uptime)"
 
+# ── Load config.env early so all sections can use $S3_BUCKET, $WIFI_SSID, etc.
+_CFG=""
+for _c in /tmp/pi2s3-config.env \
+          "$(pwd)/config.env" \
+          "${HOME}/pi2s3/config.env" \
+          /etc/pi2s3/config.env; do
+    [[ -f "${_c}" ]] && _CFG="${_c}" && break
+done
+[[ -z "${_CFG}" ]] && _CFG=$(find /home /root -maxdepth 4 -name 'config.env' 2>/dev/null | head -1 || true)
+if [[ -n "${_CFG}" ]]; then
+    set -a; source "${_CFG}"; set +a
+    echo "Config:    ${_CFG}"
+else
+    echo "Config:    not found (set CONFIG_FILE= or run from pi2s3 directory)"
+fi
+S3_BUCKET="${S3_BUCKET:-}"
+S3_REGION="${S3_REGION:-af-south-1}"
+WIFI_SSID="${WIFI_SSID:-}"
+
 # ══════════════════════════════════════════════════════════════════════════════
 section "1. POWER & VOLTAGE"
 # ══════════════════════════════════════════════════════════════════════════════
@@ -268,7 +287,31 @@ if command -v nmcli &>/dev/null; then
     nmcli -t -f NAME,TYPE,DEVICE,STATE connection show 2>/dev/null | grep -i wifi | sed 's/^/    /' || echo "    (none)"
     echo ""
     echo "  Active WiFi:"
+    active_ssid=$(nmcli -t -f active,ssid dev wifi 2>/dev/null | grep "^yes" | cut -d: -f2 || true)
     nmcli -t -f active,ssid,signal,bars,security dev wifi 2>/dev/null | grep "^yes" | sed 's/^/    /' || echo "    Not connected to WiFi"
+
+    echo ""
+    echo "  SSID cross-check (config.env vs actual):"
+    if [[ -z "${WIFI_SSID}" ]]; then
+        info "WIFI_SSID not set in config.env — cannot cross-check"
+    elif [[ -z "${active_ssid}" ]]; then
+        warn "Not connected to any WiFi — expected SSID='${WIFI_SSID}' from config.env"
+        echo "    Visible networks:"
+        nmcli -t -f ssid,signal dev wifi list 2>/dev/null | sort -t: -k2 -rn | head -10 | \
+            awk -F: '{printf "      %-30s signal=%s\n", $1, $2}'
+        echo "    Fix: check WIFI_SSID and WIFI_PASSWORD in config.env match exactly"
+    elif [[ "${active_ssid}" == "${WIFI_SSID}" ]]; then
+        ok "Connected SSID '${active_ssid}' matches config.env WIFI_SSID"
+    else
+        warn "Connected to '${active_ssid}' but config.env WIFI_SSID='${WIFI_SSID}' — MISMATCH"
+        warn "Pi is on the wrong network or config.env has a typo"
+        echo "    Visible networks:"
+        nmcli -t -f ssid,signal dev wifi list 2>/dev/null | sort -t: -k2 -rn | head -10 | \
+            awk -F: '{printf "      %-30s signal=%s\n", $1, $2}'
+        echo "    Fix: update WIFI_SSID in config.env to match the network you want"
+        echo "    or:  sudo nmcli dev wifi connect \"${WIFI_SSID}\" password \"<pwd>\""
+    fi
+
     echo ""
     echo "  Saved WiFi password health:"
     while IFS= read -r conn_name; do
@@ -369,18 +412,19 @@ if host google.com &>/dev/null 2>&1 || nslookup google.com &>/dev/null 2>&1; the
 else
     warn "DNS resolution failed for google.com"
 fi
-if host s3.af-south-1.amazonaws.com &>/dev/null 2>&1 || nslookup s3.af-south-1.amazonaws.com &>/dev/null 2>&1; then
-    ok "DNS resolves s3.af-south-1.amazonaws.com"
+_s3_endpoint="s3.${S3_REGION}.amazonaws.com"
+if host "${_s3_endpoint}" &>/dev/null 2>&1 || nslookup "${_s3_endpoint}" &>/dev/null 2>&1; then
+    ok "DNS resolves ${_s3_endpoint}"
 else
-    warn "DNS resolution failed for s3.af-south-1.amazonaws.com — S3 downloads will fail"
+    warn "DNS resolution failed for ${_s3_endpoint} — S3 downloads will fail"
 fi
 
 echo ""
 echo "  HTTPS reachability:"
-check_host "AWS S3 af-south-1" "s3.af-south-1.amazonaws.com" 443
-check_host "AWS STS (auth)"    "sts.amazonaws.com"            443
-check_host "ntfy.sh (alerts)"  "ntfy.sh"                      443
-check_host "GitHub"            "github.com"                   443
+check_host "AWS S3 (${S3_REGION})" "${_s3_endpoint}"       443
+check_host "AWS STS (auth)"        "sts.amazonaws.com"     443
+check_host "ntfy.sh (alerts)"      "ntfy.sh"               443
+check_host "GitHub"                "github.com"            443
 
 echo ""
 echo "  AWS CLI:"
@@ -390,23 +434,27 @@ if command -v aws &>/dev/null; then
     echo "  Configured profiles:"
     aws configure list-profiles 2>/dev/null | sed 's/^/    /' || echo "    (none)"
     echo ""
-    echo "  S3 bucket access test:"
-    for profile in personal default ""; do
-        args=(s3 ls s3://your-s3-bucket-name/ --region af-south-1)
-        [[ -n "${profile}" ]] && args+=(--profile "${profile}")
-        label="${profile:-<no profile>}"
-        if aws "${args[@]}" &>/dev/null 2>&1; then
-            ok "s3://your-s3-bucket-name/ accessible with profile=${label}"
-            break
-        else
-            err=$(aws "${args[@]}" 2>&1 | tail -1)
-            warn "s3://your-s3-bucket-name/ NOT accessible with profile=${label}: ${err}"
-        fi
-    done
+    if [[ -z "${S3_BUCKET}" ]]; then
+        warn "S3_BUCKET not set in config.env — skipping bucket access test"
+    else
+        echo "  S3 bucket access test (s3://${S3_BUCKET}/ region=${S3_REGION}):"
+        for profile in personal default ""; do
+            args=(s3 ls "s3://${S3_BUCKET}/" --region "${S3_REGION}")
+            [[ -n "${profile}" ]] && args+=(--profile "${profile}")
+            label="${profile:-<no profile>}"
+            if aws "${args[@]}" &>/dev/null 2>&1; then
+                ok "s3://${S3_BUCKET}/ accessible with profile=${label}"
+                break
+            else
+                err=$(aws "${args[@]}" 2>&1 | tail -1)
+                warn "s3://${S3_BUCKET}/ NOT accessible with profile=${label}: ${err}"
+            fi
+        done
+    fi
     echo ""
     echo "  AWS identity:"
-    aws sts get-caller-identity --region af-south-1 --profile personal 2>/dev/null | sed 's/^/    /' || \
-    aws sts get-caller-identity --region af-south-1 2>/dev/null | sed 's/^/    /' || \
+    aws sts get-caller-identity --region "${S3_REGION}" --profile personal 2>/dev/null | sed 's/^/    /' || \
+    aws sts get-caller-identity --region "${S3_REGION}" 2>/dev/null | sed 's/^/    /' || \
     echo "    (sts get-caller-identity failed — credentials missing or expired)"
 else
     warn "aws CLI not installed — S3 restore not possible"
@@ -534,31 +582,20 @@ dmesg | tail -40 | sed 's/^/  /'
 # ══════════════════════════════════════════════════════════════════════════════
 section "10. BACKUP MANIFEST VALIDATION"
 # ══════════════════════════════════════════════════════════════════════════════
-# Locate config — same search order as pi-image-restore.sh
-cfg=""
-for _c in /tmp/pi2s3-config.env \
-          "$(pwd)/config.env" \
-          "${HOME}/pi2s3/config.env" \
-          /etc/pi2s3/config.env; do
-    [[ -f "${_c}" ]] && cfg="${_c}" && break
-done
-[[ -z "${cfg}" ]] && cfg=$(find /home /root -maxdepth 4 -name 'config.env' 2>/dev/null | head -1 || true)
-
-if [[ -z "${cfg}" ]]; then
+# config already loaded at top of script into $S3_BUCKET / $S3_REGION
+if [[ -z "${_CFG}" ]]; then
     info "config.env not found — skipping manifest validation"
     info "Set CONFIG_FILE=/path/to/config.env or re-run from the pi2s3 directory"
 else
-    info "Using config: ${cfg}"
-    # shellcheck disable=SC1090
-    set -a; source "${cfg}"; set +a
+    info "Using config: ${_CFG}"
 
     if ! command -v aws &>/dev/null; then
         warn "aws CLI not installed — cannot fetch manifest from S3"
-    elif [[ -z "${S3_BUCKET:-}" ]]; then
-        warn "S3_BUCKET not set in ${cfg}"
+    elif [[ -z "${S3_BUCKET}" ]]; then
+        warn "S3_BUCKET not set in ${_CFG}"
     else
         prefix="${S3_PREFIX:-pi-image-backup/andrew-pi-5}"
-        region="${S3_REGION:-af-south-1}"
+        region="${S3_REGION}"
         echo "  Checking s3://${S3_BUCKET}/${prefix}/ (region=${region})"
         echo ""
 
