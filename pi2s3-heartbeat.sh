@@ -31,7 +31,7 @@ source "${CONFIG_FILE}"
 [[ -z "${NTFY_URL:-}" ]] && exit 0
 
 # ── Gather system info ────────────────────────────────────────────────────────
-HOST=$(hostname)
+HOST="${CF_SITE_HOSTNAME:-$(hostname)}"
 NOW=$(date '+%Y-%m-%d %H:%M')
 UPTIME=$(uptime -p 2>/dev/null || uptime 2>/dev/null || echo "unknown")
 

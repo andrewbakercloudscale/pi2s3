@@ -76,14 +76,14 @@ for container in ${STOPPED}; do
 done
 
 if [[ "${RESTART_OK}" == "true" ]]; then
-    ntfy_send "pi2s3 post-backup alert — containers restarted" \
+    ntfy_send "pi2s3.com post-backup alert — containers restarted" \
         "Containers were stopped after backup window on $(hostname) and have been restarted: ${STOPPED}
 
 Backup may have crashed mid-imaging. Check: /var/log/pi2s3-backup.log" \
         "high" "warning,floppy_disk"
     log "Restart complete. Alert sent."
 else
-    ntfy_send "pi2s3 ALERT — containers stuck down" \
+    ntfy_send "pi2s3.com ALERT — containers stuck down" \
         "URGENT: Containers stopped after backup on $(hostname) and could NOT be restarted: ${STOPPED}
 
 Manual action required. Run: docker start ${STOPPED}
