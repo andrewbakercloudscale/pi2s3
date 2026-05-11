@@ -1145,16 +1145,15 @@
 <section id="restore">
   <div class="section-label">Disaster recovery</div>
   <h2>Restore to a new Pi</h2>
-  <p class="section-intro">Flash a minimal SD card, boot the new Pi, run one command. Full runbook in <a href="https://github.com/andrewbakercloudscale/pi2s3/blob/main/RECOVERY.md" target="_blank" style="color:var(--accent2)">RECOVERY.md</a>.</p>
+  <p class="section-intro">Flash an SD card with a Cloudflare tunnel baked in, boot the Pi, run one command. Full runbook in <a href="https://github.com/andrewbakercloudscale/pi2s3/blob/main/extras/DR-quickstart.md" target="_blank" style="color:var(--accent2)">DR-quickstart.md</a>.</p>
 
   <div class="qs-step">
     <div class="qs-num">1</div>
     <div class="qs-content">
-      <h3>Flash an SD card and boot the Pi</h3>
-      <p>Flash <strong>Raspberry Pi OS Lite (64-bit)</strong> to an SD card with <a href="https://www.raspberrypi.com/software/" target="_blank" style="color:var(--accent2)">Raspberry Pi Imager</a>. In OS Customisation set your hostname, username/password, and enable SSH.</p>
-      <p style="margin-top:0.5rem;"><strong>Ethernet (recommended):</strong> plug in before powering on and SSH in directly once the Pi appears on your LAN.</p>
-      <p style="margin-top:0.5rem;"><strong>WiFi only:</strong> add your SSID/password in OS Customisation. Use <code>extras/firstboot/prepare-sd.sh</code> to pre-install a Cloudflare tunnel on the SD card so you can SSH in remotely without ever needing a cable. See <a href="https://github.com/andrewbakercloudscale/pi2s3/blob/main/extras/DR-quickstart.md" target="_blank" style="color:var(--accent2)">DR-quickstart.md</a>.</p>
-      <p style="margin-top:0.5rem; font-size:0.85rem; color:var(--muted);">Recovery USB and HTTP Netboot restore options are coming soon.</p>
+      <h3>Prepare the SD card (WiFi + Cloudflare tunnel)</h3>
+      <p>Run on your Mac. Downloads Pi OS Lite, flashes it, installs <code>cloudflared</code>, and pre-configures your WiFi and Cloudflare tunnel — so the Pi comes up fully SSH-accessible on first boot with no cable and no monitor.</p>
+      <pre><span class="kw">bash</span> extras/firstboot/prepare-sd.sh <span class="kw">--flash --cf-api-token</span> &lt;CF_API_TOKEN&gt;</pre>
+      <p style="margin-top:0.5rem; font-size:0.85rem; color:var(--muted)">The <code>--cf-api-token</code> flag (Tunnel:Edit permission) syncs the remote ingress config so any hostname routes correctly through the tunnel — without it, unknown hostnames return 404. You will be prompted for your SD disk, WiFi SSID/password, Pi password, tunnel UUID, and CF hostname.</p>
     </div>
   </div>
 
