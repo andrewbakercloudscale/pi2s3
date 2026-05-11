@@ -75,7 +75,17 @@ else
         --cache-control "max-age=60, must-revalidate"
 fi
 
+CF_DISTRIBUTION_ID="E1Z1DHHWWOVILH"
+
 if [[ "${DRY_RUN}" != "true" ]]; then
+    echo ""
+    echo "  Invalidating CloudFront cache..."
+    INVAL_ID=$(aws_cmd cloudfront create-invalidation \
+        --distribution-id "${CF_DISTRIBUTION_ID}" \
+        --paths "/*" \
+        --query "Invalidation.Id" --output text 2>/dev/null || true)
+    [[ -n "${INVAL_ID}" ]] && echo "  Invalidation: ${INVAL_ID}" || echo "  WARNING: CloudFront invalidation failed (check AWS permissions)"
+
     echo ""
     echo "  Deploy complete."
     echo "  https://pi2s3.com"
