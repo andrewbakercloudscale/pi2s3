@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Reference — pi2s3</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <a href="index.html" class="nav-logo">pi<span>2</span>s3</a>
+  <div class="nav-links">
+    <a href="index.html" class="hide-sm">Home</a>
+    <a href="setup.html" class="hide-sm">Setup</a>
+    <a href="recovery.html" class="hide-sm">Recovery</a>
+    <a href="reference.html" class="hide-sm">Reference</a>
+    <a href="https://andrewbaker.ninja" target="_blank" class="hide-sm">andrewbaker.ninja</a>
+    <a href="https://github.com/andrewbakercloudscale/pi2s3" target="_blank" class="btn-gh">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      GitHub
+    </a>
+  </div>
+</nav>
+
+<!-- PAGE HERO -->
+<div class="page-hero">
+  <div class="page-hero-label">Reference</div>
+  <h1>Configuration, monitoring &amp; troubleshooting</h1>
+  <p>Watchdog scripts, security options, PHP-FPM monitoring, and troubleshooting guides. These aren't needed for a basic install — but they're here when something goes wrong or you want to harden and automate further.</p>
+</div>
+
+<!-- WATCHDOG -->
+<hr class="divider" />
+<section id="watchdog">
+  <div class="section-label">Self-healing</div>
+  <h2>Cloudflare tunnel watchdog</h2>
+  <p class="section-intro">An optional monitor that runs every 5 minutes. If your site or tunnel goes down, it automatically recovers through three escalating phases before rebooting the Pi as a last resort.</p>
+
+  <div class="terminal-wrap" style="max-width:100%; margin-top:0;">
+    <div class="terminal-bar">
+      <div class="dot dot-r"></div>
+      <div class="dot dot-y"></div>
+      <div class="dot dot-g"></div>
+      <span class="terminal-label">root cron · every 5 min</span>
+    </div>
+    <div class="terminal-body">
+      <div><span class="comment">Check 1: Any Docker containers stopped?</span></div>
+      <div><span class="comment">Check 2: HTTP probe on localhost (5xx or connection failure?)</span></div>
+      <div><span class="comment">Check 3: cloudflared ha_connections > 0?</span></div>
+      <div>&nbsp;</div>
+      <div><span class="out">All OK → log and exit</span></div>
+      <div>&nbsp;</div>
+      <div><span class="comment">Phase 1 (0–20 min)  → start containers + restart cloudflared</span></div>
+      <div><span class="comment">Phase 2 (20–40 min) → docker compose down/up (full stack restart)</span></div>
+      <div><span class="comment">Phase 3 (40+ min)   → dump diagnostics + reboot Pi (max once/6 h)</span></div>
+    </div>
+  </div>
+
+  <div class="card-grid" style="margin-top:2rem;">
+    <div class="card">
+      <h3>Enable</h3>
+      <p>Set <code>CF_WATCHDOG_ENABLED=true</code> in config.env and run <code>bash install.sh --watchdog</code>. That's it.</p>
+    </div>
+    <div class="card">
+      <h3>Push notifications</h3>
+      <p>ntfy.sh alerts at every stage: first failure, each phase escalation, recovery, and "manual needed" if rate limited from rebooting.</p>
+    </div>
+    <div class="card">
+      <h3>Rate limited reboots</h3>
+      <p>Phase 3 reboots are capped to once every 6 hours. If the rate limit is hit, an alert fires instead and the watchdog exits cleanly.</p>
+    </div>
+  </div>
+</section>
+
+<!-- FPM MONITOR -->
+<hr class="divider" />
+<section id="fpm-monitor">
+  <div class="section-label">FPM Monitor</div>
+  <h2>PHP-FPM saturation monitor</h2>
+  <p class="section-intro">When all PHP-FPM workers are exhausted, WordPress serves 504 errors — and WP-Cron goes silent at the worst moment. This monitor runs as a <strong>host cron</strong> (not inside Docker), so it fires regardless of PHP-FPM state.</p>
+
+  <div class="terminal-wrap" style="max-width:100%; margin-top:0;">
+    <div class="terminal-bar">
+      <div class="dot dot-r"></div>
+      <div class="dot dot-y"></div>
+      <div class="dot dot-g"></div>
+      <span class="terminal-label">host cron · every minute</span>
+    </div>
+    <div class="terminal-body">
+      <div><span class="comment">Check 1: HTTP probe — curl to FPM_PROBE_URL (5xx or timeout?)</span></div>
+      <div><span class="comment">Check 2: DB queries — &gt;15 s queries from wordpress user?</span></div>
+      <div><span class="comment">Check 3: Orphaned backup lock — pi2s3-lock SLEEP in PROCESSLIST?</span></div>
+      <div>&nbsp;</div>
+      <div><span class="out">Saturated for N checks → ntfy alert fires</span></div>
+      <div><span class="out">FPM_AUTO_RESTART=true → docker restart pi_wordpress automatically</span></div>
+      <div><span class="out">Orphaned lock → killed immediately + ntfy (backup must not be running)</span></div>
+    </div>
+  </div>
+
+  <div class="card-grid" style="margin-top:2rem;">
+    <div class="card">
+      <h3>Auto-restart</h3>
+      <p>Set <code>FPM_AUTO_RESTART=true</code> to automatically restart the WordPress container when saturation is detected. An ntfy notification confirms the restart. A cooldown (<code>FPM_RESTART_COOLDOWN</code>, default 20 min) prevents restart loops. Configure both in the <a href="https://andrewbaker.ninja/wordpress-plugin-help/cloudscale-cyber-devtools-help/#fpm-monitor" target="_blank" style="color:var(--accent2);">Devtools plugin (Debug AI → PHP-FPM Monitor)</a> or directly in <code>config.env</code>.</p>
+    </div>
+    <div class="card">
+      <h3>Orphaned lock detection</h3>
+      <p>After a backup, the DB lock process is killed from <em>inside</em> the container so no orphaned <code>SLEEP(86400)</code> connections survive. The monitor also detects and kills any that slip through, with a 30-min alert cooldown.</p>
+    </div>
+    <div class="card">
+      <h3>Plugin integration</h3>
+      <p>The <a href="https://andrewbaker.ninja/wordpress-plugin-help/cloudscale-cyber-devtools-help/#fpm-monitor" target="_blank" style="color:var(--accent2); font-weight:600;">CloudScale Cyber &amp; Devtools</a> plugin (Debug AI tab → PHP-FPM Monitor) shows last saturation event, reason, and a pre-filled <code>config.env</code> snippet. Set <code>FPM_CALLBACK_URL</code> and <code>FPM_CALLBACK_TOKEN</code> to enable.</p>
+    </div>
+  </div>
+
+  <pre style="margin-top:1.5rem;"><span class="cmt"># config.env</span>
+<span class="val">FPM_SATURATION_THRESHOLD</span>=<span class="num">3</span>       <span class="cmt"># checks before alerting</span>
+<span class="val">FPM_WP_CONTAINER</span>=<span class="str">pi_wordpress</span>
+<span class="val">FPM_DB_CONTAINER</span>=<span class="str">pi_mariadb</span>
+<span class="val">FPM_AUTO_RESTART</span>=<span class="str">true</span>            <span class="cmt"># restart container automatically</span>
+<span class="val">FPM_RESTART_COOLDOWN</span>=<span class="num">1200</span>        <span class="cmt"># seconds between restarts (20 min)</span>
+<span class="val">FPM_ALERT_COOLDOWN</span>=<span class="num">1800</span>          <span class="cmt"># seconds between repeat alerts</span></pre>
+
+  <p style="margin-top:1rem; color: var(--muted); font-size:0.9rem;">Install: <code>crontab -e</code> → add: <code>* * * * * /home/pi/pi2s3/fpm-saturation-monitor.sh 2&gt;/dev/null</code></p>
+</section>
+
+<!-- SECURITY & RELIABILITY -->
+<hr class="divider" />
+<section id="security">
+  <div class="section-label">Security &amp; Reliability</div>
+  <h2>Backups you can trust</h2>
+  <p class="section-intro">Five layers that catch failures before they become disasters.</p>
+
+  <div class="card-grid">
+    <div class="card">
+      <h3>Client-side encryption</h3>
+      <p>Each partition image is encrypted with GPG AES-256 <em>before</em> it leaves your Pi. Even full S3 bucket access is useless without the passphrase, which lives only in <code>config.env</code>, never in S3.</p>
+      <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="cmt"># config.env</span>
+<span class="val">BACKUP_ENCRYPTION_PASSPHRASE</span>=<span class="str">"my-strong-passphrase"</span></pre>
+      <p style="margin-top:0.5rem; color: var(--muted); font-size:0.85rem;">Requires: <code>sudo apt install gpg</code>. Restore script detects encryption automatically.</p>
+    </div>
+    <div class="card">
+      <h3>Bandwidth throttle</h3>
+      <p>Limit upload speed so nightly backups don't saturate your home or office connection. Uses <code>pv</code> in the upload pipeline. No AWS config changes needed.</p>
+      <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="cmt"># config.env</span>
+<span class="val">AWS_TRANSFER_RATE_LIMIT</span>=<span class="str">"2m"</span>   <span class="cmt"># 2 MB/s</span></pre>
+      <p style="margin-top:0.5rem; color: var(--muted); font-size:0.85rem;">Requires: <code>sudo apt install pv</code>. Use <code>500k</code>, <code>2m</code>, or <code>1g</code> format.</p>
+    </div>
+    <div class="card">
+      <h3>Auto-verify after backup</h3>
+      <p>After every upload, the script re-lists S3 to confirm every uploaded file is non-zero bytes. Silent upload failures are caught immediately and reported via push notification.</p>
+      <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="cmt"># config.env (default: true)</span>
+<span class="val">BACKUP_AUTO_VERIFY</span>=<span class="str">true</span></pre>
+      <p style="margin-top:0.5rem; color: var(--muted); font-size:0.85rem;">Verification result is included in the ntfy success notification.</p>
+    </div>
+    <div class="card">
+      <h3>Preflight health checks</h3>
+      <p>Before stopping Docker, the script checks: all containers are healthy, free disk space exceeds the threshold, and no recent I/O errors in <code>dmesg</code>. Warns (or aborts) before touching your running stack.</p>
+      <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="cmt"># config.env</span>
+<span class="val">PREFLIGHT_MIN_FREE_MB</span>=<span class="str">500</span>
+<span class="val">PREFLIGHT_ABORT_ON_WARN</span>=<span class="str">false</span></pre>
+    </div>
+    <div class="card">
+      <h3>Stale backup alert</h3>
+      <p>A separate daily cron job checks S3 for a recent backup and sends a push alert if none is found within <code>STALE_BACKUP_HOURS</code>. Catches silent cron failures, including the Pi being offline.</p>
+      <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="cmt"># config.env (default: true)</span>
+<span class="val">STALE_CHECK_ENABLED</span>=<span class="str">true</span>
+<span class="val">STALE_BACKUP_HOURS</span>=<span class="str">25</span></pre>
+    </div>
+    <div class="card">
+      <h3>Crash-safe Docker restart</h3>
+      <p>An <code>on_exit</code> trap guarantees containers are restarted even if the backup script crashes mid-imaging. A separate post-backup cron job (30 min after backup) runs a second check to confirm containers came back up.</p>
+      <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="cmt"># config.env (default: true)</span>
+<span class="val">POST_BACKUP_CHECK_ENABLED</span>=<span class="str">true</span></pre>
+    </div>
+    <div class="card">
+      <h3>Pre/post backup hooks</h3>
+      <p>Not running Docker? Stop any service (MariaDB, nginx, php-fpm) before imaging and restart it after. Works for native WordPress, Samba, or any systemd service. The crash trap also runs <code>POST_BACKUP_CMD</code> on failure, so services always come back up.</p>
+      <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="cmt"># native WordPress example</span>
+<span class="val">PRE_BACKUP_CMD</span>=<span class="str">"systemctl stop nginx php8.2-fpm mariadb"</span>
+<span class="val">POST_BACKUP_CMD</span>=<span class="str">"systemctl start mariadb php8.2-fpm nginx"</span></pre>
+    </div>
+    <div class="card">
+      <h3>Zero-downtime DB lock</h3>
+      <p>For MariaDB/MySQL setups, pi2s3 issues <code>FLUSH TABLES WITH READ LOCK</code> instead of stopping Docker. The lock is released after <code>sync</code> + <code>drop_caches</code> flush InnoDB dirty pages — typically under 10 seconds. Writes resume immediately; partclone images in the background. A background probe pings your site every 60 seconds to confirm it stays up.</p>
+      <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="cmt"># config.env</span>
+<span class="val">DB_CONTAINER</span>=<span class="str">"auto"</span>        <span class="cmt"># auto-detect</span>
+<span class="val">PROBE_LATEST_POST</span>=<span class="str">true</span>   <span class="cmt"># probe latest WP post</span></pre>
+      <p style="margin-top:0.5rem; color: var(--muted); font-size:0.85rem;">Falls back to <code>STOP_DOCKER</code> automatically if no DB container is found or the lock fails.</p>
+    </div>
+  </div>
+</section>
+
+<!-- WATCHDOG CONFIG -->
+<hr class="divider" />
+<section id="watchdog-config">
+  <div class="section-label">Watchdog</div>
+  <h2>Self-healing tunnel monitor</h2>
+  <p class="section-intro">Optional. Runs every 5 minutes as root. If your site or Cloudflare tunnel goes down, it recovers automatically through three escalating phases. No SSH needed.</p>
+
+  <div class="table-wrap" style="margin-bottom:2rem;">
+    <table>
+      <thead>
+        <tr><th>Phase</th><th>Trigger</th><th>Action</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Phase 1 (0–20 min)</td><td>First failure detected</td><td>Restart cloudflared + start stopped containers</td></tr>
+        <tr><td>Phase 2 (20–40 min)</td><td>Still down after 4 attempts</td><td>Full <code>docker compose down/up</code> + cloudflared restart</td></tr>
+        <tr><td>Phase 3 (40+ min)</td><td>Still down after 8 attempts</td><td>Reboot Pi (rate-limited: max once per 6 hours)</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p style="margin-bottom:1.5rem;">Three checks run every cycle: Docker containers stopped? Local HTTP probe returning 5xx or connection failure? cloudflared <code>ha_connections</code> &gt; 0? Any failure starts the escalation ladder. Recovery is confirmed by re-running all checks after each action.</p>
+
+  <p style="margin-bottom:1.5rem; color: var(--muted); font-size:0.9rem;">Push notifications via ntfy at every stage: first failure, each phase escalation, recovery, and stuck-down alert. Pre-reboot diagnostics dumped to <code>/var/log/pi2s3-watchdog-prediag.log</code>.</p>
+
+  <pre><span class="cmt"># config.env</span>
+<span class="val">CF_WATCHDOG_ENABLED</span>=<span class="str">true</span>
+<span class="val">CF_SITE_HOSTNAME</span>=<span class="str">"yoursite.com"</span>
+<span class="val">CF_HTTP_PORT</span>=<span class="str">80</span>
+
+<span class="cmt"># Then install:</span>
+<span class="kw">bash</span> ~/pi2s3/install.sh --watchdog</pre>
+</section>
+
+<!-- TROUBLESHOOTING -->
+<hr class="divider" />
+<section id="troubleshooting">
+  <div class="section-label">Troubleshooting</div>
+  <h2>Common errors</h2>
+  <p class="section-intro">The three errors that account for most first run failures.</p>
+
+  <div class="card-grid">
+    <div class="card">
+      <h3>pigz not found</h3>
+      <p>The installer tries to install pigz automatically. If it fails, install manually:</p>
+      <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="kw">sudo apt install pigz</span></pre>
+      <p style="margin-top:0.5rem;">The backup falls back to single-threaded <code>gzip</code> if pigz is absent. It will still work, just slower.</p>
+    </div>
+    <div class="card">
+      <h3>AWS credential failure</h3>
+      <p>The preflight check will print: <em>Cannot reach s3://…</em>. Verify credentials on the Pi:</p>
+      <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="kw">aws s3 ls</span> s3://<span class="val">your-bucket</span> <span class="flag">--region</span> <span class="val">af-south-1</span></pre>
+      <p style="margin-top:0.5rem;">Confirm <code>~/.aws/credentials</code> exists, or that <code>AWS_ACCESS_KEY_ID</code> and <code>AWS_SECRET_ACCESS_KEY</code> are set in the environment. Check the IAM policy includes <code>s3:ListBucket</code> on the bucket ARN (not just the <code>/*</code> path).</p>
+    </div>
+    <div class="card">
+      <h3>partclone device mismatch</h3>
+      <p>Error: <em>partclone: device size mismatch</em> or <em>filesystem not found</em>. Check the detected device:</p>
+      <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="kw">lsblk</span>   <span class="cmt"># confirm nvme0n1 or mmcblk0</span></pre>
+      <p style="margin-top:0.5rem;">Set <code>BOOT_DEV=/dev/mmcblk0</code> explicitly in <code>config.env</code> if auto detection picks the wrong device.</p>
+    </div>
+    <div class="card">
+      <h3>Undervoltage / restore crash</h3>
+      <p>Pi 5 requires a <strong>27W (5.1V / 5A) USB-C</strong> power supply. A marginal PSU or long USB-C cable causes the restore to crash 30–90 seconds in. The restore script warns at startup if voltage is low:</p>
+      <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="kw">vcgencmd get_throttled</span>   <span class="cmt"># 0x0 = clean</span></pre>
+      <p style="margin-top:0.5rem;">Use the official Pi 5 PSU (SC1159) or any USB-C PD charger that negotiates 5V/5A. A shorter, thicker USB-C cable helps if the PSU is marginal.</p>
+    </div>
+  </div>
+
+  <div style="margin-top:2.5rem; padding:1.5rem; background:var(--surface2); border:1px solid var(--border); border-radius:8px;">
+    <h3 style="margin-top:0;">Restore diagnostic script</h3>
+    <p>Something went wrong? One command tells you exactly what broke and exactly how to fix it. Every failure prints a colour-coded verdict and a copy-paste fix command. A summary at the end lists every issue — no scrolling required.</p>
+    <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="kw">sudo bash</span> extras/diagnose-restore.sh</pre>
+    <p style="margin-top:0.75rem; font-size:0.85rem; color:var(--muted);">Saves full output to <code>/var/log/pi2s3-diagnose-TIMESTAMP.log</code>. Share that file when reporting an issue on GitHub.</p>
+
+    <div style="margin-top:1.2rem; display:flex; gap:1rem; flex-wrap:wrap;">
+      <div style="flex:1; min-width:180px;">
+        <div style="font-size:0.78rem; font-weight:600; color:var(--accent); margin-bottom:0.4rem;">What it checks</div>
+        <ul style="font-size:0.82rem; color:var(--muted); margin:0; padding-left:1.2rem; line-height:1.9;">
+          <li>Voltage &amp; CPU throttle (live + historical)</li>
+          <li>CPU temperature &amp; rail voltages</li>
+          <li>NVMe SMART health &amp; EEPROM boot order</li>
+          <li>WiFi SSID — connected vs config.env</li>
+          <li>Saved password special-char encoding</li>
+          <li>Corporate proxy &amp; outbound firewall</li>
+        </ul>
+      </div>
+      <div style="flex:1; min-width:180px;">
+        <div style="font-size:0.78rem; font-weight:600; color:var(--accent); margin-bottom:0.4rem;">&nbsp;</div>
+        <ul style="font-size:0.82rem; color:var(--muted); margin:0; padding-left:1.2rem; line-height:1.9;">
+          <li>Packet loss to gateway, 8.8.8.8, 1.1.1.1</li>
+          <li>AWS S3 + STS reachability &amp; credentials</li>
+          <li>cmdline.txt PARTUUID cross-check + rootdelay</li>
+          <li>S3 manifest JSON (catches dd-vs-partclone bug)</li>
+          <li>cloud-init status, sentinel file, runcmd output</li>
+          <li>Cloudflare Tunnel — service, config, journal</li>
+        </ul>
+      </div>
+    </div>
+
+    <div style="margin-top:1.2rem; display:flex; gap:0.6rem; flex-wrap:wrap;">
+      <span style="display:inline-flex; align-items:center; gap:0.35rem; font-size:0.78rem; background:rgba(239,68,68,0.12); border:1px solid rgba(239,68,68,0.35); border-radius:4px; padding:3px 9px; color:#f87171; font-family:monospace; font-weight:700;">[FAIL]</span>
+      <span style="font-size:0.8rem; color:var(--muted); align-self:center;">blocks restore — fix immediately</span>
+      <span style="display:inline-flex; align-items:center; gap:0.35rem; font-size:0.78rem; background:rgba(251,191,36,0.12); border:1px solid rgba(251,191,36,0.35); border-radius:4px; padding:3px 9px; color:#fbbf24; font-family:monospace; font-weight:700;">[WARN]</span>
+      <span style="font-size:0.8rem; color:var(--muted); align-self:center;">may cause issues</span>
+      <span style="display:inline-flex; align-items:center; gap:0.35rem; font-size:0.78rem; background:rgba(74,222,128,0.12); border:1px solid rgba(74,222,128,0.35); border-radius:4px; padding:3px 9px; color:#4ade80; font-family:monospace; font-weight:700;">[OK]</span>
+      <span style="font-size:0.8rem; color:var(--muted); align-self:center;">healthy</span>
+    </div>
+
+    <div style="margin-top:1.5rem; padding:1rem 1.2rem; background:var(--surface2); border:1px solid var(--border); border-radius:8px;">
+      <div style="font-size:0.82rem; font-weight:600; color:var(--accent2); margin-bottom:0.5rem;">Pi won't boot? Solid red LED?</div>
+      <p style="font-size:0.82rem; color:var(--muted); margin:0 0 0.75rem;">
+        If the Pi shows a solid red LED (no green ACT blink) after a restore, the SD card's
+        <code>cmdline.txt</code> likely has a missing or wrong PARTUUID.
+        Run this on your Mac with the SD card inserted:
+      </p>
+      <pre style="margin:0; font-size:0.8rem;"><span class="kw">bash</span> extras/recover-sd-boot.sh</pre>
+      <p style="font-size:0.8rem; color:var(--muted); margin:0.6rem 0 0;">
+        Auto-detects the SD card at <code>/Volumes/bootfs</code>, shows the broken <code>cmdline.txt</code>,
+        restores from the automatic backup if present, and prints step-by-step recovery instructions.
+      </p>
+    </div>
+
+    <details style="margin-top:1.5rem;">
+      <summary style="cursor:pointer; font-size:0.85rem; font-weight:600; color:var(--accent); user-select:none;">Example output — healthy Pi (all OK)</summary>
+      <pre style="margin-top:0.75rem; font-size:0.75rem; line-height:1.6; overflow-x:auto; max-height:440px; overflow-y:auto;">pi2s3 restore diagnostic
+Generated: Mon Apr 28 08:00:00 SAST 2026
+Host:      andrewninja-pi-5
+Uptime:    up 2 hours, 14 minutes
+
+────────────────────────────────────────────────────────────────
+  1. POWER &amp; VOLTAGE
+────────────────────────────────────────────────────────────────
+  get_throttled = 0x0
+  [OK]    No under-voltage
+  [OK]    CPU not throttled
+  [OK]    Temperature OK
+  [OK]    No historical under-voltage
+    core         volt=0.8688V
+    temp=48.3'C
+
+────────────────────────────────────────────────────────────────
+  3. WIFI &amp; NETWORK
+────────────────────────────────────────────────────────────────
+  [OK]    Connected to 'Baker' — matches config.env
+  [OK]    'Baker' (SSID=Baker) — password OK (len=12)
+
+────────────────────────────────────────────────────────────────
+  4. INTERNET &amp; AWS REACHABILITY
+────────────────────────────────────────────────────────────────
+  [OK]    Gateway (192.168.0.1) — 0% packet loss
+  [OK]    Internet (8.8.8.8) — 0% packet loss
+  [OK]    AWS S3 (af-south-1) (s3.af-south-1.amazonaws.com:443)
+  [OK]    s3://mybucket/ accessible (profile=personal)
+
+────────────────────────────────────────────────────────────────
+  8. BOOT CONFIG
+────────────────────────────────────────────────────────────────
+  [OK]    root=PARTUUID=21b5924d-0d80-4332-a32c-3b24a6bde370 → /dev/nvme0n1p2
+  [OK]    rootdelay present in cmdline.txt
+
+────────────────────────────────────────────────────────────────
+  12. CLOUDFLARE TUNNEL
+────────────────────────────────────────────────────────────────
+  [OK]    cloudflared 2026.3.0
+  [OK]    cloudflared.service  active=active  enabled=enabled
+  [OK]    Credentials file present: /etc/cloudflared/84c2c36c-....json
+
+────────────────────────────────────────────────────────────────
+  SUMMARY
+────────────────────────────────────────────────────────────────
+  Ran in 38s.  Report: /var/log/pi2s3-diagnose-20260428_080000.log
+
+  All checks passed — no issues found.</pre>
+    </details>
+
+    <details style="margin-top:0.75rem;">
+      <summary style="cursor:pointer; font-size:0.85rem; font-weight:600; color:#f87171; user-select:none;">Example output — under-voltage + wrong SSID (2 issues)</summary>
+      <pre style="margin-top:0.75rem; font-size:0.75rem; line-height:1.6; overflow-x:auto; max-height:440px; overflow-y:auto;">────────────────────────────────────────────────────────────────
+  1. POWER &amp; VOLTAGE
+────────────────────────────────────────────────────────────────
+  get_throttled = 0x50005
+  [FAIL]  UNDER-VOLTAGE RIGHT NOW — restore WILL crash
+         fix: Use official Pi 5 PSU (5.1V / 5A / 27W, SC1159). Short/thin cable also drops voltage.
+  [WARN]  Under-voltage event(s) since boot — PSU is marginal
+         fix: Upgrade to official Pi 5 PSU or 27W+ USB-C PD charger
+
+────────────────────────────────────────────────────────────────
+  3. WIFI &amp; NETWORK
+────────────────────────────────────────────────────────────────
+  [FAIL]  Connected to 'C_WIFI' but config.env WIFI_SSID='Baker'
+    Visible networks:
+      Baker                            signal=72
+      C_WIFI                           signal=68
+         fix: Update WIFI_SSID in config.env to 'C_WIFI', or connect to the right network:
+         fix: sudo nmcli dev wifi connect "Baker" password "&lt;password&gt;"
+
+────────────────────────────────────────────────────────────────
+  SUMMARY
+────────────────────────────────────────────────────────────────
+  Ran in 41s.  Report: /var/log/pi2s3-diagnose-20260428_081200.log
+
+  2 issue(s) found:
+
+  ✗ UNDER-VOLTAGE RIGHT NOW — restore WILL crash
+  △ Under-voltage event(s) since boot — PSU is marginal
+  ✗ Connected to 'C_WIFI' but config.env WIFI_SSID='Baker'</pre>
+    </details>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<hr class="divider" />
+<footer>
+  <div>
+    <div class="footer-brand">pi<span>2</span>s3</div>
+    <div class="footer-meta" style="margin-top:0.4rem;">Built by <a href="https://andrewbaker.ninja" target="_blank">Andrew Baker</a> · Group CIO, Capitec Bank</div>
+    <div style="margin-top:0.5rem;"><a href="https://github.com/andrewbakercloudscale/pi2s3/releases" target="_blank" style="display:inline-block; background: var(--surface2); border: 1px solid var(--border); border-radius:4px; padding:2px 8px; font-size:0.75rem; color: var(--accent); text-decoration:none; font-family: monospace;">v1.9.0</a></div>
+  </div>
+  <div class="footer-links">
+    <a href="https://github.com/andrewbakercloudscale/pi2s3" target="_blank">GitHub</a>
+    <a href="https://github.com/andrewbakercloudscale/pi2s3/blob/main/LICENSE" target="_blank">MIT License</a>
+    <a href="https://github.com/andrewbakercloudscale/pi2s3/blob/main/extras/DR-quickstart.md" target="_blank">Recovery Runbook</a>
+    <a href="https://andrewbaker.ninja" target="_blank">andrewbaker.ninja</a>
+    <a href="https://cloudtorepo.com" target="_blank">CloudToRepo</a>
+  </div>
+</footer>
+
+</body>
+</html>
