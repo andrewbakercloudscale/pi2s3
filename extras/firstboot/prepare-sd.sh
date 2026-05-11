@@ -341,7 +341,7 @@ loglevel: info
 ingress:
   - hostname: ${CF_HOSTNAME}
     service: ssh://localhost:22
-  - service: http_status:404
+  - service: http://127.0.0.1:8082
 EOF
 ok "cloudflared-config.yml"
 
