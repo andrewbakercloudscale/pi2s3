@@ -10,10 +10,9 @@
 #      streams the selected one directly to the target device
 #
 # NOTE: Run this ON THE PI after you have SSH access.
-# If you are on WiFi only (no ethernet), you need to set up a
-# Cloudflare tunnel first so you can SSH in:
-#   See: extras/firstboot/prepare-sd.sh  (run on your Mac)
-#   Docs: extras/DR-quickstart.md
+# SSH options:
+#   LAN  — ssh pi@<hostname>.local  (ethernet or WiFi, same network)
+#   Remote / WiFi-only — SSH via Cloudflare tunnel (see extras/DR-quickstart.md)
 
 set -euo pipefail
 
