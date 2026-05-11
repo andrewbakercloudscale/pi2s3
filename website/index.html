@@ -1151,8 +1151,9 @@
     <div class="qs-num">1</div>
     <div class="qs-content">
       <h3>Flash an SD card and boot the Pi</h3>
-      <p>Flash <strong>Raspberry Pi OS Lite (64-bit)</strong> to an SD card with <a href="https://www.raspberrypi.com/software/" target="_blank" style="color:var(--accent2)">Raspberry Pi Imager</a>. In OS Customisation set your hostname, username/password, and enable SSH. <strong>Connect ethernet</strong> before powering on — the restore streams ~22 GB from S3 and requires a wired connection.</p>
-      <p style="margin-top:0.5rem;">Boot the Pi, wait ~60 seconds, SSH in, then continue to step 2.</p>
+      <p>Flash <strong>Raspberry Pi OS Lite (64-bit)</strong> to an SD card with <a href="https://www.raspberrypi.com/software/" target="_blank" style="color:var(--accent2)">Raspberry Pi Imager</a>. In OS Customisation set your hostname, username/password, and enable SSH.</p>
+      <p style="margin-top:0.5rem;"><strong>Ethernet (recommended):</strong> plug in before powering on and SSH in directly once the Pi appears on your LAN.</p>
+      <p style="margin-top:0.5rem;"><strong>WiFi only:</strong> add your SSID/password in OS Customisation. Use <code>extras/firstboot/prepare-sd.sh</code> to pre-install a Cloudflare tunnel on the SD card so you can SSH in remotely without ever needing a cable. See <a href="https://github.com/andrewbakercloudscale/pi2s3/blob/main/extras/DR-quickstart.md" target="_blank" style="color:var(--accent2)">DR-quickstart.md</a>.</p>
       <p style="margin-top:0.5rem; font-size:0.85rem; color:var(--muted);">Recovery USB and HTTP Netboot restore options are coming soon.</p>
     </div>
   </div>
