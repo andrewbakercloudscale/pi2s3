@@ -65,6 +65,13 @@ bash extras/fleet-deploy.sh fleet.csv --parallel
 
 ---
 
+## Pending validation
+
+- **Test failover** — run `scripts/failover-to-qa.sh` (sets `test_mode=1`), confirm watchdog activates failover, `andrewbaker.ninja` redirects to QA, ntfy fires. Then run `failover-to-prd-turn-off-test-mode.sh` and confirm 10m anti-flap failback completes cleanly.
+- **Test restore over WiFi** — flash Pi with WiFi credentials only (no ethernet), use `extras/firstboot/prepare-sd.sh` to pre-install CF tunnel, SSH in via `ssh.qa.andrewbaker.ninja`, and run a full restore from S3. Confirm the 22 GB stream completes without the restore job dying on SSH drop.
+
+---
+
 ## Next ideas (not yet scoped)
 
 - Embed AWS credentials in Pi 5 EEPROM `CUSTOM_ETH_CONFIG` for fully unattended netboot restore

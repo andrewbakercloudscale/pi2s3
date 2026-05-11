@@ -9,3 +9,13 @@ config.env
 
 # Logs
 *.log
+
+# Claude Code runtime
+.claude/scheduled_tasks.lock
+
+# Website build artefacts
+website/node_modules/
+website/test-results/
+
+# Misc local files
+*.docx
