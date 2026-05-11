@@ -34,11 +34,18 @@ cloudflared tunnel create andrewninja-pi-qa
 **Option A — Let prepare-sd.sh do everything (recommended):**
 
 ```bash
-bash extras/firstboot/prepare-sd.sh --flash
+bash extras/firstboot/prepare-sd.sh --flash --cf-api-token <CF_API_TOKEN>
 ```
 
 This downloads Pi OS Lite ARM64, flashes it, and configures WiFi + cloudflared in one go.
 Answer the prompts: SD disk, WiFi SSID/password, Pi password, tunnel UUID, CF hostname.
+
+> **`--cf-api-token` is strongly recommended.** cloudflared fetches its ingress rules
+> from Cloudflare's API at startup and ignores the local `config.yml` ingress section
+> when a remote config already exists on the tunnel. Without this flag the catch-all
+> stays as `http_status:404`, which means any hostname that isn't explicitly listed
+> (e.g. `andrewbaker.ninja` during a DNS-swap failover) will return 404.
+> The token needs **Cloudflare Tunnel: Edit** permission for your account.
 
 **Option B — Flash with Raspberry Pi Imager first, then inject:**
 
@@ -49,7 +56,7 @@ Answer the prompts: SD disk, WiFi SSID/password, Pi password, tunnel UUID, CF ho
 5. Run:
 
 ```bash
-bash extras/firstboot/prepare-sd.sh
+bash extras/firstboot/prepare-sd.sh --cf-api-token <CF_API_TOKEN>
 ```
 
 This adds cloudflared to the card Pi Imager already prepared.
@@ -164,6 +171,22 @@ sudo sed -i "s|credentials-file:.*|credentials-file: /root/.cloudflared/<QA_TUNN
 sudo cp /root/.cloudflared/<QA_TUNNEL_UUID>.json               "${RESTORE_ROOT}/root/.cloudflared/"
 ```
 
+Then sync the **remote** tunnel config so cloudflared serves any hostname via WordPress
+(cloudflared ignores the local `ingress:` section when a remote config exists):
+
+```bash
+CF_ACCOUNT_ID="<your-account-id>"
+CF_API_TOKEN="<CF_API_TOKEN>"   # Tunnel:Edit permission
+QA_TUNNEL_UUID="<QA_TUNNEL_UUID>"
+CF_HOSTNAME="<your-ssh-hostname>"   # e.g. ssh-qa.andrewbaker.ninja
+
+curl -s -X PUT \
+  "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/cfd_tunnel/${QA_TUNNEL_UUID}/configurations" \
+  -H "Authorization: Bearer ${CF_API_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d "{\"config\":{\"ingress\":[{\"hostname\":\"${CF_HOSTNAME}\",\"service\":\"ssh://localhost:22\"},{\"service\":\"http://127.0.0.1:8082\"}]}}"
+```
+
 ---
 
 ## Step 9 — Reboot into NVMe
@@ -187,6 +210,7 @@ SSH back in the same way: `ssh qa.andrewbaker.ninja`
 | AWS access denied | `aws sts get-caller-identity` — re-run `aws configure` |
 | `No backups found` | Script running as sudo — fixed in v2+. Use `--host <hostname>` flag |
 | NVMe not found (`lsblk`) | NVMe not seated. Check PCIe connection and reboot |
+| Site returns 404 after failover | Remote tunnel config still has `http_status:404`. Run the `curl -X PUT .../configurations` command in Step 8, or re-run `prepare-sd.sh --cf-api-token` |
 
 **Check the firstboot log first for any tunnel issue:**
 ```bash

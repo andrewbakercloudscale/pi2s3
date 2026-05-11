@@ -36,6 +36,9 @@
 #   --pi-pass <pass>      Pi password (flash mode only)
 #   --volume  <path>      Boot partition path (auto-detected if omitted)
 #   --country <code>      WiFi regulatory domain (default: ZA)
+#   --cf-api-token <tok>  CF API token (Tunnel:Edit) — syncs remote tunnel config
+#                         so cloudflared serves any hostname via WordPress instead
+#                         of returning 404.  Required for DNS-swap failover.
 # =============================================================
 set -euo pipefail
 
@@ -78,6 +81,7 @@ PI_USER="admin"
 PI_PASS=""
 VOLUME=""
 WIFI_COUNTRY="ZA"
+CF_API_TOKEN=""
 CACHE_DIR="${HOME}/.pi2s3-cache"
 PI_OS_URL="https://downloads.raspberrypi.com/raspios_lite_arm64_latest"
 
@@ -93,7 +97,8 @@ while [[ $# -gt 0 ]]; do
         --pi-user)   shift;    PI_USER="$1" ;;
         --pi-pass)   shift;    PI_PASS="$1" ;;
         --volume)    shift;    VOLUME="$1" ;;
-        --country)   shift;    WIFI_COUNTRY="$1" ;;
+        --country)       shift;    WIFI_COUNTRY="$1" ;;
+        --cf-api-token)  shift;    CF_API_TOKEN="$1" ;;
         --help|-h)
             grep '^# ' "$0" | head -50 | sed 's/^# \?//'
             exit 0 ;;
@@ -492,6 +497,61 @@ PYEOF
 
     rm -f "${_TMP}"
     ok "cloudflared injected into Pi Imager's firstrun.sh"
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+# REMOTE TUNNEL CONFIG
+# cloudflared fetches ingress rules from CF's API at startup and IGNORES the
+# local config.yml ingress section when a remote config exists.  Without this
+# step the catch-all remains http_status:404, so any failover hostname that
+# doesn't match a named rule returns 404 instead of serving WordPress.
+# ══════════════════════════════════════════════════════════════════════════════
+section "Remote tunnel config"
+
+if [[ -z "${CF_API_TOKEN}" ]]; then
+    warn "No --cf-api-token supplied — skipping remote tunnel config update."
+    warn "cloudflared will use whatever ingress rules are already stored in CF."
+    warn "If the catch-all is http_status:404 the tunnel will 404 on unknown hostnames."
+    warn "Re-run with --cf-api-token <token> (needs Cloudflare Tunnel:Edit permission)."
+else
+    # Extract account ID from tunnel credentials JSON
+    CF_ACCOUNT_TAG=$(python3 -c "import json; print(json.load(open('${CREDS_FILE}'))['AccountTag'])" 2>/dev/null || echo "")
+    [[ -n "${CF_ACCOUNT_TAG}" ]] || die "Could not read AccountTag from ${CREDS_FILE}"
+
+    REMOTE_CFG=$(python3 -c "
+import json
+cfg = {
+    'config': {
+        'ingress': [
+            {'hostname': '${CF_HOSTNAME}', 'service': 'ssh://localhost:22'},
+            {'service': 'http://127.0.0.1:8082'}
+        ]
+    }
+}
+print(json.dumps(cfg))
+")
+    RESULT=$(curl -s -X PUT \
+        "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_TAG}/cfd_tunnel/${TUNNEL_UUID}/configurations" \
+        -H "Authorization: Bearer ${CF_API_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d "${REMOTE_CFG}")
+    python3 -c "
+import sys, json
+d = json.loads('${RESULT}')
+" 2>/dev/null || true
+    echo "${RESULT}" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+if d['success']:
+    ingress = d['result']['config']['ingress']
+    print('  Remote tunnel config updated:')
+    for r in ingress:
+        h = r.get('hostname', '(catch-all)')
+        print(f'    {h} -> {r[\"service\"]}')
+else:
+    print('  WARN: remote config update failed:', d.get('errors'))
+    print('  The tunnel will use the existing remote config — check CF dashboard.')
+"
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
