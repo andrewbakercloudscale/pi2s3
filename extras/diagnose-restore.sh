@@ -46,6 +46,8 @@ done
 [[ -z "${_CFG}" ]] && _CFG=$(find /home /root -maxdepth 4 -name 'config.env' 2>/dev/null | head -1 || true)
 if [[ -n "${_CFG}" ]]; then
     set -a; source "${_CFG}"; set +a
+    # AWS_PROFILE="" causes aws CLI to fail with "profile not found" — unset if empty
+    [[ -z "${AWS_PROFILE:-}" ]] && unset AWS_PROFILE
     echo "Config:    ${_CFG}"
 else
     echo "Config:    not found (run from pi2s3 directory or place config.env in /etc/pi2s3/)"

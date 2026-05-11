@@ -1,77 +1,101 @@
 # pi2s3 Disaster Recovery Quickstart
 
-Restore a full Pi backup from S3 onto a new Pi in under 30 minutes.
+Restore a full Pi backup from S3 onto new hardware in under 30 minutes.
+Works on **WiFi only** — no ethernet required.
+
+---
 
 ## What you need
 
-- Spare Raspberry Pi 5
-- NVMe drive (installed in the Pi)
-- microSD card (256GB works fine — only used for initial setup, discarded after)
-- Mac or Linux machine to flash the SD card
+- Spare Raspberry Pi 5 with NVMe drive installed
+- microSD card (any size — 8 GB+ works)
+- Mac to prepare the SD card
+- Cloudflare tunnel for the new Pi (create one if you haven't — see Step 1)
 - AWS credentials with read access to your S3 bucket
-- Ethernet cable (recommended — WiFi setup can be unreliable on first boot)
 
 ---
 
-## Step 1 — Flash Pi OS Lite to SD card
+## Step 1 — Create a Cloudflare tunnel for the new Pi
 
-Download Pi OS Lite ARM64:
+Run on your Mac. Skip if you already have a tunnel.
 
 ```bash
-curl -L https://downloads.raspberrypi.com/raspios_lite_arm64_latest -o pi-os.img.xz
-xz -d pi-os.img.xz
-sudo dd if=pi-os.img of=/dev/rdisk<N> bs=4m status=progress && sync
-```
+cloudflared tunnel create andrewninja-pi-qa
+# Note the tunnel UUID printed — you'll need it in Step 2
 
-Replace `<N>` with your SD card disk number (`diskutil list` to find it).
+# Add a DNS record in Cloudflare pointing at the tunnel:
+#   CNAME: qa.andrewbaker.ninja → <TUNNEL_UUID>.cfargotunnel.com
+```
 
 ---
 
-## Step 2 — Write cloud-init files to boot partition
+## Step 2 — Flash + prepare the SD card
+
+**Option A — Let prepare-sd.sh do everything (recommended):**
 
 ```bash
-cp extras/cloud-init/user-data   /Volumes/bootfs/user-data
-cp extras/cloud-init/network-config /Volumes/bootfs/network-config
-cp extras/cloud-init/meta-data   /Volumes/bootfs/meta-data
-touch /Volumes/bootfs/ssh
+bash extras/firstboot/prepare-sd.sh --flash
 ```
 
-**Edit before booting:**
+This downloads Pi OS Lite ARM64, flashes it, and configures WiFi + cloudflared in one go.
+Answer the prompts: SD disk, WiFi SSID/password, Pi password, tunnel UUID, CF hostname.
 
-- `network-config` — set your WiFi SSID and password (or leave as-is if using ethernet)
-- `meta-data` — set a unique `instance_id` (e.g. `pi2s3-dr-YYYYMMDD`) — **critical**: cloud-init skips runcmd if it sees the same instance_id from a previous flash
-- `user-data` — set `hostname`, `passwd` hash, and `config.env` values to match your setup
+**Option B — Flash with Raspberry Pi Imager first, then inject:**
 
-Eject the card:
+1. Open [Raspberry Pi Imager](https://www.raspberrypi.com/software/)
+2. Choose **Raspberry Pi OS Lite (64-bit)**
+3. In OS Customisation: set hostname, username/password, WiFi, enable SSH
+4. Flash the card
+5. Run:
+
 ```bash
-diskutil eject /dev/disk<N>
+bash extras/firstboot/prepare-sd.sh
 ```
+
+This adds cloudflared to the card Pi Imager already prepared.
 
 ---
 
 ## Step 3 — Boot the Pi
 
-1. Insert NVMe into the Pi (do this before booting)
-2. Insert SD card
+1. Insert NVMe into the Pi (do this before powering on)
+2. Insert the SD card
 3. Power on
 
-**Ethernet is strongly recommended** — plug a cable in before powering on. WiFi on Pi 5 / Pi OS Bookworm requires the regulatory domain to be set correctly; ethernet works immediately.
+The Pi will:
+- Connect to WiFi on first boot
+- Install cloudflared from the SD card (no internet download)
+- Start the Cloudflare tunnel
 
-SSH becomes available within ~1 minute (before package installs complete).
+**Wait ~3 minutes**, then check the tunnel is healthy:
+
+```bash
+cloudflared tunnel info <TUNNEL_UUID>
+# or: cloudflared tunnel list
+```
 
 ---
 
-## Step 4 — SSH in and verify
+## Step 4 — SSH in via Cloudflare
 
-```bash
-ssh pi@andrewninja-pi-qa.local
-# or by IP if mDNS isn't working yet:
-# ssh pi@<ip-from-router-dhcp-list>
+Add to `~/.ssh/config` (one-time):
+
+```
+Host qa.andrewbaker.ninja
+    ProxyCommand cloudflared access ssh --hostname %h
+    User admin
 ```
 
-Default password: `pi2s3-dr` (change this in user-data before production use).
+Then:
 
-Check NVMe is visible:
+```bash
+ssh qa.andrewbaker.ninja
+```
+
+If `qa.andrewbaker.ninja` has a Cloudflare Access policy, your browser will open for auth on first use.
+
+Check that the NVMe is visible:
+
 ```bash
 lsblk | grep nvme
 # Should show: nvme0n1  ...  disk
@@ -82,13 +106,11 @@ lsblk | grep nvme
 ## Step 5 — Set up AWS credentials
 
 ```bash
-aws configure --profile personal
-# Enter: Access Key ID, Secret Access Key, region (af-south-1), output (json)
-```
+aws configure
+# Enter: Access Key ID, Secret, region (af-south-1), output (json)
 
-Verify access:
-```bash
-aws s3 ls s3://your-s3-bucket-name/pi-image-backup/ --profile personal
+# Verify:
+aws s3 ls s3://your-bucket/pi-image-backup/
 ```
 
 ---
@@ -96,56 +118,82 @@ aws s3 ls s3://your-s3-bucket-name/pi-image-backup/ --profile personal
 ## Step 6 — Run the restore
 
 ```bash
+curl -sL pi2s3.com/restore | bash
+```
+
+Or run directly:
+
+```bash
 sudo bash ~/pi2s3/pi-image-restore.sh \
   --device /dev/nvme0n1 \
   --host andrew-pi-5 \
-  --date 2026-04-23 \
   --resize \
   --yes
 ```
 
-- `--host` — the hostname whose backups to restore (matches S3 prefix under `pi-image-backup/`)
-- `--date` — omit to restore the latest backup
-- `--resize` — expands the last partition to fill the NVMe (required when restoring to a larger drive)
-
-This streams directly from S3 — no local disk space needed. Takes ~20–30 min for a 7–8 GB compressed backup on a 100Mbps link.
+This streams the backup directly from S3. Takes ~20-30 min for a 7-8 GB backup.
 
 ---
 
-## Step 7 — Boot from NVMe
+## Step 7 — Wire up NVMe boot
 
-Once restore completes:
-
-1. Power off the Pi
-2. Remove the SD card
-3. Power on — Pi boots from NVMe
-
----
-
-## Step 8 — Set up Cloudflare tunnel
-
-Install cloudflared and create a new tunnel for `qa.andrewbaker.ninja`:
+After restore, run the boot-wiring script while still on the SD:
 
 ```bash
-curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64.deb -o cloudflared.deb
-sudo dpkg -i cloudflared.deb
-cloudflared tunnel login
-cloudflared tunnel create andrewninja-pi-qa
-# Edit ~/.cloudflared/config.yml with tunnel ID and qa.andrewbaker.ninja ingress
-sudo cloudflared service install
-sudo systemctl enable --now cloudflared
+sudo bash ~/pi2s3/extras/post-restore-nvme-boot.sh
 ```
 
-Then add a CNAME in Cloudflare DNS: `qa.andrewbaker.ninja` → `<tunnel-id>.cfargotunnel.com`.
+This:
+- Fixes `/etc/fstab` PARTUUIDs for the new SD card
+- Points `cmdline.txt` `root=` at the NVMe partition
+- Adds `rootdelay=5` for NVMe PCIe enumeration
 
 ---
 
-## Common pitfalls
+## Step 8 — Swap cloudflared to the QA tunnel
 
-| Problem | Cause | Fix |
-|---------|-------|-----|
-| SSH not up after 10+ min | `packages:` block in user-data delays ssh module | Use `runcmd` for packages (see template) |
-| cloud-init skips runcmd | Same `instance_id` as previous flash | Change `instance_id` in meta-data before each flash |
-| `No backups found` error | Script running as sudo, AWS looks in `/root/.aws/` | Fixed in pi-image-restore.sh v2+ via `SUDO_USER` detection |
-| WiFi `wlan0: unavailable` | No regulatory domain set on Pi 5 | `iw reg set ZA` + `renderer: NetworkManager` in network-config |
-| Wrong host's backups | New Pi hostname doesn't match S3 prefix | Use `--host <original-hostname>` flag |
+The restored NVMe contains the **production** cloudflared config. Before rebooting, swap it:
+
+```bash
+# Find where the NVMe root is mounted (from post-restore output)
+RESTORE_ROOT=$(mount | awk '/nvme0n1p2/{print $3; exit}')
+
+sudo sed -i "s/tunnel: .*/tunnel: <QA_TUNNEL_UUID>/"          "${RESTORE_ROOT}/etc/cloudflared/config.yml"
+sudo sed -i "s|credentials-file:.*|credentials-file: /root/.cloudflared/<QA_TUNNEL_UUID>.json|" \
+                                                               "${RESTORE_ROOT}/etc/cloudflared/config.yml"
+sudo cp /root/.cloudflared/<QA_TUNNEL_UUID>.json               "${RESTORE_ROOT}/root/.cloudflared/"
+```
+
+---
+
+## Step 9 — Reboot into NVMe
+
+```bash
+sudo reboot
+```
+
+The Pi will boot from NVMe, connect to WiFi, and come up on the QA CF tunnel.
+SSH back in the same way: `ssh qa.andrewbaker.ninja`
+
+---
+
+## Troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| Tunnel never shows healthy | `cat /boot/firmware/pi2s3-firstboot.log` — check dpkg/systemctl errors |
+| `firstrun.sh` didn't run | Check `cmdline.txt` has `systemd.run=` or re-run `prepare-sd.sh` |
+| Pi won't boot from NVMe | `bash extras/recover-sd-boot.sh` (from Mac with SD card inserted) |
+| AWS access denied | `aws sts get-caller-identity` — re-run `aws configure` |
+| `No backups found` | Script running as sudo — fixed in v2+. Use `--host <hostname>` flag |
+| NVMe not found (`lsblk`) | NVMe not seated. Check PCIe connection and reboot |
+
+**Check the firstboot log first for any tunnel issue:**
+```bash
+cat /boot/firmware/pi2s3-firstboot.log
+```
+
+**Run the full diagnostic if the restore behaves unexpectedly:**
+```bash
+sudo bash ~/pi2s3/extras/diagnose-restore.sh
+```

@@ -80,18 +80,24 @@ source "${SCRIPT_DIR}/lib/log.sh"
 source "${SCRIPT_DIR}/lib/aws.sh"
 
 # ── Persistent restore log ────────────────────────────────────────────────────
-# Tee all output to /var/log/ so the log survives a watchdog reboot.
-# /tmp is cleared on boot; /var/log persists.
+# Log to /var/log/ so the log survives a watchdog reboot.
+# IMPORTANT: do NOT use exec > >(tee ...) here — bash process substitution
+# breaks command substitution $() in called functions (aws output goes to the
+# tee fd instead of being captured), causing silent empty-string failures.
 RESTORE_LOG="/var/log/pi2s3-restore-$(date +%Y%m%d_%H%M%S).log"
 if [[ -w /var/log ]]; then
-    exec > >(tee -a "${RESTORE_LOG}") 2>&1
+    exec >> "${RESTORE_LOG}" 2>&1
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Restore log: ${RESTORE_LOG}"
 fi
 
 [[ -z "${S3_BUCKET:-}" ]] && { echo "ERROR: S3_BUCKET is not set in config.env" >&2; exit 1; }
 [[ -z "${S3_REGION:-}" ]] && { echo "ERROR: S3_REGION is not set in config.env" >&2; exit 1; }
 
-AWS_PROFILE="${AWS_PROFILE:-}"
+# AWS_PROFILE must be unset (not empty string) when not in use — exporting ""
+# causes aws CLI to look for a profile named "" and fail.
+if [[ -z "${AWS_PROFILE:-}" ]]; then
+    unset AWS_PROFILE
+fi
 BACKUP_ENCRYPTION_PASSPHRASE="${BACKUP_ENCRYPTION_PASSPHRASE:-}"
 S3_BASE="pi-image-backup"
 S3_PREFIX=""   # set by resolve_s3_prefix()

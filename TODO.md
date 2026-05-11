@@ -4,6 +4,27 @@ All four planned items are complete as of v1.7.0.
 
 ---
 
+## 5. Fix and validate DR-quickstart.md WiFi setup path — DONE
+
+Replaced cloud-init approach (unreliable over WiFi on Pi OS Bookworm) with
+`extras/firstboot/prepare-sd.sh` — a Mac-side script that prepares the SD card
+after Raspberry Pi Imager (or does the full download+flash itself with `--flash`).
+
+What was built:
+- `extras/firstboot/prepare-sd.sh` — inject or full-flash mode; caches cloudflared
+  .deb locally, injects into Pi Imager's firstrun.sh or writes from scratch
+- `extras/DR-quickstart.md` — full rewrite using firstboot approach, WiFi-only path
+- `website/restore` — added network check + guidance for WiFi-only bootstrapping
+
+SSH via CF Access (`qa.andrewbaker.ninja`):
+```
+Host qa.andrewbaker.ninja
+    ProxyCommand cloudflared access ssh --hostname %h
+    User admin
+```
+
+---
+
 ## 1. Clone / staging environments — DONE (v1.7.0)
 
 `--post-restore <script>` flag on `pi-image-restore.sh`. Mounts the restored root partition, exports `RESTORE_ROOT`, and runs the user script before first boot. Template at `extras/post-restore-example.sh`.
