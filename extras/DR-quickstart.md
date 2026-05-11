@@ -200,6 +200,141 @@ SSH back in the same way: `ssh qa.andrewbaker.ninja`
 
 ---
 
+## Step 10 — Pair as a hot standby
+
+A cloned Pi becomes a live standby once you pair its Cloudflare tunnel with your
+main domain and wire up automatic DNS failover. When prod goes down, DNS swaps to
+the standby in under two minutes; when prod recovers, it swaps back.
+
+```
+Prod Pi    ── CF tunnel: <PROD_UUID> ──┐
+                                        ├── CNAME yourdomain.com  (swaps on failover)
+Standby Pi ── CF tunnel: <QA_UUID>   ──┘
+
+CF Worker watches prod heartbeats and updates the CNAME automatically.
+```
+
+### 10a — Verify both remote tunnel configs serve HTTP (not 404)
+
+cloudflared ignores the local `config.yml` ingress when a remote config exists on
+Cloudflare's side. Check both tunnels — the catch-all must forward to your app,
+not return `http_status:404`:
+
+```bash
+CF_ACCOUNT_ID="<your-account-id>"
+CF_API_TOKEN="<your-token>"   # Tunnel:Edit permission
+
+for UUID in <PROD_UUID> <QA_UUID>; do
+  echo "=== ${UUID} ==="
+  curl -s "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/cfd_tunnel/${UUID}/configurations" \
+    -H "Authorization: Bearer ${CF_API_TOKEN}" \
+    | python3 -c "
+import sys, json
+cfg = json.load(sys.stdin)
+for r in cfg['result']['config']['ingress']:
+    print(r.get('hostname','*'), '->', r['service'])
+"
+done
+# Catch-all line should be:  * -> http://127.0.0.1:<port>
+# NOT:                        * -> http_status:404
+```
+
+Fix a wrong catch-all (run once per tunnel that needs it):
+
+```bash
+UUID="<the-tunnel-uuid>"
+SSH_HOSTNAME="ssh-standby.yourdomain.com"  # or ssh.yourdomain.com for prod
+APP_PORT=8082
+
+curl -s -X PUT \
+  "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/cfd_tunnel/${UUID}/configurations" \
+  -H "Authorization: Bearer ${CF_API_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d "{\"config\":{\"ingress\":[
+        {\"hostname\":\"${SSH_HOSTNAME}\",\"service\":\"ssh://localhost:22\"},
+        {\"service\":\"http://127.0.0.1:${APP_PORT}\"}
+      ]}}"
+```
+
+> Running `prepare-sd.sh --cf-api-token` sets this correctly at SD-card prep time.
+
+### 10b — DNS records
+
+Three CNAMEs in Cloudflare DNS (all proxied):
+
+| Name | Points to | Swaps on failover? |
+|------|-----------|-------------------|
+| `yourdomain.com` | `<PROD_UUID>.cfargotunnel.com` | Yes → QA UUID |
+| `www.yourdomain.com` | `<PROD_UUID>.cfargotunnel.com` | Yes → QA UUID |
+| `ssh-standby.yourdomain.com` | `<QA_UUID>.cfargotunnel.com` | No — fixed |
+
+`ssh-standby.yourdomain.com` is permanent. The failover mechanism only touches
+the main domain and www.
+
+### 10c — SSH access to the standby without browser auth
+
+```bash
+# 1. Cloudflare dashboard → Access → Service Auth → Create Service Token
+#    Assign it to the SSH Access application for ssh-standby.yourdomain.com
+#    Note the Client ID and Secret.
+
+# 2. Make sure your SSH public key is in authorized_keys on the standby:
+ssh-copy-id -i ~/.ssh/your_pi_key.pub <user>@ssh-standby.yourdomain.com
+```
+
+Add to `~/.ssh/config`:
+
+```
+Host ssh-standby.yourdomain.com
+    ProxyCommand cloudflared access ssh --hostname ssh-standby.yourdomain.com \
+                 --id <CF-Access-Client-Id> \
+                 --secret <CF-Access-Client-Secret>
+    User <pi-username>
+    IdentityFile ~/.ssh/your_pi_key
+    StrictHostKeyChecking no
+```
+
+### 10d — Heartbeat + DNS-swap worker
+
+Deploy a Cloudflare Worker + KV namespace that:
+
+1. Accepts `POST /heartbeat` from prod Pi every minute
+2. On a 60-second schedule: if last heartbeat is > 2 min old → outage
+3. **On outage**: update `yourdomain.com` + `www` CNAMEs to `<QA_UUID>.cfargotunnel.com`, send alert
+4. **On recovery**: swap CNAMEs back to `<PROD_UUID>.cfargotunnel.com`, send recovery alert
+
+Add to prod Pi crontab (`crontab -e`):
+
+```bash
+* * * * * curl -s -X POST "https://uptime.yourdomain.com/heartbeat" \
+  -H "Authorization: Bearer <heartbeat-token>" >/dev/null 2>&1
+```
+
+### 10e — Run a failover drill
+
+```bash
+# Enable test mode — treats all incoming heartbeats as failures
+curl -s -X POST "https://uptime.yourdomain.com/admin/test-mode" \
+  -H "Authorization: Bearer <admin-token>" \
+  -d '{"enabled":true}'
+
+# Wait ~2 minutes. You should receive an outage alert and DNS swaps to standby.
+
+# Verify standby is serving:
+curl -I https://yourdomain.com   # expect 200 from standby Pi
+
+# Disable test mode — prod recovers, DNS swaps back automatically
+curl -s -X POST "https://uptime.yourdomain.com/admin/test-mode" \
+  -H "Authorization: Bearer <admin-token>" \
+  -d '{"enabled":false}'
+
+# Force immediate swap back to prod without waiting for the next heartbeat cycle:
+curl -s -X POST "https://uptime.yourdomain.com/admin/force-prod" \
+  -H "Authorization: Bearer <admin-token>"
+```
+
+---
+
 ## Troubleshooting
 
 | Problem | Fix |

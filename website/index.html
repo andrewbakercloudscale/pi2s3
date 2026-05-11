@@ -1275,6 +1275,110 @@
   </p>
 </section>
 
+<!-- PAIRING / HOT STANDBY -->
+<hr class="divider" />
+<section id="pairing">
+  <div class="section-label">High availability</div>
+  <h2>Pairing as a hot standby</h2>
+  <p class="section-intro">Restore to a second Pi, assign it its own Cloudflare tunnel, and wire up automatic DNS failover. When prod goes silent, DNS swaps to the standby in under two minutes.</p>
+
+  <div style="background:rgba(124,106,247,0.07); border:1px solid rgba(124,106,247,0.25); border-radius:12px; padding:1.1rem 1.4rem; font-size:0.83rem; color:var(--muted); line-height:1.6; margin-bottom:1.75rem;">
+    <div style="font-family:var(--mono); font-size:0.8rem; color:var(--text);">
+      Prod Pi &nbsp;&nbsp;── tunnel: &lt;PROD_UUID&gt; ──┐<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── CNAME yourdomain.com &nbsp;(swaps on failover)<br>
+      Standby Pi ── tunnel: &lt;QA_UUID&gt; &nbsp;──┘<br>
+      <span style="color:var(--muted);">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;↑ CF Worker watches heartbeats, updates the CNAME automatically</span>
+    </div>
+  </div>
+
+  <div class="qs-step">
+    <div class="qs-num">1</div>
+    <div class="qs-content">
+      <h3>Verify both tunnel remote configs serve HTTP</h3>
+      <p>cloudflared ignores the local <code>config.yml</code> ingress when a remote config exists on Cloudflare's side. The catch-all rule must forward to your app — not return <code>http_status:404</code>. Check both tunnels:</p>
+      <pre><span class="cmt"># List ingress rules for a tunnel</span>
+<span class="kw">curl</span> -s "https://api.cloudflare.com/client/v4/accounts/<span class="str">${CF_ACCOUNT_ID}</span>/cfd_tunnel/<span class="str">${UUID}</span>/configurations" \
+  -H <span class="num">"Authorization: Bearer ${CF_API_TOKEN}"</span> \
+  | python3 -c <span class="num">"
+import sys, json
+for r in json.load(sys.stdin)['result']['config']['ingress']:
+    print(r.get('hostname','*'), '-&gt;', r['service'])
+"</span>
+
+<span class="cmt"># Catch-all should be:  * -&gt; http://127.0.0.1:&lt;port&gt;
+# Fix with prepare-sd.sh --cf-api-token, or see DR-quickstart.md Step 10a</span></pre>
+    </div>
+  </div>
+
+  <div class="qs-step">
+    <div class="qs-num">2</div>
+    <div class="qs-content">
+      <h3>DNS records</h3>
+      <p>Three CNAMEs in Cloudflare DNS (all proxied). The failover mechanism only touches the main domain and www — the standby SSH hostname is permanent.</p>
+      <pre><span class="cmt"># Main domain — swaps to QA UUID on failover</span>
+yourdomain.com       CNAME  <span class="str">&lt;PROD_UUID&gt;</span>.cfargotunnel.com
+
+<span class="cmt"># www alias — swaps with main</span>
+www.yourdomain.com   CNAME  <span class="str">&lt;PROD_UUID&gt;</span>.cfargotunnel.com
+
+<span class="cmt"># Standby SSH — fixed, never swaps</span>
+ssh-standby.yourdomain.com  CNAME  <span class="str">&lt;QA_UUID&gt;</span>.cfargotunnel.com</pre>
+    </div>
+  </div>
+
+  <div class="qs-step">
+    <div class="qs-num">3</div>
+    <div class="qs-content">
+      <h3>SSH access to the standby (no browser auth)</h3>
+      <p>Create a Cloudflare Access service token, assign it to the SSH application, then add it to your SSH config so <code>ssh ssh-standby.yourdomain.com</code> works directly from your Mac.</p>
+      <pre><span class="cmt"># ~/.ssh/config</span>
+<span class="kw">Host</span> ssh-standby.yourdomain.com
+    ProxyCommand cloudflared access ssh --hostname ssh-standby.yourdomain.com \
+                 --id <span class="str">&lt;CF-Access-Client-Id&gt;</span> \
+                 --secret <span class="str">&lt;CF-Access-Client-Secret&gt;</span>
+    User <span class="str">&lt;pi-username&gt;</span>
+    IdentityFile ~/.ssh/your_pi_key
+    StrictHostKeyChecking no</pre>
+      <p style="margin-top:0.5rem; font-size:0.85rem; color:var(--muted);">Make sure your public key is in <code>~/.ssh/authorized_keys</code> on the standby: <code>ssh-copy-id -i ~/.ssh/your_pi_key.pub &lt;user&gt;@ssh-standby.yourdomain.com</code></p>
+    </div>
+  </div>
+
+  <div class="qs-step">
+    <div class="qs-num">4</div>
+    <div class="qs-content">
+      <h3>Heartbeat + DNS-swap worker</h3>
+      <p>Deploy a Cloudflare Worker + KV namespace. Prod Pi posts a heartbeat every minute. The Worker checks on a 60-second schedule — if the heartbeat is stale it swaps DNS and alerts; when prod recovers it swaps back.</p>
+      <pre><span class="cmt"># Add to prod Pi crontab (crontab -e)</span>
+* * * * * <span class="kw">curl</span> -s -X POST <span class="num">"https://uptime.yourdomain.com/heartbeat"</span> \
+  -H <span class="num">"Authorization: Bearer &lt;heartbeat-token&gt;"</span> &gt;/dev/null 2&gt;&amp;1</pre>
+      <p style="margin-top:0.5rem; font-size:0.85rem; color:var(--muted);">The Worker calls the Cloudflare API to update the CNAMEs. On outage: <code>yourdomain.com</code> → QA UUID. On recovery: → prod UUID.</p>
+    </div>
+  </div>
+
+  <div class="qs-step">
+    <div class="qs-num">5</div>
+    <div class="qs-content">
+      <h3>Run a failover drill</h3>
+      <pre><span class="cmt"># Enable test mode — treats all heartbeats as failures</span>
+<span class="kw">curl</span> -s -X POST <span class="num">"https://uptime.yourdomain.com/admin/test-mode"</span> \
+  -H <span class="num">"Authorization: Bearer &lt;admin-token&gt;"</span> \
+  -d <span class="num">'{"enabled":true}'</span>
+
+<span class="cmt"># Wait ~2 min — watch for outage alert + DNS swap</span>
+<span class="kw">curl</span> -I https://yourdomain.com   <span class="cmt"># should return 200 from standby</span>
+
+<span class="cmt"># Disable test mode — prod recovers, DNS swaps back</span>
+<span class="kw">curl</span> -s -X POST <span class="num">"https://uptime.yourdomain.com/admin/test-mode"</span> \
+  -H <span class="num">"Authorization: Bearer &lt;admin-token&gt;"</span> \
+  -d <span class="num">'{"enabled":false}'</span>
+
+<span class="cmt"># Force immediate swap back without waiting for next heartbeat cycle</span>
+<span class="kw">curl</span> -s -X POST <span class="num">"https://uptime.yourdomain.com/admin/force-prod"</span> \
+  -H <span class="num">"Authorization: Bearer &lt;admin-token&gt;"</span></pre>
+    </div>
+  </div>
+</section>
+
 <!-- GO FURTHER -->
 <hr class="divider" />
 <section id="go-further">
