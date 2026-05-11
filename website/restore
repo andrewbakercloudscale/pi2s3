@@ -8,6 +8,12 @@
 #   3. Clones pi2s3 into ~/pi2s3 (or pulls latest if already there)
 #   4. Runs pi-image-restore.sh — which lists your S3 backups and
 #      streams the selected one directly to the target device
+#
+# NOTE: Run this ON THE PI after you have SSH access.
+# If you are on WiFi only (no ethernet), you need to set up a
+# Cloudflare tunnel first so you can SSH in:
+#   See: extras/firstboot/prepare-sd.sh  (run on your Mac)
+#   Docs: extras/DR-quickstart.md
 
 set -euo pipefail
 
@@ -48,12 +54,33 @@ if [[ -f /proc/device-tree/model ]]; then
 fi
 if [[ -n "${PI_MODEL}" ]]; then ok "${PI_MODEL} — ${ARCH}"; else ok "Linux — ${ARCH}"; fi
 
+# ── Network check ─────────────────────────────────────────────────────────────
+section "Network"
+
+if ip route show default &>/dev/null 2>&1 && \
+   timeout 5 bash -c 'echo >/dev/tcp/1.1.1.1/443' 2>/dev/null; then
+    ok "Internet reachable"
+else
+    echo ""
+    warn "No internet connection detected."
+    echo ""
+    echo "  If you are on WiFi, check:"
+    echo "    nmcli device status"
+    echo "    nmcli radio wifi"
+    echo ""
+    echo "  To diagnose all connectivity issues:"
+    echo "    sudo bash ~/pi2s3/extras/diagnose-restore.sh"
+    echo ""
+    printf "  Continue anyway? [y/N] "; read -r _ans
+    [[ "${_ans,,}" == "y" ]] || exit 1
+fi
+
 # ── Dependencies ──────────────────────────────────────────────────────────────
 section "Dependencies"
 
 if command -v apt-get &>/dev/null; then
     PKGS=()
-    for pkg in git partclone pigz pv unzip; do
+    for pkg in git partclone pigz pv unzip jq; do
         dpkg -s "${pkg}" &>/dev/null || PKGS+=("${pkg}")
     done
     if [[ ${#PKGS[@]} -gt 0 ]]; then
@@ -61,7 +88,7 @@ if command -v apt-get &>/dev/null; then
         sudo apt-get update -qq
         sudo apt-get install -y -qq "${PKGS[@]}"
     fi
-    ok "git partclone pigz pv"
+    ok "git partclone pigz pv jq"
 else
     command -v git       &>/dev/null || die "git not found. Install it and retry."
     command -v partclone &>/dev/null || die "partclone not found. Install it and retry."

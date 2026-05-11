@@ -776,21 +776,22 @@
     </div>
     <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:0.7rem;">
 
-      <div class="feat-card feat-card--teal">
+      <div class="feat-card feat-card--teal" style="opacity:0.6;">
         <div style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.45rem;">
           <span style="font-size:1.05rem;">📡</span>
           <span style="font-size:0.87rem; font-weight:700; color:#5eead4; letter-spacing:-0.01em;">HTTP Netboot</span>
-          <span style="font-size:0.67rem; background:rgba(94,234,212,0.2); border:1px solid rgba(94,234,212,0.5); border-radius:4px; padding:0.1rem 0.45rem; color:#5eead4; font-weight:700; margin-left:auto; white-space:nowrap;">Pi 5 only</span>
+          <span style="font-size:0.67rem; background:rgba(251,191,36,0.2); border:1px solid rgba(251,191,36,0.5); border-radius:4px; padding:0.1rem 0.45rem; color:#fbbf24; font-weight:700; margin-left:auto; white-space:nowrap;">Coming Soon</span>
         </div>
         <div style="font-size:0.8rem; color:#cbd5e1; line-height:1.55;">Power&nbsp;+&nbsp;ethernet only. Pi&nbsp;5 fetches the restore environment from <code style="font-size:0.76rem; color:#5eead4; background:rgba(94,234,212,0.15); padding:0.1em 0.35em; border-radius:3px;">boot.pi2s3.com</code> — no SD card, no USB, no media.</div>
       </div>
 
-      <div class="feat-card feat-card--amber">
+      <div class="feat-card feat-card--amber" style="opacity:0.6;">
         <div style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.45rem;">
           <span style="font-size:1.05rem;">💾</span>
           <span style="font-size:0.87rem; font-weight:700; color:#fbbf24; letter-spacing:-0.01em;">Recovery USB</span>
+          <span style="font-size:0.67rem; background:rgba(251,191,36,0.2); border:1px solid rgba(251,191,36,0.5); border-radius:4px; padding:0.1rem 0.45rem; color:#fbbf24; font-weight:700; margin-left:auto; white-space:nowrap;">Coming Soon</span>
         </div>
-        <div style="font-size:0.8rem; color:#cbd5e1; line-height:1.55;">Pre-built bootable image — flash, boot, wizard launches automatically. <a href="https://github.com/andrewbakercloudscale/pi2s3/releases" target="_blank" style="color:#fbbf24; text-decoration:none; font-weight:600;">Download from Releases&nbsp;→</a></div>
+        <div style="font-size:0.8rem; color:#cbd5e1; line-height:1.55;">Pre-built bootable image — flash, boot, wizard launches automatically. Coming in a future release.</div>
       </div>
 
       <div class="feat-card feat-card--purple">
@@ -1149,10 +1150,10 @@
   <div class="qs-step">
     <div class="qs-num">1</div>
     <div class="qs-content">
-      <h3>Get a Pi into recovery mode</h3>
-      <p><strong>Option A — Recovery USB (recommended, zero-prereq):</strong> Flash the <a href="https://github.com/andrewbakercloudscale/pi2s3/releases" target="_blank" style="color:var(--accent2);">pre-built recovery image</a> to a USB or SD card with <a href="https://www.raspberrypi.com/software/" target="_blank" style="color:var(--accent2)">Raspberry Pi Imager</a>. Boot — it auto-logs in and prompts for credentials. Skip to step 3.</p>
-      <p style="margin-top:0.5rem;"><strong>Option B — HTTP netboot (Pi 5, no media):</strong> Run <code>bash extras/setup-netboot.sh --force</code> on the Pi, reboot. It fetches the restore environment from <code>boot.pi2s3.com</code> over ethernet. Skip to step 3.</p>
-      <p style="margin-top:0.5rem;"><strong>Option C — Manual:</strong> Flash Raspberry Pi OS Lite (64-bit) to an SD card with Raspberry Pi Imager, enable SSH, boot, SSH in, continue to step 2.</p>
+      <h3>Flash an SD card and boot the Pi</h3>
+      <p>Flash <strong>Raspberry Pi OS Lite (64-bit)</strong> to an SD card with <a href="https://www.raspberrypi.com/software/" target="_blank" style="color:var(--accent2)">Raspberry Pi Imager</a>. In OS Customisation set your hostname, username/password, and enable SSH. <strong>Connect ethernet</strong> before powering on — the restore streams ~22 GB from S3 and requires a wired connection.</p>
+      <p style="margin-top:0.5rem;">Boot the Pi, wait ~60 seconds, SSH in, then continue to step 2.</p>
+      <p style="margin-top:0.5rem; font-size:0.85rem; color:var(--muted);">Recovery USB and HTTP Netboot restore options are coming soon.</p>
     </div>
   </div>
 
