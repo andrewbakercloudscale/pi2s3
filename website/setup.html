@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Setup — pi2s3</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <a href="index.html" class="nav-logo">pi<span>2</span>s3</a>
+  <div class="nav-links">
+    <a href="index.html" class="hide-sm">Home</a>
+    <a href="setup.html" class="hide-sm">Setup</a>
+    <a href="recovery.html" class="hide-sm">Recovery</a>
+    <a href="reference.html" class="hide-sm">Reference</a>
+    <a href="https://andrewbaker.ninja" target="_blank" class="hide-sm">andrewbaker.ninja</a>
+    <a href="https://github.com/andrewbakercloudscale/pi2s3" target="_blank" class="btn-gh">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      GitHub
+    </a>
+  </div>
+</nav>
+
+<!-- PAGE HERO -->
+<div class="page-hero">
+  <div class="page-hero-label">Getting started</div>
+  <h1>Install pi2s3 in minutes</h1>
+  <p>Two things to have in place before the first backup: an S3 bucket with an IAM policy, and AWS credentials on the Pi. The installer checks everything and walks you through it — from a clean Pi to a scheduled nightly backup in under 10 minutes.</p>
+</div>
+
+<!-- PREREQUISITES -->
+<hr class="divider" />
+<section id="prerequisites">
+  <div class="section-label">Before you start</div>
+  <h2>Prerequisites</h2>
+  <p class="section-intro">Three things to have in place before running install.sh. The installer verifies all three and will tell you what's missing.</p>
+
+  <div class="qs-step">
+    <div class="qs-num">1</div>
+    <div class="qs-content">
+      <h3>AWS account &amp; S3 bucket</h3>
+      <p>You need an AWS account and an S3 bucket in your chosen region. Create the bucket in the S3 console or with the CLI:</p>
+      <pre><span class="kw">aws</span> s3 mb s3://<span class="val">your-bucket-name</span> <span class="flag">--region</span> <span class="val">af-south-1</span></pre>
+    </div>
+  </div>
+
+  <div class="qs-step">
+    <div class="qs-num">2</div>
+    <div class="qs-content">
+      <h3>IAM credentials on the Pi</h3>
+      <p>Configure AWS credentials on the Pi. Use the minimum required permissions. Create an IAM user or role with this policy:</p>
+      <pre>{
+  <span class="str">"Version"</span>: <span class="str">"2012-10-17"</span>,
+  <span class="str">"Statement"</span>: [{
+    <span class="str">"Effect"</span>: <span class="str">"Allow"</span>,
+    <span class="str">"Action"</span>: [
+      <span class="str">"s3:PutObject"</span>,
+      <span class="str">"s3:GetObject"</span>,
+      <span class="str">"s3:DeleteObject"</span>,
+      <span class="str">"s3:ListBucket"</span>
+    ],
+    <span class="str">"Resource"</span>: [
+      <span class="str">"arn:aws:s3:::your-bucket-name"</span>,
+      <span class="str">"arn:aws:s3:::your-bucket-name/*"</span>
+    ]
+  }]
+}</pre>
+      <p style="margin-top:0.75rem;">Then configure credentials on the Pi:</p>
+      <pre><span class="kw">aws configure</span>   <span class="cmt"># or set AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY in environment</span></pre>
+    </div>
+  </div>
+
+  <div class="qs-step">
+    <div class="qs-num">3</div>
+    <div class="qs-content">
+      <h3>Enable S3 bucket encryption</h3>
+      <p>Your backup contains secrets: <code>.env</code> files, SSH keys, database data, API tokens. Enable default encryption before the first backup. It costs nothing and takes 30 seconds.</p>
+      <pre><span class="kw">aws</span> s3api put-bucket-encryption \
+  <span class="flag">--bucket</span> <span class="val">your-bucket-name</span> \
+  <span class="flag">--server-side-encryption-configuration</span> \
+  <span class="str">'{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'</span></pre>
+      <p style="margin-top:0.75rem; color:var(--muted); font-size:0.9rem;">Use SSE KMS instead of AES256 if you need CloudTrail audit trails or cross account key management. The backup does not encrypt client side. S3 managed encryption is the recommended baseline.</p>
+    </div>
+  </div>
+</section>
+
+<!-- QUICKSTART -->
+<hr class="divider" />
+<section id="quickstart">
+  <div class="section-label">Quick start</div>
+  <h2>Up and running in minutes</h2>
+  <p class="section-intro">One install script handles dependencies, AWS verification, lifecycle policy, cron scheduling, and a dry run test.</p>
+
+  <div class="qs-step">
+    <div class="qs-num">1</div>
+    <div class="qs-content">
+      <h3>Run the installer on your Pi</h3>
+      <p>SSH into your Pi and paste one command. It detects your hardware, installs dependencies, prompts for your S3 bucket and region (creates the bucket if it doesn't exist), configures cron, runs a dry-run test, then offers to run a real backup immediately.</p>
+      <pre><span class="kw">curl</span> -sL pi2s3.com/install | bash</pre>
+    </div>
+  </div>
+
+  <div class="qs-step">
+    <div class="qs-num">2</div>
+    <div class="qs-content">
+      <h3>First backup</h3>
+      <p>Force an immediate backup to confirm everything works end to end. You'll get a push notification when done.</p>
+      <pre><span class="kw">bash</span> ~/pi2s3/pi-image-backup.sh <span class="kw">--force</span></pre>
+    </div>
+  </div>
+
+  <div class="qs-step">
+    <div class="qs-num">3</div>
+    <div class="qs-content">
+      <h3>List your backups</h3>
+      <pre><span class="kw">bash</span> ~/pi2s3/pi-image-backup.sh <span class="kw">--list</span>
+
+<span class="out">2026-04-16/  3.4 GB  raspberrypi  (nvme0n1, mmcblk0)
+2026-04-15/  3.3 GB  raspberrypi
+2026-04-14/  3.3 GB  raspberrypi</span></pre>
+    </div>
+  </div>
+
+  <div class="qs-step">
+    <div class="qs-num">4</div>
+    <div class="qs-content">
+      <h3>Named AWS profile</h3>
+      <p>If you use multiple AWS accounts, set a profile in config.env:</p>
+      <pre><span class="str">AWS_PROFILE</span>=<span class="num">"pi-backup"</span>   <span class="cmt"># in config.env</span></pre>
+    </div>
+  </div>
+
+  <div class="qs-step">
+    <div class="qs-num">5</div>
+    <div class="qs-content">
+      <h3>Check status any time</h3>
+      <pre><span class="kw">bash</span> ~/pi2s3/install.sh <span class="kw">--status</span>   <span class="cmt"># cron, log tail, dependency versions</span>
+<span class="kw">bash</span> ~/pi2s3/install.sh <span class="kw">--upgrade</span>  <span class="cmt"># git pull + redeploy</span></pre>
+    </div>
+  </div>
+
+  <div style="margin-top:2rem; background:rgba(124,106,247,0.08); border:1px solid rgba(124,106,247,0.35); border-radius:12px; padding:1.25rem 1.5rem; display:flex; align-items:flex-start; gap:1rem;">
+    <span style="font-size:1.4rem; flex-shrink:0; margin-top:0.1rem;">🔌</span>
+    <div>
+      <div style="font-size:0.9rem; font-weight:700; color:var(--accent); margin-bottom:0.3rem;">Using the CloudScale Cyber &amp; Devtools plugin?</div>
+      <div style="font-size:0.85rem; color:var(--muted); line-height:1.55;">Trigger backups, browse restore points, and monitor backup health directly from the WordPress admin panel — no SSH required. <a href="https://andrewbaker.ninja/wordpress-plugin-help/cloudscale-cyber-devtools-help/" target="_blank" style="color:var(--accent); font-weight:600; text-decoration:none;">View the backup &amp; restore panel docs&nbsp;→</a></div>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<hr class="divider" />
+<footer>
+  <div>
+    <div class="footer-brand">pi<span>2</span>s3</div>
+    <div class="footer-meta" style="margin-top:0.4rem;">Built by <a href="https://andrewbaker.ninja" target="_blank">Andrew Baker</a> · Group CIO, Capitec Bank</div>
+    <div style="margin-top:0.5rem;"><a href="https://github.com/andrewbakercloudscale/pi2s3/releases" target="_blank" style="display:inline-block; background: var(--surface2); border: 1px solid var(--border); border-radius:4px; padding:2px 8px; font-size:0.75rem; color: var(--accent); text-decoration:none; font-family: monospace;">v1.9.0</a></div>
+  </div>
+  <div class="footer-links">
+    <a href="https://github.com/andrewbakercloudscale/pi2s3" target="_blank">GitHub</a>
+    <a href="https://github.com/andrewbakercloudscale/pi2s3/blob/main/LICENSE" target="_blank">MIT License</a>
+    <a href="https://github.com/andrewbakercloudscale/pi2s3/blob/main/extras/DR-quickstart.md" target="_blank">Recovery Runbook</a>
+    <a href="https://andrewbaker.ninja" target="_blank">andrewbaker.ninja</a>
+    <a href="https://cloudtorepo.com" target="_blank">CloudToRepo</a>
+  </div>
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Recovery — pi2s3</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <a href="index.html" class="nav-logo">pi<span>2</span>s3</a>
+  <div class="nav-links">
+    <a href="index.html" class="hide-sm">Home</a>
+    <a href="setup.html" class="hide-sm">Setup</a>
+    <a href="recovery.html" class="hide-sm">Recovery</a>
+    <a href="reference.html" class="hide-sm">Reference</a>
+    <a href="https://andrewbaker.ninja" target="_blank" class="hide-sm">andrewbaker.ninja</a>
+    <a href="https://github.com/andrewbakercloudscale/pi2s3" target="_blank" class="btn-gh">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      GitHub
+    </a>
+  </div>
+</nav>
+
+<!-- PAGE HERO -->
+<div class="page-hero">
+  <div class="page-hero-label">Disaster recovery</div>
+  <h1>Restore, clone, and stay online</h1>
+  <p>A complete Pi — OS, containers, data, configuration, tunnel — streamed from S3 to new hardware in one command. This section covers the full flow: preparing a rescue SD card, running the restore, verifying the result, and optionally pairing a hot standby that takes over automatically when prod goes down.</p>
+</div>
+
+<!-- RESTORE -->
+<hr class="divider" />
+<section id="restore">
+  <div class="section-label">Disaster recovery</div>
+  <h2>Restore to a new Pi</h2>
+  <p class="section-intro">Flash an SD card with a Cloudflare tunnel baked in, boot the Pi, run one command. Full runbook in <a href="https://github.com/andrewbakercloudscale/pi2s3/blob/main/extras/DR-quickstart.md" target="_blank" style="color:var(--accent2)">DR-quickstart.md</a>.</p>
+
+  <div class="qs-step">
+    <div class="qs-num">1</div>
+    <div class="qs-content">
+      <h3>Prepare the SD card (WiFi + Cloudflare tunnel)</h3>
+      <p>Run on your Mac. Downloads Pi OS Lite, flashes it, installs <code>cloudflared</code>, and pre-configures your WiFi and Cloudflare tunnel — so the Pi comes up fully SSH-accessible on first boot with no cable and no monitor.</p>
+      <pre><span class="kw">bash</span> extras/firstboot/prepare-sd.sh <span class="kw">--flash --cf-api-token</span> &lt;CF_API_TOKEN&gt;</pre>
+      <p style="margin-top:0.5rem; font-size:0.85rem; color:var(--muted)">The <code>--cf-api-token</code> flag (Tunnel:Edit permission) syncs the remote ingress config so any hostname routes correctly through the tunnel — without it, unknown hostnames return 404. You will be prompted for your SD disk, WiFi SSID/password, Pi password, tunnel UUID, and CF hostname.</p>
+    </div>
+  </div>
+
+  <div class="qs-step">
+    <div class="qs-num">2</div>
+    <div class="qs-content">
+      <h3>Run the restore one-liner</h3>
+      <p>Installs dependencies and AWS CLI, prompts for your AWS credentials, then streams the backup directly from S3 to the target device. <strong style="color:var(--text)">Have your AWS access key and secret ready</strong> — retrieve them from your password manager first.</p>
+      <pre><span class="kw">curl</span> -sL pi2s3.com/restore | bash</pre>
+      <p style="margin-top:0.6rem; font-size:0.85rem; color:var(--muted)">Interactive: picks your latest backup and target device. Non-interactive: <code>bash ~/pi2s3/pi-image-restore.sh --date 2026-04-16 --device /dev/nvme0n1 --yes</code></p>
+    </div>
+  </div>
+
+  <div class="qs-step">
+    <div class="qs-num">3</div>
+    <div class="qs-content">
+      <h3>Validate (optional, before touching hardware)</h3>
+      <p>Confirm the S3 image exists and is intact from any machine that has AWS access.</p>
+      <pre><span class="kw">bash</span> ~/pi2s3/test-recovery.sh <span class="kw">--pre-flash</span>
+
+<span class="out">✔ AWS access OK
+✔ Image exists: 2026-04-16/  (3.4 GB)
+✔ Manifest: raspberrypi · Pi 5 · Bookworm · nvme0n1
+  Estimated restore time: ~12 min
+  Run: pi-image-restore.sh --date 2026-04-16 --device /dev/nvme0n1</span></pre>
+    </div>
+  </div>
+
+  <div class="qs-step">
+    <div class="qs-num qs-num--alt">or</div>
+    <div class="qs-content">
+      <h3>Partial restore: recover a single file or directory</h3>
+      <p>No target device needed. Streams the partition from S3, mounts it via a loop device, and copies the requested path to <code>./pi2s3-extract-&lt;date&gt;/</code>. Linux only.</p>
+      <pre><span class="cmt"># Recover /home/pi from the latest backup</span>
+<span class="kw">bash</span> ~/pi2s3/pi-image-restore.sh <span class="kw">--extract</span> /home/pi
+
+<span class="cmt"># Recover /etc from a specific date</span>
+<span class="kw">bash</span> ~/pi2s3/pi-image-restore.sh <span class="kw">--extract</span> /etc <span class="kw">--date</span> <span class="num">2026-04-16</span>
+
+<span class="cmt"># Specify partition (default: largest non-boot = root fs)</span>
+<span class="kw">bash</span> ~/pi2s3/pi-image-restore.sh <span class="kw">--extract</span> /var/lib/docker <span class="kw">--partition</span> nvme0n1p2</pre>
+    </div>
+  </div>
+
+  <div class="qs-step">
+    <div class="qs-num qs-num--alt">or</div>
+    <div class="qs-content">
+      <h3>Restore to a larger device: --resize</h3>
+      <p>Restoring a 128 GB backup to a 256 GB NVMe? Pass <code>--resize</code> and the last partition automatically expands to fill the available space after flash. Uses <code>growpart</code> and <code>resize2fs</code>.</p>
+      <pre><span class="kw">bash</span> ~/pi2s3/pi-image-restore.sh <span class="kw">--date</span> <span class="num">2026-04-16</span> <span class="kw">--device</span> /dev/nvme0n1 <span class="kw">--resize</span></pre>
+    </div>
+  </div>
+
+  <div class="qs-step">
+    <div class="qs-num qs-num--alt">or</div>
+    <div class="qs-content">
+      <h3>Pi 5 NVMe: throttle writes to prevent PCIe crashes</h3>
+      <p>Some Pi 5 + NVMe combinations trigger a PCIe watchdog reset under sustained writes. <code>--rate-limit 10m</code> caps the uncompressed byte rate into <code>partclone</code> at 10 MB/s — applied after <code>gunzip</code> for direct write-rate control. Increase if stable. Requires <code>pv</code>.</p>
+      <pre><span class="kw">sudo apt install</span> pv
+<span class="kw">bash</span> ~/pi2s3/pi-image-restore.sh <span class="kw">--device</span> /dev/nvme0n1 <span class="kw">--resize --yes \
+  --rate-limit</span> 10m</pre>
+    </div>
+  </div>
+
+  <div class="qs-step">
+    <div class="qs-num qs-num--alt">or</div>
+    <div class="qs-content">
+      <h3>Wire NVMe boot on a new Pi (--post-restore)</h3>
+      <p>When restoring to a bare NVMe on a different Pi, the SD card PARTUUID in <code>/etc/fstab</code> and the <code>root=</code> in <code>/boot/firmware/cmdline.txt</code> need updating for the new hardware. <code>post-restore-nvme-boot.sh</code> handles both automatically — no manual editing.</p>
+      <pre><span class="kw">bash</span> ~/pi2s3/pi-image-restore.sh <span class="kw">--device</span> /dev/nvme0n1 <span class="kw">--resize --yes \
+  --rate-limit</span> 10m \
+  <span class="kw">--post-restore</span> extras/post-restore-nvme-boot.sh</pre>
+      <p style="margin-top:0.5rem; font-size:0.85rem; color:var(--muted)">Set <code>NEW_HOSTNAME=my-pi-qa</code> to rename the clone in the same step.</p>
+    </div>
+  </div>
+
+  <div class="qs-step">
+    <div class="qs-num">3</div>
+    <div class="qs-content">
+      <h3>Boot &amp; clear stale SSH key</h3>
+      <p>Raspberry Pi OS automatically expands the root filesystem. Clear the old host key on your Mac before connecting.</p>
+      <pre><span class="kw">ssh-keygen</span> -R raspberrypi.local
+<span class="kw">ssh</span> pi@raspberrypi.local</pre>
+    </div>
+  </div>
+
+  <div class="qs-step">
+    <div class="qs-num">4</div>
+    <div class="qs-content">
+      <h3>Post boot verification</h3>
+      <p>Checks filesystem expansion, NVMe mount, all Docker containers, Cloudflare tunnel, cron jobs, MariaDB, HTTP, memory, and load.</p>
+      <pre><span class="kw">bash</span> ~/pi2s3/test-recovery.sh <span class="kw">--post-boot</span>
+
+<span class="out">✔ OS: Debian GNU/Linux 12 (bookworm) aarch64
+✔ Filesystem expanded (954 GB)
+✔ NVMe mounted at /mnt/nvme
+✔ Docker: 6/6 containers running
+✔ Cloudflare tunnel: active (2 ha_connections)
+✔ Cron: pi2s3 backup + app-layer backup present
+✔ MariaDB: responding, 42 tables
+✔ HTTP: 200 OK on localhost</span></pre>
+    </div>
+  </div>
+
+  <div class="qs-step" style="margin-top:2rem;">
+    <div class="qs-num qs-num--alt">or</div>
+    <div class="qs-content">
+      <h3>Clone to a second Pi (--post-restore)</h3>
+      <p>Restore to a second Pi and customise it — different hostname, Cloudflare tunnel, or <code>.env</code> variables — before the first boot. The restored root is mounted read-write and your script runs inside it.</p>
+      <pre><span class="kw">bash</span> pi-image-restore.sh <span class="kw">--date</span> latest <span class="kw">--device</span> /dev/nvme0n1 \
+  <span class="kw">--post-restore</span> ~/post-restore-office.sh</pre>
+      <p style="margin-top:0.5rem; font-size:0.85rem; color:var(--muted)">Template: <code>extras/post-restore-example.sh</code></p>
+    </div>
+  </div>
+
+  <p style="margin-top:1rem; color:var(--muted); font-size:0.9rem; border-left:3px solid var(--border); padding-left:1rem;">
+    <strong style="color:var(--text);">If a restore is interrupted mid-way</strong> (network cut, power loss, wrong device) it is safe to rerun. partclone.restore writes blocks independently; rerunning overwrites the partial work cleanly. Re-apply the partition table with <code>sfdisk</code> before restarting the restore.
+  </p>
+</section>
+
+<!-- PAIRING / HOT STANDBY -->
+<hr class="divider" />
+<section id="pairing">
+  <div class="section-label">High availability</div>
+  <h2>Pairing as a hot standby</h2>
+  <p class="section-intro">Restore to a second Pi, assign it its own Cloudflare tunnel, and wire up automatic DNS failover. When prod goes silent, DNS swaps to the standby in under two minutes.</p>
+
+  <div style="background:rgba(124,106,247,0.07); border:1px solid rgba(124,106,247,0.25); border-radius:12px; padding:1.1rem 1.4rem; font-size:0.83rem; color:var(--muted); line-height:1.6; margin-bottom:1.75rem;">
+    <div style="font-family:var(--mono); font-size:0.8rem; color:var(--text);">
+      Prod Pi &nbsp;&nbsp;── tunnel: &lt;PROD_UUID&gt; ──┐<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── CNAME yourdomain.com &nbsp;(swaps on failover)<br>
+      Standby Pi ── tunnel: &lt;QA_UUID&gt; &nbsp;──┘<br>
+      <span style="color:var(--muted);">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;↑ CF Worker watches heartbeats, updates the CNAME automatically</span>
+    </div>
+  </div>
+
+  <div class="qs-step">
+    <div class="qs-num">1</div>
+    <div class="qs-content">
+      <h3>Verify both tunnel remote configs serve HTTP</h3>
+      <p>cloudflared ignores the local <code>config.yml</code> ingress when a remote config exists on Cloudflare's side. The catch-all rule must forward to your app — not return <code>http_status:404</code>. Check both tunnels:</p>
+      <pre><span class="cmt"># List ingress rules for a tunnel</span>
+<span class="kw">curl</span> -s "https://api.cloudflare.com/client/v4/accounts/<span class="str">${CF_ACCOUNT_ID}</span>/cfd_tunnel/<span class="str">${UUID}</span>/configurations" \
+  -H <span class="num">"Authorization: Bearer ${CF_API_TOKEN}"</span> \
+  | python3 -c <span class="num">"
+import sys, json
+for r in json.load(sys.stdin)['result']['config']['ingress']:
+    print(r.get('hostname','*'), '-&gt;', r['service'])
+"</span>
+
+<span class="cmt"># Catch-all should be:  * -&gt; http://127.0.0.1:&lt;port&gt;
+# Fix with prepare-sd.sh --cf-api-token, or see DR-quickstart.md Step 10a</span></pre>
+    </div>
+  </div>
+
+  <div class="qs-step">
+    <div class="qs-num">2</div>
+    <div class="qs-content">
+      <h3>DNS records</h3>
+      <p>Three CNAMEs in Cloudflare DNS (all proxied). The failover mechanism only touches the main domain and www — the standby SSH hostname is permanent.</p>
+      <pre><span class="cmt"># Main domain — swaps to QA UUID on failover</span>
+yourdomain.com       CNAME  <span class="str">&lt;PROD_UUID&gt;</span>.cfargotunnel.com
+
+<span class="cmt"># www alias — swaps with main</span>
+www.yourdomain.com   CNAME  <span class="str">&lt;PROD_UUID&gt;</span>.cfargotunnel.com
+
+<span class="cmt"># Standby SSH — fixed, never swaps</span>
+ssh-standby.yourdomain.com  CNAME  <span class="str">&lt;QA_UUID&gt;</span>.cfargotunnel.com</pre>
+    </div>
+  </div>
+
+  <div class="qs-step">
+    <div class="qs-num">3</div>
+    <div class="qs-content">
+      <h3>SSH access to the standby (no browser auth)</h3>
+      <p>Create a Cloudflare Access service token, assign it to the SSH application, then add it to your SSH config so <code>ssh ssh-standby.yourdomain.com</code> works directly from your Mac.</p>
+      <pre><span class="cmt"># ~/.ssh/config</span>
+<span class="kw">Host</span> ssh-standby.yourdomain.com
+    ProxyCommand cloudflared access ssh --hostname ssh-standby.yourdomain.com \
+                 --id <span class="str">&lt;CF-Access-Client-Id&gt;</span> \
+                 --secret <span class="str">&lt;CF-Access-Client-Secret&gt;</span>
+    User <span class="str">&lt;pi-username&gt;</span>
+    IdentityFile ~/.ssh/your_pi_key
+    StrictHostKeyChecking no</pre>
+      <p style="margin-top:0.5rem; font-size:0.85rem; color:var(--muted);">Make sure your public key is in <code>~/.ssh/authorized_keys</code> on the standby: <code>ssh-copy-id -i ~/.ssh/your_pi_key.pub &lt;user&gt;@ssh-standby.yourdomain.com</code></p>
+    </div>
+  </div>
+
+  <div class="qs-step">
+    <div class="qs-num">4</div>
+    <div class="qs-content">
+      <h3>Heartbeat + DNS-swap worker</h3>
+      <p>Deploy a Cloudflare Worker + KV namespace. Prod Pi posts a heartbeat every minute. The Worker checks on a 60-second schedule — if the heartbeat is stale it swaps DNS and alerts; when prod recovers it swaps back.</p>
+      <pre><span class="cmt"># Add to prod Pi crontab (crontab -e)</span>
+* * * * * <span class="kw">curl</span> -s -X POST <span class="num">"https://uptime.yourdomain.com/heartbeat"</span> \
+  -H <span class="num">"Authorization: Bearer &lt;heartbeat-token&gt;"</span> &gt;/dev/null 2&gt;&amp;1</pre>
+      <p style="margin-top:0.5rem; font-size:0.85rem; color:var(--muted);">The Worker calls the Cloudflare API to update the CNAMEs. On outage: <code>yourdomain.com</code> → QA UUID. On recovery: → prod UUID.</p>
+    </div>
+  </div>
+
+  <div class="qs-step">
+    <div class="qs-num">5</div>
+    <div class="qs-content">
+      <h3>Run a failover drill</h3>
+      <pre><span class="cmt"># Enable test mode — treats all heartbeats as failures</span>
+<span class="kw">curl</span> -s -X POST <span class="num">"https://uptime.yourdomain.com/admin/test-mode"</span> \
+  -H <span class="num">"Authorization: Bearer &lt;admin-token&gt;"</span> \
+  -d <span class="num">'{"enabled":true}'</span>
+
+<span class="cmt"># Wait ~2 min — watch for outage alert + DNS swap</span>
+<span class="kw">curl</span> -I https://yourdomain.com   <span class="cmt"># should return 200 from standby</span>
+
+<span class="cmt"># Disable test mode — prod recovers, DNS swaps back</span>
+<span class="kw">curl</span> -s -X POST <span class="num">"https://uptime.yourdomain.com/admin/test-mode"</span> \
+  -H <span class="num">"Authorization: Bearer &lt;admin-token&gt;"</span> \
+  -d <span class="num">'{"enabled":false}'</span>
+
+<span class="cmt"># Force immediate swap back without waiting for next heartbeat cycle</span>
+<span class="kw">curl</span> -s -X POST <span class="num">"https://uptime.yourdomain.com/admin/force-prod"</span> \
+  -H <span class="num">"Authorization: Bearer &lt;admin-token&gt;"</span></pre>
+    </div>
+  </div>
+</section>
+
+<!-- GO FURTHER -->
+<hr class="divider" />
+<section id="go-further">
+  <div class="section-label">Beyond backup &amp; restore</div>
+  <h2>Clone, recover anywhere, deploy fleets</h2>
+  <p class="section-intro">pi2s3 ships four tools for scenarios beyond a single-Pi disaster recovery — staging environments, zero-media recovery, and mass deployment.</p>
+
+  <div class="card-grid">
+    <div class="card">
+      <h3>Clone / staging environments</h3>
+      <p>Restore a backup to a second Pi and have it come up as a different site — different Cloudflare tunnel, hostname, and <code>.env</code> values — without manual editing after reboot. <code>post-restore-nvme-boot.sh</code> handles the SD PARTUUID and <code>cmdline.txt</code> differences between Pi hardware automatically.</p>
+      <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="kw">bash</span> pi-image-restore.sh \
+  <span class="kw">--date</span> latest <span class="kw">--device</span> /dev/nvme0n1 \
+  <span class="kw">--resize --yes --rate-limit</span> 10m \
+  <span class="kw">--post-restore</span> extras/post-restore-nvme-boot.sh</pre>
+      <p style="margin-top:0.5rem; color:var(--muted); font-size:0.85rem;">For app customisation (hostname, CF tunnel, <code>.env</code>, SSH keys): <code>extras/post-restore-example.sh</code>.</p>
+    </div>
+
+    <div class="card">
+      <h3>Recovery USB image</h3>
+      <p>A pre-built bootable image with pi2s3 and all tools installed. Plug into any Pi 5, power on — it auto-logs in and launches the restore wizard. No laptop, no internet, no SD card setup required at restore time.</p>
+      <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="cmt"># Build your own (Linux, ~15 min)</span>
+<span class="kw">bash</span> extras/build-recovery-usb.sh</pre>
+      <p style="margin-top:0.5rem; color:var(--muted); font-size:0.85rem;">Or download a pre-built image from <a href="https://github.com/andrewbakercloudscale/pi2s3/releases" target="_blank" style="color:var(--accent2);">GitHub Releases</a>. Flash with Raspberry Pi Imager. Default SSH password: <code>recovery</code>.</p>
+    </div>
+
+    <div class="card">
+      <h3>HTTP netboot (Pi 5)</h3>
+      <p>Configure the Pi 5 EEPROM to fall back to the pi2s3 restore environment over HTTP when no NVMe is present. Power + ethernet is all you need — no physical media at all.</p>
+      <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="cmt"># One-time setup per Pi</span>
+<span class="kw">bash</span> extras/setup-netboot.sh
+<span class="kw">sudo</span> reboot
+
+<span class="cmt"># Force recovery boot immediately</span>
+<span class="kw">bash</span> extras/setup-netboot.sh <span class="kw">--force</span></pre>
+      <p style="margin-top:0.5rem; color:var(--muted); font-size:0.85rem;">Boot files served from <code>boot.pi2s3.com</code> (CloudFront → S3). Terraform in <code>extras/terraform/</code>.</p>
+    </div>
+
+    <div class="card">
+      <h3>Fleet deployment</h3>
+      <p>Deploy the same backup to 10–100 Pis from a CSV manifest. Each Pi gets the base image plus a per-Pi post-restore script for hostname, tunnel credentials, and SSH keys.</p>
+      <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="cmt"># fleet.csv</span>
+<span class="str">pi-01,192.168.1.101,latest,/dev/nvme0n1,./classroom.sh</span>
+<span class="str">pi-02,192.168.1.102,latest,/dev/nvme0n1,./classroom.sh</span>
+
+<span class="cmt"># Deploy all at once</span>
+<span class="kw">bash</span> extras/fleet-deploy.sh fleet.csv <span class="kw">--parallel</span></pre>
+      <p style="margin-top:0.5rem; color:var(--muted); font-size:0.85rem;">Per-Pi logs saved to <code>fleet-deploy-logs-*/</code>. Example manifest + scripts in <code>extras/fleet-example/</code>.</p>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<hr class="divider" />
+<footer>
+  <div>
+    <div class="footer-brand">pi<span>2</span>s3</div>
+    <div class="footer-meta" style="margin-top:0.4rem;">Built by <a href="https://andrewbaker.ninja" target="_blank">Andrew Baker</a> · Group CIO, Capitec Bank</div>
+    <div style="margin-top:0.5rem;"><a href="https://github.com/andrewbakercloudscale/pi2s3/releases" target="_blank" style="display:inline-block; background: var(--surface2); border: 1px solid var(--border); border-radius:4px; padding:2px 8px; font-size:0.75rem; color: var(--accent); text-decoration:none; font-family: monospace;">v1.9.0</a></div>
+  </div>
+  <div class="footer-links">
+    <a href="https://github.com/andrewbakercloudscale/pi2s3" target="_blank">GitHub</a>
+    <a href="https://github.com/andrewbakercloudscale/pi2s3/blob/main/LICENSE" target="_blank">MIT License</a>
+    <a href="https://github.com/andrewbakercloudscale/pi2s3/blob/main/extras/DR-quickstart.md" target="_blank">Recovery Runbook</a>
+    <a href="https://andrewbaker.ninja" target="_blank">andrewbaker.ninja</a>
+    <a href="https://cloudtorepo.com" target="_blank">CloudToRepo</a>
+  </div>
+</footer>
+
+</body>
+</html>
