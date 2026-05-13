@@ -83,6 +83,14 @@ hdr "Disk"
 df -h 2>/dev/null | awk '!seen[$1]++ && NR>1 && $1!~/tmpfs|udev/ \
     { printf "    %-22s %5s used  %5s free  %s\n", $6, $3, $4, $5 }' || true
 
+# ── SSH ──────────────────────────────────────────────────────
+hdr "SSH"
+SSH_SVC=$(systemctl is-active ssh 2>/dev/null || systemctl is-active sshd 2>/dev/null || echo "inactive")
+SSH_PORT=$(ss -tlnp 2>/dev/null | awk '/:22 /{print "open"}' | head -1)
+SSH_PORT="${SSH_PORT:-closed}"
+echo "    Service:   ${SSH_SVC}"
+echo "    Port 22:   ${SSH_PORT}"
+
 # ── Failed Services ──────────────────────────────────────────
 hdr "Failed Services"
 FAILED=$(systemctl list-units --state=failed --no-legend --no-pager 2>/dev/null \
