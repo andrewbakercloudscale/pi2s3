@@ -1,0 +1,19 @@
+[Unit]
+Description=Pi 60-second heartbeat (network, voltage, disk, temp)
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/usr/local/bin/pi-heartbeat.sh
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/pi-heartbeat.sh
+Restart=always
+RestartSec=5s
+StandardOutput=tty
+StandardError=journal
+TTYPath=/dev/tty1
+TTYReset=no
+TTYVHangup=no
+
+[Install]
+WantedBy=multi-user.target
