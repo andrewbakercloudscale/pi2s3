@@ -60,7 +60,7 @@ Docker:  ${CONTAINER_INFO}
 Load:    ${LOAD}"
 
 curl -s --max-time 10 \
-    -H "Title: ${HOST} — alive" \
+    -H "Title: PI: ${HOST}: Alive" \
     -H "Priority: min" \
     -H "Tags: white_check_mark" \
     -d "${MSG}" \

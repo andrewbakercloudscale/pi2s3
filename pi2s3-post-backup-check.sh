@@ -31,6 +31,8 @@ source "${CONFIG_FILE}"
 
 [[ -z "${NTFY_URL:-}" ]] && { echo "ERROR: NTFY_URL not set in config.env"; exit 1; }
 
+_SITE="${CF_SITE_HOSTNAME:-$(hostname)}"
+
 log()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] POST-CHECK: $*"; }
 
 ntfy_send() {
@@ -76,14 +78,14 @@ for container in ${STOPPED}; do
 done
 
 if [[ "${RESTART_OK}" == "true" ]]; then
-    ntfy_send "Pi: pi2s3 containers restarted" \
+    ntfy_send "PI: ${_SITE}: Containers Restarted" \
         "Containers were stopped after backup window on $(hostname) and have been restarted: ${STOPPED}
 
 Backup may have crashed mid-imaging. Check: /var/log/pi2s3-backup.log" \
         "high" "warning,floppy_disk"
     log "Restart complete. Alert sent."
 else
-    ntfy_send "Pi: pi2s3 containers STUCK" \
+    ntfy_send "PI: ${_SITE}: Containers Stuck" \
         "URGENT: Containers stopped after backup on $(hostname) and could NOT be restarted: ${STOPPED}
 
 Manual action required. Run: docker start ${STOPPED}
