@@ -128,7 +128,7 @@ if $backup_lock; then
         if [[ $((now - last_lock_alert)) -gt 1800 ]]; then
             if [[ -n "$NTFY_URL" ]]; then
                 curl -s -X POST "$NTFY_URL" \
-                    -H "Title: Orphaned backup lock killed (${FPM_SITE_HOSTNAME})" \
+                    -H "Title: PI: ${FPM_SITE_HOSTNAME}: Backup Lock Killed" \
                     -H "Priority: high" \
                     -H "Tags: warning" \
                     -d "Orphaned pi2s3 DB lock detected and killed (conn ${lock_ids}). All writes unblocked. Will not alert again for 30 min." \
@@ -150,7 +150,7 @@ else
     if [[ "$prev" -ge "$FPM_SATURATION_THRESHOLD" ]]; then
         if [[ -n "$NTFY_URL" ]]; then
             curl -s -X POST "$NTFY_URL" \
-                -H "Title: PHP-FPM recovered: ${FPM_SITE_HOSTNAME}" \
+                -H "Title: PI: ${FPM_SITE_HOSTNAME}: FPM Recovered" \
                 -H "Priority: low" \
                 -H "Tags: white_check_mark" \
                 -d "Workers no longer saturated. DB stuck queries: ${db_stuck}." \
@@ -183,7 +183,7 @@ if [[ "$count" -ge "$FPM_SATURATION_THRESHOLD" ]]; then
         fi
         if [[ -n "$NTFY_URL" ]]; then
             curl -s -X POST "$NTFY_URL" \
-                -H "Title: PHP-FPM SATURATED: ${FPM_SITE_HOSTNAME}" \
+                -H "Title: PI: ${FPM_SITE_HOSTNAME}: FPM Saturated" \
                 -H "Priority: urgent" \
                 -H "Tags: fire,rotating_light" \
                 -d "All PHP workers exhausted for ${count} consecutive checks (${count} min). Reason: ${reason}. ${alert_action}" \
@@ -215,7 +215,7 @@ if [[ "$count" -ge "$FPM_SATURATION_THRESHOLD" ]]; then
             echo "$now" > "$RESTART_FILE"
             if [[ -n "$NTFY_URL" ]]; then
                 curl -s -X POST "$NTFY_URL" \
-                    -H "Title: PHP-FPM auto-restarted: ${FPM_SITE_HOSTNAME}" \
+                    -H "Title: PI: ${FPM_SITE_HOSTNAME}: FPM Auto-Restarted" \
                     -H "Priority: high" \
                     -H "Tags: arrows_counterclockwise" \
                     -d "${FPM_WP_CONTAINER} restarted automatically after ${count} consecutive saturated checks. Reason: ${reason}. Next auto-restart available in $((FPM_RESTART_COOLDOWN / 60)) min." \
