@@ -1,0 +1,17 @@
+[Unit]
+Description=Pi boot status dump (network, voltage, disk, services)
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/usr/local/bin/pi-boot-status.sh
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+ExecStartPre=/bin/sleep 30
+ExecStart=/usr/local/bin/pi-boot-status.sh
+StandardOutput=journal+console
+StandardError=journal+console
+SuccessExitStatus=0 1
+
+[Install]
+WantedBy=multi-user.target

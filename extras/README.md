@@ -2,6 +2,37 @@
 
 Optional add-ons for specific setups. The core backup and restore scripts work without any of these.
 
+## pi-status-monitor/
+
+Boot status dump and 60-second rolling heartbeat. Useful for debugging any Pi that won't connect or behave after a restore or power cycle. Writes to the physical screen (`/dev/tty1`) with no kernel timestamp noise.
+
+**Boot dump** (`pi-boot-status.sh`) fires once after network is up and prints:
+- All network interfaces + IPs, WiFi SSID, external IP, gateway
+- Voltage/throttle status (correctly reads only current bits, not sticky history)
+- Disk, memory, load, CPU temperature
+- Failed systemd units
+- Recent dmesg errors/warnings
+
+**Heartbeat** (`pi-heartbeat.sh`) prints one line every 60 seconds:
+```
+   13:24  net=wifi:MySSID  volt=ok  disk=18%  mem=12%  load=0.04  temp=48°C
+```
+
+**Who needs this:** any Pi — no build-specific dependencies. Optionally set `HEARTBEAT_HTTP_URL` to also probe a local HTTP endpoint each tick.
+
+**Install:**
+```bash
+sudo bash extras/pi-status-monitor/setup.sh
+```
+
+**Watch:**
+```bash
+journalctl -u pi-heartbeat -f    # live heartbeat
+sudo pi-boot-status.sh           # run boot dump manually
+```
+
+---
+
 ## cf-tunnel-watchdog.sh
 
 Self-healing monitor for Pis that serve public traffic via a Cloudflare tunnel. Runs every 5 minutes as root, checks HTTP + tunnel health, and auto-recovers through three escalating phases before rebooting.
