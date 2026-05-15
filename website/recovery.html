@@ -166,58 +166,112 @@
 <hr class="divider" />
 <section id="pairing">
   <div class="section-label">High availability</div>
-  <h2>Pairing as a hot standby</h2>
-  <p class="section-intro">Restore to a second Pi, assign it its own Cloudflare tunnel, and wire up automatic DNS failover. When prod goes silent, DNS swaps to the standby in under two minutes.</p>
+  <h2>Hot standby: zero-downtime backup + daily sync</h2>
+  <p class="section-intro">Restore a second Pi from your S3 backup, wire up a failover command, and get both zero-downtime nightly backups and a daily-refreshed standby that can take over in minutes.</p>
 
-  <div style="background:rgba(124,106,247,0.07); border:1px solid rgba(124,106,247,0.25); border-radius:12px; padding:1.1rem 1.4rem; font-size:0.83rem; color:var(--muted); line-height:1.6; margin-bottom:1.75rem;">
-    <div style="font-family:var(--mono); font-size:0.8rem; color:var(--text);">
-      Prod Pi &nbsp;&nbsp;── tunnel: &lt;PROD_UUID&gt; ──┐<br>
-      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── CNAME yourdomain.com &nbsp;(swaps on failover)<br>
-      Standby Pi ── tunnel: &lt;QA_UUID&gt; &nbsp;──┘<br>
-      <span style="color:var(--muted);">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;↑ CF Worker watches heartbeats, updates the CNAME automatically</span>
+  <!-- Architecture diagram -->
+  <div style="background:rgba(124,106,247,0.07); border:1px solid rgba(124,106,247,0.25); border-radius:12px; padding:1.1rem 1.4rem; font-size:0.83rem; color:var(--muted); line-height:1.8; margin-bottom:1.5rem;">
+    <div style="font-family:var(--mono); font-size:0.79rem; color:var(--text);">
+      <span style="color:var(--accent2);">Nightly backup flow</span><br>
+      02:00 &nbsp;Backup starts &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ STANDBY_FAILOVER_CMD (traffic → standby)<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Polls verify URL until standby confirmed serving<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Docker stops, partclone runs, upload to S3<br>
+      02:30 &nbsp;Backup verified &nbsp;&nbsp;&nbsp;→ STANDBY_FAILBACK_CMD (traffic → primary)<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Polls verify URL until primary confirmed serving<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;S3 marker written: <em>standby-sync-ready/latest.json</em><br>
+      03:00 &nbsp;Standby cron fires → reads S3 marker, newer backup found<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Reboots to SD, restores NVMe from S3 (~30 min)<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Runs post-restore script (tunnel swap, hostname, .env)<br>
+      03:30 &nbsp;Standby reboots to NVMe — ready for failover
     </div>
+  </div>
+
+  <!-- Data overwrite warning -->
+  <div style="background:rgba(255,170,0,0.08); border:1px solid rgba(255,170,0,0.35); border-radius:10px; padding:1rem 1.3rem; margin-bottom:1.75rem; font-size:0.85rem; line-height:1.6;">
+    <strong style="color:#ffaa00;">⚠ Standby data is overwritten on every sync.</strong><br>
+    <span style="color:var(--muted);">Each nightly sync restores a full partition image from production onto the standby NVMe — every file, database row, and config change on the standby is permanently replaced. The standby is always a replica of production, never an independent server. Do not store data on the standby that you expect to survive a sync cycle.</span>
   </div>
 
   <div class="qs-step reveal">
     <div class="qs-num">1</div>
     <div class="qs-content">
-      <h3>Verify both tunnel remote configs serve HTTP</h3>
-      <p>cloudflared ignores the local <code>config.yml</code> ingress when a remote config exists on Cloudflare's side. The catch-all rule must forward to your app — not return <code>http_status:404</code>. Check both tunnels:</p>
-      <pre><span class="cmt"># List ingress rules for a tunnel</span>
-<span class="kw">curl</span> -s "https://api.cloudflare.com/client/v4/accounts/<span class="str">${CF_ACCOUNT_ID}</span>/cfd_tunnel/<span class="str">${UUID}</span>/configurations" \
-  -H <span class="num">"Authorization: Bearer ${CF_API_TOKEN}"</span> \
-  | python3 -c <span class="num">"
-import sys, json
-for r in json.load(sys.stdin)['result']['config']['ingress']:
-    print(r.get('hostname','*'), '-&gt;', r['service'])
-"</span>
-
-<span class="cmt"># Catch-all should be:  * -&gt; http://127.0.0.1:&lt;port&gt;
-# Fix with prepare-sd.sh --cf-api-token, or see DR-quickstart.md Step 10a</span></pre>
+      <h3>Set up the standby Pi (Steps 1–9 first)</h3>
+      <p>Follow <a href="https://github.com/andrewbakercloudscale/pi2s3/blob/main/extras/DR-quickstart.md" target="_blank" style="color:var(--accent2);">DR-quickstart.md</a> Steps 1–9 to restore a second Pi from your S3 backup and give it its own SSH hostname. Then run the sync installer on the standby:</p>
+      <pre><span class="cmt"># On the STANDBY Pi, after Steps 1–9</span>
+<span class="kw">bash</span> ~/pi2s3/extras/install-standby-sync.sh</pre>
+      <p style="margin-top:0.5rem; font-size:0.85rem; color:var(--muted);">This copies pi2s3 tools onto the SD card, installs a restore agent that runs automatically on SD boot, and adds a 30-min cron job that watches for the S3 sync marker.</p>
     </div>
   </div>
 
   <div class="qs-step reveal">
     <div class="qs-num">2</div>
     <div class="qs-content">
-      <h3>DNS records</h3>
-      <p>Three CNAMEs in Cloudflare DNS (all proxied). The failover mechanism only touches the main domain and www — the standby SSH hostname is permanent.</p>
-      <pre><span class="cmt"># Main domain — swaps to QA UUID on failover</span>
-yourdomain.com       CNAME  <span class="str">&lt;PROD_UUID&gt;</span>.cfargotunnel.com
+      <h3>Wire failover commands (provider-agnostic)</h3>
+      <p>In the <strong>primary Pi's</strong> <code>config.env</code>, set the two failover hooks and the verify URL. pi2s3 ships provider scripts for Cloudflare and Route 53 — or supply any shell command.</p>
+      <pre><span class="cmt"># Primary Pi config.env</span>
+HOT_STANDBY_ENABLED=<span class="num">true</span>
 
-<span class="cmt"># www alias — swaps with main</span>
-www.yourdomain.com   CNAME  <span class="str">&lt;PROD_UUID&gt;</span>.cfargotunnel.com
+<span class="cmt"># Cloudflare DNS example</span>
+STANDBY_FAILOVER_CMD=<span class="str">"bash ~/pi2s3/extras/failover/cf-dns-swap.sh --to-standby"</span>
+STANDBY_FAILBACK_CMD=<span class="str">"bash ~/pi2s3/extras/failover/cf-dns-swap.sh --to-primary"</span>
 
-<span class="cmt"># Standby SSH — fixed, never swaps</span>
-ssh-standby.yourdomain.com  CNAME  <span class="str">&lt;QA_UUID&gt;</span>.cfargotunnel.com</pre>
+<span class="cmt"># Route 53 example</span>
+<span class="cmt"># STANDBY_FAILOVER_CMD="bash ~/pi2s3/extras/failover/route53-swap.sh --to-standby"</span>
+<span class="cmt"># STANDBY_FAILBACK_CMD="bash ~/pi2s3/extras/failover/route53-swap.sh --to-primary"</span>
+
+<span class="cmt"># Backup waits until standby is confirmed serving before stopping Docker</span>
+STANDBY_VERIFY_URL=<span class="str">"https://yourdomain.com"</span>
+STANDBY_PRIMARY_VERIFY_URL=<span class="str">"https://yourdomain.com"</span>
+STANDBY_FAILOVER_TIMEOUT_SECS=<span class="num">300</span>
+
+<span class="cmt"># Optional: read current DNS TTL to calibrate propagation wait</span>
+STANDBY_VERIFY_DOMAIN=<span class="str">"yourdomain.com"</span></pre>
+      <p style="margin-top:0.5rem; font-size:0.85rem; color:var(--muted);">After calling the failover command, pi2s3 reads the DNS TTL via <code>dig</code> and polls <code>STANDBY_VERIFY_URL</code> until HTTP 2xx — so backup only proceeds once standby is actually serving. Write your own provider script using <code>extras/failover/generic-template.sh</code>.</p>
     </div>
   </div>
 
   <div class="qs-step reveal">
     <div class="qs-num">3</div>
     <div class="qs-content">
+      <h3>Cloudflare provider: required vars</h3>
+      <p>If using <code>cf-dns-swap.sh</code>, add these to <strong>primary's</strong> <code>config.env</code>. The API token needs <strong>Zone:DNS:Edit</strong> permission only.</p>
+      <pre><span class="cmt"># In primary config.env</span>
+CF_ZONE_ID=<span class="str">"&lt;your-zone-id&gt;"</span>         <span class="cmt"># zone dashboard → Overview → Zone ID</span>
+CF_API_TOKEN=<span class="str">"&lt;dns-edit-token&gt;"</span>      <span class="cmt"># Cloudflare API token, Zone:DNS:Edit</span>
+CF_FAILOVER_DOMAINS=<span class="str">"yourdomain.com,www.yourdomain.com"</span>
+PROD_TUNNEL_UUID=<span class="str">"&lt;production-tunnel-uuid&gt;"</span>
+STANDBY_TUNNEL_UUID=<span class="str">"&lt;standby-tunnel-uuid&gt;"</span>
+
+<span class="cmt"># Standby SSH hostname stays permanently on standby UUID — never swaps</span>
+<span class="cmt"># ssh-standby.yourdomain.com  CNAME  &lt;STANDBY_TUNNEL_UUID&gt;.cfargotunnel.com</span></pre>
+    </div>
+  </div>
+
+  <div class="qs-step reveal">
+    <div class="qs-num">4</div>
+    <div class="qs-content">
+      <h3>Configure the standby Pi's sync settings</h3>
+      <p>In the <strong>standby Pi's</strong> <code>config.env</code> (same S3 bucket and AWS creds as primary), enable sync and point to a post-restore script that re-applies standby-specific config after each restore.</p>
+      <pre><span class="cmt"># Standby Pi config.env</span>
+HOT_STANDBY_SYNC_ENABLED=<span class="num">true</span>
+STANDBY_SYNC_DEVICE=<span class="str">"/dev/nvme0n1"</span>
+
+<span class="cmt"># Confirm primary is up before syncing (skips sync if primary is down</span>
+<span class="cmt"># and this standby is serving traffic — prevents unnecessary downtime)</span>
+STANDBY_SYNC_PRIMARY_URL=<span class="str">"https://yourdomain.com"</span>
+
+<span class="cmt"># Runs after each restore: swaps CF tunnel UUID, updates hostname, etc.</span>
+<span class="cmt"># Copy extras/post-restore-standby-example.sh and fill in your values.</span>
+STANDBY_POST_RESTORE_SCRIPT=<span class="str">"~/pi2s3/extras/post-restore-standby.sh"</span></pre>
+      <p style="margin-top:0.5rem; font-size:0.85rem; color:var(--muted);">Template: <code>extras/post-restore-standby-example.sh</code>. The script receives the restored NVMe mount point as <code>$RESTORE_ROOT</code> and runs before the first boot — swap the CF tunnel UUID here so the standby doesn't come up using production credentials.</p>
+    </div>
+  </div>
+
+  <div class="qs-step reveal">
+    <div class="qs-num">5</div>
+    <div class="qs-content">
       <h3>SSH access to the standby (no browser auth)</h3>
-      <p>Create a Cloudflare Access service token, assign it to the SSH application, then add it to your SSH config so <code>ssh ssh-standby.yourdomain.com</code> works directly from your Mac.</p>
+      <p>Create a Cloudflare Access service token for the standby SSH hostname and add it to your local SSH config.</p>
       <pre><span class="cmt"># ~/.ssh/config</span>
 <span class="kw">Host</span> ssh-standby.yourdomain.com
     ProxyCommand cloudflared access ssh --hostname ssh-standby.yourdomain.com \
@@ -226,42 +280,29 @@ ssh-standby.yourdomain.com  CNAME  <span class="str">&lt;QA_UUID&gt;</span>.cfar
     User <span class="str">&lt;pi-username&gt;</span>
     IdentityFile ~/.ssh/your_pi_key
     StrictHostKeyChecking no</pre>
-      <p style="margin-top:0.5rem; font-size:0.85rem; color:var(--muted);">Make sure your public key is in <code>~/.ssh/authorized_keys</code> on the standby: <code>ssh-copy-id -i ~/.ssh/your_pi_key.pub &lt;user&gt;@ssh-standby.yourdomain.com</code></p>
+      <p style="margin-top:0.5rem; font-size:0.85rem; color:var(--muted);">Make sure your SSH public key is in <code>~/.ssh/authorized_keys</code> on the standby: <code>ssh-copy-id -i ~/.ssh/your_pi_key.pub &lt;user&gt;@ssh-standby.yourdomain.com</code></p>
     </div>
   </div>
 
   <div class="qs-step reveal">
-    <div class="qs-num">4</div>
+    <div class="qs-num">6</div>
     <div class="qs-content">
-      <h3>Heartbeat + DNS-swap worker</h3>
-      <p>Deploy a Cloudflare Worker + KV namespace. Prod Pi posts a heartbeat every minute. The Worker checks on a 60-second schedule — if the heartbeat is stale it swaps DNS and alerts; when prod recovers it swaps back.</p>
-      <pre><span class="cmt"># Add to prod Pi crontab (crontab -e)</span>
-* * * * * <span class="kw">curl</span> -s -X POST <span class="num">"https://uptime.yourdomain.com/heartbeat"</span> \
-  -H <span class="num">"Authorization: Bearer &lt;heartbeat-token&gt;"</span> &gt;/dev/null 2&gt;&amp;1</pre>
-      <p style="margin-top:0.5rem; font-size:0.85rem; color:var(--muted);">The Worker calls the Cloudflare API to update the CNAMEs. On outage: <code>yourdomain.com</code> → QA UUID. On recovery: → prod UUID.</p>
-    </div>
-  </div>
+      <h3>Test the full cycle</h3>
+      <pre><span class="cmt"># 1. Trigger a manual failover (primary → standby)</span>
+<span class="kw">bash</span> ~/pi2s3/extras/failover/cf-dns-swap.sh <span class="kw">--to-standby</span>
+<span class="kw">curl</span> -I https://yourdomain.com   <span class="cmt"># confirm 200 from standby</span>
 
-  <div class="qs-step reveal">
-    <div class="qs-num">5</div>
-    <div class="qs-content">
-      <h3>Run a failover drill</h3>
-      <pre><span class="cmt"># Enable test mode — treats all heartbeats as failures</span>
-<span class="kw">curl</span> -s -X POST <span class="num">"https://uptime.yourdomain.com/admin/test-mode"</span> \
-  -H <span class="num">"Authorization: Bearer &lt;admin-token&gt;"</span> \
-  -d <span class="num">'{"enabled":true}'</span>
+<span class="cmt"># 2. Fail back to primary</span>
+<span class="kw">bash</span> ~/pi2s3/extras/failover/cf-dns-swap.sh <span class="kw">--to-primary</span>
+<span class="kw">curl</span> -I https://yourdomain.com   <span class="cmt"># confirm 200 from primary</span>
 
-<span class="cmt"># Wait ~2 min — watch for outage alert + DNS swap</span>
-<span class="kw">curl</span> -I https://yourdomain.com   <span class="cmt"># should return 200 from standby</span>
+<span class="cmt"># 3. Trigger a manual sync cycle on standby</span>
+<span class="kw">ssh</span> ssh-standby.yourdomain.com \
+  <span class="str">"bash ~/pi2s3/extras/hot-standby-sync.sh"</span>
+<span class="cmt"># Standby will reboot, restore (~30 min), come back up</span>
 
-<span class="cmt"># Disable test mode — prod recovers, DNS swaps back</span>
-<span class="kw">curl</span> -s -X POST <span class="num">"https://uptime.yourdomain.com/admin/test-mode"</span> \
-  -H <span class="num">"Authorization: Bearer &lt;admin-token&gt;"</span> \
-  -d <span class="num">'{"enabled":false}'</span>
-
-<span class="cmt"># Force immediate swap back without waiting for next heartbeat cycle</span>
-<span class="kw">curl</span> -s -X POST <span class="num">"https://uptime.yourdomain.com/admin/force-prod"</span> \
-  -H <span class="num">"Authorization: Bearer &lt;admin-token&gt;"</span></pre>
+<span class="cmt"># 4. Confirm standby is back and shows today's date</span>
+<span class="kw">ssh</span> ssh-standby.yourdomain.com <span class="str">"cat ~/pi2s3/.standby-last-synced"</span></pre>
     </div>
   </div>
 </section>
