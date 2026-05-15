@@ -80,6 +80,14 @@ BACKUP_AUTO_VERIFY="${BACKUP_AUTO_VERIFY:-true}"
 BACKUP_ENCRYPTION_PASSPHRASE="${BACKUP_ENCRYPTION_PASSPHRASE:-}"
 PRE_BACKUP_CMD="${PRE_BACKUP_CMD:-}"
 POST_BACKUP_CMD="${POST_BACKUP_CMD:-}"
+HOT_STANDBY_ENABLED="${HOT_STANDBY_ENABLED:-false}"
+STANDBY_FAILOVER_CMD="${STANDBY_FAILOVER_CMD:-}"
+STANDBY_FAILBACK_CMD="${STANDBY_FAILBACK_CMD:-}"
+STANDBY_VERIFY_URL="${STANDBY_VERIFY_URL:-}"
+STANDBY_VERIFY_DOMAIN="${STANDBY_VERIFY_DOMAIN:-}"
+STANDBY_PRIMARY_VERIFY_URL="${STANDBY_PRIMARY_VERIFY_URL:-}"
+STANDBY_FAILOVER_TIMEOUT_SECS="${STANDBY_FAILOVER_TIMEOUT_SECS:-300}"
+STANDBY_SYNC_MARKER_KEY="${STANDBY_SYNC_MARKER_KEY:-standby-sync-ready/latest.json}"
 DB_CONTAINER="${DB_CONTAINER:-auto}"
 DB_ROOT_PASSWORD="${DB_ROOT_PASSWORD:-}"
 PROBE_URL="${PROBE_URL:-}"
@@ -160,6 +168,7 @@ _START_TIME=$(date +%s)
 _GPG_PASS_FILE=""
 _BG_PIDS=()
 _BG_RESULT_DIR=""
+_STANDBY_ACTIVE=false
 
 ntfy_send() {
     [[ -z "${NTFY_URL:-}" ]] && return 0
@@ -177,6 +186,146 @@ ntfy_send() {
         [[ ${_attempt} -lt 3 ]] && sleep $(( _attempt * 5 ))
     done
     return ${_rc}
+}
+
+# ── Hot standby failover / failback ──────────────────────────────────────────
+# standby_failover: called before Docker/DB stop. Runs STANDBY_FAILOVER_CMD
+# then waits for standby to confirm serving before the backup makes the site
+# unavailable. Checks DNS TTL (via dig) to know how long propagation may take,
+# then polls STANDBY_VERIFY_URL until HTTP 2xx/3xx or timeout.
+standby_failover() {
+    [[ "${HOT_STANDBY_ENABLED}" == "true" && -n "${STANDBY_FAILOVER_CMD}" ]] || return 0
+    log ""
+    log "Hot standby: failing over to standby before backup..."
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        log "  [DRY RUN] STANDBY_FAILOVER_CMD: ${STANDBY_FAILOVER_CMD}"
+        return 0
+    fi
+
+    log "  Running STANDBY_FAILOVER_CMD..."
+    if ! eval "${STANDBY_FAILOVER_CMD}" 2>&1; then
+        die "STANDBY_FAILOVER_CMD failed — aborting backup. Fix failover or set HOT_STANDBY_ENABLED=false."
+    fi
+    _STANDBY_ACTIVE=true
+    log "  Failover command complete."
+
+    # Read DNS TTL to understand propagation delay
+    local _ttl=0
+    if [[ -n "${STANDBY_VERIFY_DOMAIN}" ]] && command -v dig &>/dev/null; then
+        _ttl=$(dig +short +noall +answer "${STANDBY_VERIFY_DOMAIN}" 2>/dev/null \
+               | awk 'NR==1{print $2+0}' || echo 0)
+        _ttl=$(( _ttl > 0 ? _ttl : 0 ))
+        if [[ ${_ttl} -gt 0 ]]; then
+            log "  DNS TTL for ${STANDBY_VERIFY_DOMAIN}: ${_ttl}s"
+        fi
+    fi
+
+    # Poll verify URL until standby is confirmed serving, or fall back to TTL wait
+    if [[ -n "${STANDBY_VERIFY_URL}" ]]; then
+        log "  Polling standby verify URL: ${STANDBY_VERIFY_URL}"
+        local _start _elapsed _code
+        _start=$(date +%s)
+        while true; do
+            _code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
+                "${STANDBY_VERIFY_URL}" 2>/dev/null || echo "0")
+            if [[ "${_code}" =~ ^(200|301|302|303)$ ]]; then
+                _elapsed=$(( $(date +%s) - _start ))
+                log "  Standby confirmed serving (HTTP ${_code}) after ${_elapsed}s."
+                break
+            fi
+            _elapsed=$(( $(date +%s) - _start ))
+            if [[ ${_elapsed} -ge ${STANDBY_FAILOVER_TIMEOUT_SECS} ]]; then
+                log "  WARN: standby not confirmed within ${STANDBY_FAILOVER_TIMEOUT_SECS}s (last: HTTP ${_code})."
+                log "  Proceeding — standby may still be propagating."
+                break
+            fi
+            log "  Waiting for standby (HTTP ${_code}, ${_elapsed}s elapsed)..."
+            sleep 15
+        done
+    elif [[ ${_ttl} -gt 0 ]]; then
+        local _wait=$(( _ttl > 120 ? 120 : _ttl ))
+        log "  No STANDBY_VERIFY_URL set — waiting ${_wait}s (DNS TTL: ${_ttl}s)."
+        sleep "${_wait}"
+    else
+        log "  No STANDBY_VERIFY_URL or DNS TTL — waiting 30s for propagation."
+        sleep 30
+    fi
+
+    ntfy_send "PI > S3: ${_NTFY_SITE}: Failover Active" \
+        "$(hostname): traffic on standby. Starting backup." "low" "arrows_counterclockwise"
+}
+
+# standby_failback: called after backup is verified in S3. Runs STANDBY_FAILBACK_CMD,
+# confirms primary is serving, then writes the S3 sync marker so the standby knows
+# a new backup is ready to restore.
+standby_failback() {
+    [[ "${_STANDBY_ACTIVE}" == "true" ]] || return 0
+    log ""
+    log "Hot standby: failing back to primary..."
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        log "  [DRY RUN] STANDBY_FAILBACK_CMD: ${STANDBY_FAILBACK_CMD}"
+        _STANDBY_ACTIVE=false
+        return 0
+    fi
+
+    if [[ -n "${STANDBY_FAILBACK_CMD}" ]]; then
+        log "  Running STANDBY_FAILBACK_CMD..."
+        if ! eval "${STANDBY_FAILBACK_CMD}" 2>&1; then
+            log "  ERROR: STANDBY_FAILBACK_CMD failed — primary may still be unreachable!"
+            ntfy_send "PI > S3: ${_NTFY_SITE}: Failback Failed" \
+                "URGENT: STANDBY_FAILBACK_CMD failed on $(hostname). Manual intervention needed.
+Command: ${STANDBY_FAILBACK_CMD}" \
+                "urgent" "sos"
+            return 1
+        fi
+        log "  Failback command complete."
+    fi
+    _STANDBY_ACTIVE=false
+
+    # Confirm primary is serving before writing the sync marker
+    if [[ -n "${STANDBY_PRIMARY_VERIFY_URL}" ]]; then
+        log "  Verifying primary is serving: ${STANDBY_PRIMARY_VERIFY_URL}"
+        local _start _elapsed _code
+        _start=$(date +%s)
+        while true; do
+            _code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
+                "${STANDBY_PRIMARY_VERIFY_URL}" 2>/dev/null || echo "0")
+            if [[ "${_code}" =~ ^(200|301|302|303)$ ]]; then
+                _elapsed=$(( $(date +%s) - _start ))
+                log "  Primary confirmed (HTTP ${_code}) after ${_elapsed}s."
+                break
+            fi
+            _elapsed=$(( $(date +%s) - _start ))
+            if [[ ${_elapsed} -ge ${STANDBY_FAILOVER_TIMEOUT_SECS} ]]; then
+                log "  WARN: primary not confirmed within ${STANDBY_FAILOVER_TIMEOUT_SECS}s (HTTP ${_code})."
+                log "  Writing sync marker anyway — standby will check primary health before syncing."
+                break
+            fi
+            log "  Waiting for primary (HTTP ${_code}, ${_elapsed}s elapsed)..."
+            sleep 15
+        done
+    fi
+
+    _write_standby_sync_marker
+}
+
+_write_standby_sync_marker() {
+    [[ "${DRY_RUN}" == "true" ]] && { log "  [DRY RUN] skipping sync marker write"; return 0; }
+    local _json _key="s3://${S3_BUCKET}/${STANDBY_SYNC_MARKER_KEY}"
+    _json="{\"backup_date\":\"${DATE}\",\"backup_host\":\"${HOST_SHORT}\",\"backup_s3_prefix\":\"${S3_DATE_PREFIX}\",\"written_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
+    log "  Writing standby sync marker: ${_key}"
+    if echo "${_json}" | aws_cmd s3 cp - "${_key}" \
+        --content-type "application/json" \
+        --storage-class "STANDARD" 2>&1; then
+        log "  Sync marker written — standby will detect and restore from ${DATE} backup."
+    else
+        log "  WARN: failed to write standby sync marker."
+    fi
+    ntfy_send "PI > S3: ${_NTFY_SITE}: Failback + Sync Queued" \
+        "$(hostname): traffic back on primary. Standby sync queued from ${DATE} backup." \
+        "low" "white_check_mark"
 }
 
 # Run a mariadb query without exposing the password in command-line args.
@@ -603,6 +752,13 @@ Manual action required. Run: docker start ${_STOPPED_IDS[*]}" \
         fi
         _CONTAINERS_STOPPED=false
     fi
+    # Emergency failback: if backup crashed while standby was active,
+    # restore traffic to primary now that Docker is back up.
+    if [[ "${_STANDBY_ACTIVE}" == "true" ]]; then
+        log "Hot standby: backup failed — attempting emergency failback..."
+        standby_failback 2>&1 || log "  Emergency failback also failed — manual DNS intervention required!"
+    fi
+
     if [[ "${_BACKUP_SUCCEEDED}" != "true" && $rc -ne 0 ]]; then
         _LOG_TAIL=""
         if [[ -f "/var/log/pi2s3-backup.log" ]]; then
@@ -954,6 +1110,11 @@ fi
 
 # ── Pre-backup health check ───────────────────────────────────────────────────
 preflight_health
+
+# ── Hot standby failover ──────────────────────────────────────────────────────
+# Move traffic to standby BEFORE we stop Docker / lock the DB. This keeps the
+# site available to users for the full duration of the backup window.
+standby_failover
 
 # ── Consistent snapshot: DB lock (preferred) or Docker stop (fallback) ────────
 # DB lock path: start probe + FLUSH TABLES WITH READ LOCK. All containers stay
@@ -1380,6 +1541,11 @@ if [[ "${DRY_RUN}" != "true" ]]; then
 else
     log "  [DRY RUN] ${MANIFEST_JSON}"
 fi
+
+# ── Hot standby failback ──────────────────────────────────────────────────────
+# Backup is confirmed in S3. Restore traffic to primary and write the S3 marker
+# that tells the standby Pi to start its restore cycle.
+standby_failback
 
 # ── Prune old images ──────────────────────────────────────────────────────────
 log ""
