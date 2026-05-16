@@ -270,18 +270,26 @@ standby_failback() {
         return 0
     fi
 
-    if [[ -n "${STANDBY_FAILBACK_CMD}" ]]; then
-        log "  Running STANDBY_FAILBACK_CMD..."
-        if ! eval "${STANDBY_FAILBACK_CMD}" 2>&1; then
-            log "  ERROR: STANDBY_FAILBACK_CMD failed — primary may still be unreachable!"
-            ntfy_send "PI > S3: ${_NTFY_SITE}: Failback Failed" \
-                "URGENT: STANDBY_FAILBACK_CMD failed on $(hostname). Manual intervention needed.
-Command: ${STANDBY_FAILBACK_CMD}" \
-                "urgent" "sos"
-            return 1
-        fi
-        log "  Failback command complete."
+    if [[ -z "${STANDBY_FAILBACK_CMD}" ]]; then
+        log "  ERROR: STANDBY_FAILBACK_CMD is not set — cannot fail back to primary."
+        log "  Traffic is still on standby. Set STANDBY_FAILBACK_CMD in config.env."
+        ntfy_send "PI > S3: ${_NTFY_SITE}: Failback Not Configured" \
+            "URGENT: STANDBY_FAILBACK_CMD is empty on $(hostname).
+Traffic is still on standby. Configure STANDBY_FAILBACK_CMD and run manually." \
+            "urgent" "sos"
+        return 1
     fi
+
+    log "  Running STANDBY_FAILBACK_CMD..."
+    if ! eval "${STANDBY_FAILBACK_CMD}" 2>&1; then
+        log "  ERROR: STANDBY_FAILBACK_CMD failed — primary may still be unreachable!"
+        ntfy_send "PI > S3: ${_NTFY_SITE}: Failback Failed" \
+            "URGENT: STANDBY_FAILBACK_CMD failed on $(hostname). Manual intervention needed.
+Command: ${STANDBY_FAILBACK_CMD}" \
+            "urgent" "sos"
+        return 1
+    fi
+    log "  Failback command complete."
     _STANDBY_ACTIVE=false
 
     # Confirm primary is serving before writing the sync marker

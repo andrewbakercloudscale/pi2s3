@@ -81,7 +81,7 @@ for domain in "${DOMAINS[@]}"; do
 EOF
 )
 done
-CHANGES_JSON="${CHANGES_JSON%,}"  # trim trailing comma
+CHANGES_JSON=$(printf '%s' "${CHANGES_JSON}" | sed 's/,[[:space:]]*$//')
 
 CHANGE_BATCH=$(cat <<EOF
 {
@@ -91,13 +91,17 @@ CHANGE_BATCH=$(cat <<EOF
 EOF
 )
 
+_R53_ERR_TMP=$(mktemp)
 CHANGE_ID=$(aws route53 change-resource-record-sets \
     --hosted-zone-id "${R53_HOSTED_ZONE_ID}" \
     --change-batch "${CHANGE_BATCH}" \
-    --query 'ChangeInfo.Id' --output text 2>&1) || {
-    echo "  ERROR: Route53 change failed: ${CHANGE_ID}"
+    --query 'ChangeInfo.Id' --output text 2>"${_R53_ERR_TMP}") || {
+    echo "  ERROR: Route53 change failed:"
+    cat "${_R53_ERR_TMP}"
+    rm -f "${_R53_ERR_TMP}"
     exit 1
 }
+rm -f "${_R53_ERR_TMP}"
 
 echo "  Change submitted: ${CHANGE_ID}"
 

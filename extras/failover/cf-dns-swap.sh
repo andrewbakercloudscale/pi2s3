@@ -60,32 +60,54 @@ cf_api() {
     curl "${args[@]}"
 }
 
+# Wrap CF API calls with up to 3 attempts (exponential backoff).
+# Transient 429/503 from CF must not leave DNS stuck on standby.
+cf_api_retry() {
+    local _attempt _resp _success _err
+    for _attempt in 1 2 3; do
+        _resp=$(cf_api "$@")
+        _success=$(echo "${_resp}" | grep -o '"success":[a-z]*' | cut -d: -f2 || true)
+        [[ "${_success}" == "true" ]] && { echo "${_resp}"; return 0; }
+        _err=$(echo "${_resp}" | grep -o '"message":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+        echo "  CF API attempt ${_attempt}/3 failed: ${_err:-${_resp}}" >&2
+        [[ ${_attempt} -lt 3 ]] && sleep $(( _attempt * 10 ))
+    done
+    echo "${_resp}"
+    return 1
+}
+
 echo "CF DNS swap: pointing to ${LABEL} (${TARGET_UUID})..."
 
+_SKIP_COUNT=0
 IFS=',' read -ra DOMAINS <<< "${CF_FAILOVER_DOMAINS}"
 for domain in "${DOMAINS[@]}"; do
     domain="${domain// /}"
     [[ -z "${domain}" ]] && continue
 
-    # Look up the DNS record ID
-    resp=$(cf_api GET "/zones/${CF_ZONE_ID}/dns_records?type=CNAME&name=${domain}")
+    # Look up the DNS record ID (with retry)
+    resp=$(cf_api_retry GET "/zones/${CF_ZONE_ID}/dns_records?type=CNAME&name=${domain}") || {
+        echo "  FAIL  ${domain}: could not look up DNS record after 3 attempts"
+        exit 1
+    }
     record_id=$(echo "${resp}" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
     if [[ -z "${record_id}" ]]; then
-        echo "  WARN: no CNAME record found for ${domain} — skipping"
+        echo "  FAIL  ${domain}: no CNAME record found — cannot swap (partial failover is unsafe)"
+        (( _SKIP_COUNT++ )) || true
         continue
     fi
 
     new_content="${TARGET_UUID}.cfargotunnel.com"
-    resp=$(cf_api PATCH "/zones/${CF_ZONE_ID}/dns_records/${record_id}" \
-        "{\"content\":\"${new_content}\"}")
-    success=$(echo "${resp}" | grep -o '"success":[a-z]*' | cut -d: -f2 || true)
-    if [[ "${success}" == "true" ]]; then
-        echo "  OK  ${domain} → ${new_content}"
-    else
-        err=$(echo "${resp}" | grep -o '"message":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
-        echo "  FAIL  ${domain}: ${err:-unknown error}"
+    resp=$(cf_api_retry PATCH "/zones/${CF_ZONE_ID}/dns_records/${record_id}" \
+        "{\"content\":\"${new_content}\"}") || {
+        echo "  FAIL  ${domain}: PATCH failed after 3 attempts"
         exit 1
-    fi
+    }
+    echo "  OK  ${domain} → ${new_content}"
 done
+
+if [[ ${_SKIP_COUNT} -gt 0 ]]; then
+    echo "  ERROR: ${_SKIP_COUNT} domain(s) could not be swapped — aborting to avoid partial failover"
+    exit 1
+fi
 
 echo "CF DNS swap complete → ${LABEL}"

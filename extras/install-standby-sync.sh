@@ -110,14 +110,11 @@ echo ""
 echo "Installing pi2s3 restore tools on SD card..."
 
 SD_ROOT_MNT=$(mktemp -d)
-SD_BOOT_MNT=$(mktemp -d)
 _SD_ROOT_MOUNTED=false
-_SD_BOOT_MOUNTED=false
 
 cleanup() {
     [[ "${_SD_ROOT_MOUNTED}" == "true" ]] && sudo umount "${SD_ROOT_MNT}" 2>/dev/null || true
-    [[ "${_SD_BOOT_MOUNTED}" == "true" ]] && sudo umount "${SD_BOOT_MNT}" 2>/dev/null || true
-    rm -rf "${SD_ROOT_MNT}" "${SD_BOOT_MNT}"
+    rm -rf "${SD_ROOT_MNT}"
 }
 trap cleanup EXIT
 
@@ -160,6 +157,9 @@ echo ""
 echo "Wiring restore agent to SD boot sequence..."
 
 SD_AGENT_PATH="${SD_PI2S3_DIR}/extras/firstboot/standby-restore-agent.sh"
+# Strip the NVMe-side mount prefix — ExecStart must use the path as it
+# appears when the SD card boots (e.g. /home/pi/pi2s3/... not /tmp/tmp.XXXX/...)
+SD_AGENT_PATH_ON_CARD="${SD_AGENT_PATH#${SD_ROOT_MNT}}"
 
 # Install as a systemd one-shot service that runs early in boot
 SYSTEMD_DIR="${SD_ROOT_MNT}/etc/systemd/system"
@@ -174,7 +174,7 @@ Before=docker.service
 
 [Service]
 Type=oneshot
-ExecStart=/bin/bash ${SD_AGENT_PATH}
+ExecStart=/bin/bash ${SD_AGENT_PATH_ON_CARD}
 RemainAfterExit=yes
 StandardOutput=append:/var/log/pi2s3-standby-restore.log
 StandardError=append:/var/log/pi2s3-standby-restore.log
@@ -210,7 +210,7 @@ ok "Sudoers entry written: /etc/sudoers.d/pi2s3-standby-sync"
 # ── Create log file ───────────────────────────────────────────────────────────
 sudo touch /var/log/pi2s3-standby-sync.log
 sudo chown "${CURRENT_USER}:${CURRENT_USER}" /var/log/pi2s3-standby-sync.log 2>/dev/null || \
-    sudo chmod 666 /var/log/pi2s3-standby-sync.log
+    sudo chmod 640 /var/log/pi2s3-standby-sync.log
 ok "Log file: /var/log/pi2s3-standby-sync.log"
 
 # ── Unmount SD ────────────────────────────────────────────────────────────────
