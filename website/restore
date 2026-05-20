@@ -17,7 +17,8 @@
 set -euo pipefail
 
 # When piped through bash, stdin is the script not the terminal.
-[[ -t 0 ]] || exec </dev/tty
+# Skip TTY redirect in non-interactive mode (RESTORE_YES=true means no prompts needed).
+[[ -t 0 ]] || [[ -n "${RESTORE_YES:-}" ]] || exec </dev/tty
 
 # ── Colour output ─────────────────────────────────────────────────────────────
 if [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]]; then
@@ -113,6 +114,8 @@ fi
 # ── AWS credentials ───────────────────────────────────────────────────────────
 section "AWS"
 
+[[ -n "${AWS_PROFILE:-}" ]] && export AWS_PROFILE
+
 if aws sts get-caller-identity &>/dev/null 2>&1; then
     ok "Credentials configured ($(aws sts get-caller-identity --query 'Arn' --output text 2>/dev/null || echo 'ok'))"
 else
@@ -144,9 +147,43 @@ else
     ok "Cloned ($(git -C "${INSTALL_DIR}" rev-parse --short HEAD))"
 fi
 
+# ── Config file ───────────────────────────────────────────────────────────────
+section "Config"
+
+CONFIG_FILE="${INSTALL_DIR}/config.env"
+
+if [[ -f "${CONFIG_FILE}" ]]; then
+    ok "config.env exists"
+elif [[ -n "${RESTORE_S3_BUCKET:-}" ]]; then
+    {
+        echo "S3_BUCKET=\"${RESTORE_S3_BUCKET}\""
+        echo "S3_REGION=\"${RESTORE_S3_REGION:-us-east-1}\""
+        [[ -n "${AWS_PROFILE:-}" ]] && echo "AWS_PROFILE=\"${AWS_PROFILE}\""
+    } > "${CONFIG_FILE}"
+    ok "config.env created (${RESTORE_S3_BUCKET} / ${RESTORE_S3_REGION:-us-east-1})"
+else
+    echo ""
+    info "S3 bucket not configured."
+    read -r -p "  S3 bucket name: " _s3b
+    read -r -p "  S3 region [us-east-1]: " _s3r
+    {
+        echo "S3_BUCKET=\"${_s3b}\""
+        echo "S3_REGION=\"${_s3r:-us-east-1}\""
+    } > "${CONFIG_FILE}"
+    ok "config.env created"
+fi
+
 # ── Hand off to restore script ────────────────────────────────────────────────
 echo ""
 echo -e "  ${DIM}────────────────────────────────────────${RESET}"
 echo ""
 
-exec bash "${INSTALL_DIR}/pi-image-restore.sh"
+RESTORE_ARGS=()
+[[ -n "${RESTORE_DEVICE:-}" ]]      && RESTORE_ARGS+=(--device "${RESTORE_DEVICE}")
+[[ "${RESTORE_YES:-}" == "true" ]]  && RESTORE_ARGS+=(--yes)
+[[ -n "${RESTORE_DATE:-}" ]]        && RESTORE_ARGS+=(--date "${RESTORE_DATE}")
+[[ -n "${RESTORE_POST_SCRIPT:-}" ]] && RESTORE_ARGS+=(--post-restore "${RESTORE_POST_SCRIPT}")
+
+[[ ${#RESTORE_ARGS[@]} -gt 0 ]] && info "Flags: ${RESTORE_ARGS[*]}"
+
+exec bash "${INSTALL_DIR}/pi-image-restore.sh" "${RESTORE_ARGS[@]}"
