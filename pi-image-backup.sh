@@ -185,6 +185,11 @@ ntfy_send() {
             "${NTFY_URL}" > /dev/null 2>&1 && { _rc=0; break; }
         [[ ${_attempt} -lt 3 ]] && sleep $(( _attempt * 5 ))
     done
+    if [[ ${_rc} -eq 0 ]]; then
+        log "  ntfy sent: ${title}"
+    else
+        log "  WARNING: ntfy failed (all retries): ${title}"
+    fi
     return ${_rc}
 }
 
@@ -252,7 +257,7 @@ standby_failover() {
         sleep 30
     fi
 
-    ntfy_send "PI > S3: ${_NTFY_SITE}: Failover Active" \
+    ntfy_send "pi2s3: Failover Active" \
         "$(hostname): traffic on standby. Starting backup." "low" "arrows_counterclockwise"
 }
 
@@ -273,7 +278,7 @@ standby_failback() {
     if [[ -z "${STANDBY_FAILBACK_CMD}" ]]; then
         log "  ERROR: STANDBY_FAILBACK_CMD is not set — cannot fail back to primary."
         log "  Traffic is still on standby. Set STANDBY_FAILBACK_CMD in config.env."
-        ntfy_send "PI > S3: ${_NTFY_SITE}: Failback Not Configured" \
+        ntfy_send "pi2s3: Failback Not Configured" \
             "URGENT: STANDBY_FAILBACK_CMD is empty on $(hostname).
 Traffic is still on standby. Configure STANDBY_FAILBACK_CMD and run manually." \
             "urgent" "sos"
@@ -283,7 +288,7 @@ Traffic is still on standby. Configure STANDBY_FAILBACK_CMD and run manually." \
     log "  Running STANDBY_FAILBACK_CMD..."
     if ! eval "${STANDBY_FAILBACK_CMD}" 2>&1; then
         log "  ERROR: STANDBY_FAILBACK_CMD failed — primary may still be unreachable!"
-        ntfy_send "PI > S3: ${_NTFY_SITE}: Failback Failed" \
+        ntfy_send "pi2s3: Failback Failed" \
             "URGENT: STANDBY_FAILBACK_CMD failed on $(hostname). Manual intervention needed.
 Command: ${STANDBY_FAILBACK_CMD}" \
             "urgent" "sos"
@@ -331,7 +336,7 @@ _write_standby_sync_marker() {
     else
         log "  WARN: failed to write standby sync marker."
     fi
-    ntfy_send "PI > S3: ${_NTFY_SITE}: Failback + Sync Queued" \
+    ntfy_send "pi2s3: Failback + Sync Queued" \
         "$(hostname): traffic back on primary. Standby sync queued from ${DATE} backup." \
         "low" "white_check_mark"
 }
@@ -555,7 +560,7 @@ stale_check() {
 
     if [[ -z "${latest}" ]]; then
         log "No backups found in s3://${S3_BUCKET}/${S3_PREFIX}/"
-        ntfy_send "PI > S3: ${_NTFY_SITE}: Backup Missing" \
+        ntfy_send "pi2s3: Backup Missing" \
             "No backups found for ${HOST_SHORT} in s3://${S3_BUCKET}/${S3_PREFIX}/. Check AWS credentials and bucket." \
             "high" "warning,floppy_disk"
         exit 1
@@ -568,7 +573,7 @@ stale_check() {
 
     if [[ ${age_h} -gt ${STALE_BACKUP_HOURS} ]]; then
         log "OVERDUE: last backup ${latest} was ${age_h}h ago (threshold: ${STALE_BACKUP_HOURS}h)"
-        ntfy_send "PI > S3: ${_NTFY_SITE}: Backup Overdue" \
+        ntfy_send "pi2s3: Backup Overdue" \
             "No backup for ${HOST_SHORT} in ${age_h}h. Last: ${latest}. Expected every ${STALE_BACKUP_HOURS}h.
 Check cron: crontab -l | grep pi2s3
 Log: /var/log/pi2s3-backup.log" \
@@ -638,7 +643,7 @@ preflight_health() {
     if [[ "${_warn}" == "true" ]]; then
         log ""
         if [[ "${PREFLIGHT_ABORT_ON_WARN}" == "true" ]]; then
-            ntfy_send "PI > S3: ${_NTFY_SITE}: Backup Skipped" \
+            ntfy_send "pi2s3: Backup Skipped" \
                 "Preflight health check failed on $(hostname -s). Backup aborted. Check log: /var/log/pi2s3-backup.log" \
                 "high" "warning,floppy_disk"
             die "Preflight health warnings found and PREFLIGHT_ABORT_ON_WARN=true. Aborting."
@@ -740,7 +745,7 @@ on_exit() {
             _POST_BACKUP_RAN=true
         else
             log "  ERROR: POST_BACKUP_CMD failed during crash recovery!"
-            ntfy_send "PI > S3: ${_NTFY_SITE}: Post-Backup Failed" \
+            ntfy_send "pi2s3: Post-Backup Failed" \
                 "URGENT: backup crashed and POST_BACKUP_CMD failed on $(hostname).
 Manual action required. Command was: ${POST_BACKUP_CMD}" \
                 "urgent" "sos,floppy_disk"
@@ -753,7 +758,7 @@ Manual action required. Command was: ${POST_BACKUP_CMD}" \
             log "  Containers restarted."
         else
             log "  ERROR: docker start failed — containers may still be stopped!"
-            ntfy_send "PI > S3: ${_NTFY_SITE}: Containers Stuck" \
+            ntfy_send "pi2s3: Containers Stuck" \
                 "URGENT: backup crashed and container restart FAILED on $(hostname).
 Manual action required. Run: docker start ${_STOPPED_IDS[*]}" \
                 "urgent" "sos,floppy_disk"
@@ -772,7 +777,7 @@ Manual action required. Run: docker start ${_STOPPED_IDS[*]}" \
         if [[ -f "/var/log/pi2s3-backup.log" ]]; then
             _LOG_TAIL=$(tail -10 "/var/log/pi2s3-backup.log" 2>/dev/null || true)
         fi
-        ntfy_send "PI > S3: ${_NTFY_SITE}: Backup Failed" \
+        ntfy_send "pi2s3: Backup Failed" \
             "Backup on $(hostname) failed (exit ${rc}).
 Bucket: s3://${S3_BUCKET}/
 Log: /var/log/pi2s3-backup.log${_LOG_TAIL:+
@@ -1437,7 +1442,7 @@ if [[ "${_CONTAINERS_STOPPED}" == "true" && ${#_STOPPED_IDS[@]} -gt 0 ]]; then
             log "  Containers restarted."
         else
             log "  ERROR: docker start failed — containers may still be stopped!"
-            ntfy_send "PI > S3: ${_NTFY_SITE}: Containers Stuck" \
+            ntfy_send "pi2s3: Containers Stuck" \
                 "URGENT: post-imaging container restart FAILED on $(hostname).
 Manual action required. Run: docker start ${_STOPPED_IDS[*]}" \
                 "urgent" "sos,floppy_disk"
@@ -1458,7 +1463,7 @@ if [[ "${_PRE_BACKUP_RAN}" == "true" && -n "${POST_BACKUP_CMD}" ]]; then
             log "  POST_BACKUP_CMD complete."
         else
             log "  ERROR: POST_BACKUP_CMD failed — services may still be stopped!"
-            ntfy_send "PI > S3: ${_NTFY_SITE}: Post-Backup Failed" \
+            ntfy_send "pi2s3: Post-Backup Failed" \
                 "URGENT: POST_BACKUP_CMD failed on $(hostname).
 Manual action required. Command was: ${POST_BACKUP_CMD}" \
                 "urgent" "sos,floppy_disk"
@@ -1631,7 +1636,7 @@ if [[ "${BACKUP_AUTO_VERIFY}" == "true" && "${DRY_RUN}" != "true" ]]; then
     else
         log "  VERIFY FAILED — one or more files missing from S3!"
         _VERIFY_STATUS="failed"
-        ntfy_send "PI > S3: ${_NTFY_SITE}: Verify Failed" \
+        ntfy_send "pi2s3: Verify Failed" \
             "Backup on $(hostname) uploaded but S3 verify FAILED for ${DATE}.
 Check: bash pi-image-backup.sh --verify=${DATE}
 Log: /var/log/pi2s3-backup.log" \
@@ -1649,7 +1654,7 @@ if [[ "${NTFY_LEVEL}" != "failure" && "${DRY_RUN}" != "true" ]]; then
 Bucket: s3://${S3_BUCKET}/${S3_DATE_PREFIX}/
 Size:  ${TOTAL_COMPRESSED_HUMAN} compressed (from ${TOTAL_USED_HUMAN} used)
 Time:  ${TOTAL_ELAPSED}s${_VERIFY_LINE}${_PROBE_LINE}"
-    ntfy_send "PI > S3: ${_NTFY_SITE}: Backup Done" "${_NTFY_MSG}" "low" "white_check_mark,floppy_disk"
+    ntfy_send "pi2s3: Backup Done" "${_NTFY_MSG}" "low" "white_check_mark,floppy_disk"
 fi
 } # end main
 

@@ -115,7 +115,7 @@ if ! aws_cmd s3 cp "s3://${S3_BUCKET}/${STANDBY_SYNC_MARKER_KEY}" "${MARKER_TMP}
     fi
     log "  ERROR: S3 download failed (check credentials/config — this is not a missing key):"
     log "  ${_err_txt}"
-    ntfy_send "S3 > PI: ${_NTFY_SITE}: Sync Error" \
+    ntfy_send "pi2s3: Sync Error" \
         "$(hostname): S3 marker download failed — check AWS credentials/config.
 Error: ${_err_txt}" \
         "high" "warning"
@@ -138,7 +138,7 @@ log "  Marker: backup_date=${BACKUP_DATE} host=${BACKUP_HOST} written=${MARKER_T
 if [[ ! -b "${STANDBY_SYNC_SD_BOOT}" ]]; then
     log "  ERROR: SD card boot partition ${STANDBY_SYNC_SD_BOOT} not found."
     log "  Is the SD card inserted? Is STANDBY_SYNC_SD_BOOT correct in config.env?"
-    ntfy_send "S3 > PI: ${_NTFY_SITE}: Sync Failed" \
+    ntfy_send "pi2s3: Sync Failed" \
         "$(hostname): SD card not found at ${STANDBY_SYNC_SD_BOOT}.
 Insert SD card with pi2s3 restore agent installed (run: install-standby-sync.sh)." \
         "high" "warning"
@@ -181,7 +181,7 @@ if [[ -n "${STANDBY_SYNC_PRIMARY_URL}" ]]; then
         log "  Primary may be down and this standby may be serving traffic."
         log "  Sync will retry at next cron run once primary recovers."
         [[ "${_SD_MOUNTED}" == "true" ]] && { sudo umount "${SD_MNT}"; _SD_MOUNTED=false; }
-        ntfy_send "S3 > PI: ${_NTFY_SITE}: Sync Skipped" \
+        ntfy_send "pi2s3: Sync Skipped" \
             "$(hostname): sync skipped — primary health check returned HTTP ${_pcode}.
 Primary may be down. Standby will not reboot for sync until primary recovers.
 Will retry automatically at next cron run." \
@@ -197,7 +197,7 @@ log "Writing restore trigger to SD card (${STANDBY_SYNC_SD_BOOT})..."
 if [[ "${_SD_MOUNTED}" != "true" ]]; then
     if ! sudo mount "${STANDBY_SYNC_SD_BOOT}" "${SD_MNT}" 2>/dev/null; then
         log "  ERROR: could not mount ${STANDBY_SYNC_SD_BOOT}"
-        ntfy_send "S3 > PI: ${_NTFY_SITE}: Sync Failed" \
+        ntfy_send "pi2s3: Sync Failed" \
             "$(hostname): could not mount SD card ${STANDBY_SYNC_SD_BOOT} — cannot write restore trigger." \
             "high" "warning"
         exit 1
@@ -225,7 +225,7 @@ sudo umount "${SD_MNT}"
 _SD_MOUNTED=false
 
 # ── Notify and reboot ─────────────────────────────────────────────────────────
-ntfy_send "S3 > PI: ${_NTFY_SITE}: Sync Starting" \
+ntfy_send "pi2s3: Sync Starting" \
     "$(hostname) rebooting to sync from ${BACKUP_DATE} backup.
 Primary: ${BACKUP_HOST}
 Source: s3://${S3_BUCKET}/${BACKUP_PREFIX}/
