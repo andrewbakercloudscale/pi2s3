@@ -39,12 +39,18 @@ ntfy_send() {
     local title="$1" msg="$2" priority="${3:-default}" tags="${4:-}"
     local extra=()
     [[ -n "$tags" ]] && extra+=(-H "Tags: $tags")
+    local _rc=0
     curl -s --max-time 10 \
         -H "Title: $title" \
         -H "Priority: $priority" \
         "${extra[@]}" \
         -d "$msg" \
-        "${NTFY_URL}" > /dev/null 2>&1 || true
+        "${NTFY_URL}" > /dev/null 2>&1 || _rc=$?
+    if [[ ${_rc} -eq 0 ]]; then
+        log "  ntfy sent: ${title}"
+    else
+        log "  WARNING: ntfy failed (all retries): ${title}"
+    fi
 }
 
 # Docker not installed or daemon not running — nothing to check.
@@ -78,14 +84,14 @@ for container in ${STOPPED}; do
 done
 
 if [[ "${RESTART_OK}" == "true" ]]; then
-    ntfy_send "PI: ${_SITE}: Containers Restarted" \
+    ntfy_send "pi2s3: Containers Restarted" \
         "Containers were stopped after backup window on $(hostname) and have been restarted: ${STOPPED}
 
 Backup may have crashed mid-imaging. Check: /var/log/pi2s3-backup.log" \
         "high" "warning,floppy_disk"
     log "Restart complete. Alert sent."
 else
-    ntfy_send "PI: ${_SITE}: Containers Stuck" \
+    ntfy_send "pi2s3: Containers Stuck" \
         "URGENT: Containers stopped after backup on $(hostname) and could NOT be restarted: ${STOPPED}
 
 Manual action required. Run: docker start ${STOPPED}

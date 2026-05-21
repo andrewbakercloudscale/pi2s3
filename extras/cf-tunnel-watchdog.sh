@@ -218,7 +218,7 @@ if [[ ${#DOWN_REASONS[@]} -eq 0 ]]; then
         rm -f "${STATE_FILE}"
         logger -t "${LOG_TAG}" \
             "RECOVERED after ${ATTEMPTS} attempt(s) — ha_connections=${CONNS:-n/a}, HTTP=${HTTP_CODE}"
-        ntfy_send "PI > CF: ${CF_SITE_HOSTNAME}: Restored" \
+        ntfy_send "pi2s3: Tunnel Restored" \
             "Site is back after ${ATTEMPTS} attempt(s).
 ha_connections=${CONNS:-n/a} | HTTP=${HTTP_CODE}" \
             "default" "white_check_mark"
@@ -252,7 +252,7 @@ COMPOSE_DIR=$(find_compose_dir)
 if [[ "${ATTEMPT}" -le "${CF_PHASE1_MAX}" ]]; then
 
     if [[ "${ATTEMPT}" -eq 1 ]]; then
-        ntfy_send "PI > CF: ${CF_SITE_HOSTNAME}: Down" \
+        ntfy_send "pi2s3: Tunnel Down" \
             "Site down (attempt ${ATTEMPT}). Running targeted restart.
 
 Reasons: ${REASON_STR}
@@ -292,7 +292,7 @@ CF: ${DIAG_CF}" \
        && [[ "${NEW_HTTP}" != "ERR" && "${NEW_HTTP:0:1}" != "5" ]]; then
         rm -f "${STATE_FILE}"
         logger -t "${LOG_TAG}" "Phase 1 recovery succeeded"
-        ntfy_send "PI > CF: ${CF_SITE_HOSTNAME}: Restored" \
+        ntfy_send "pi2s3: Tunnel Restored" \
             "Targeted restart succeeded (attempt ${ATTEMPT}).
 ha_connections=${NEW_CONNS:-n/a} | HTTP=${NEW_HTTP}" \
             "default" "white_check_mark"
@@ -302,7 +302,7 @@ ha_connections=${NEW_CONNS:-n/a} | HTTP=${NEW_HTTP}" \
 elif [[ "${ATTEMPT}" -le "${CF_PHASE2_MAX}" ]]; then
 
     if [[ "${ATTEMPT}" -eq $(( CF_PHASE1_MAX + 1 )) ]]; then
-        ntfy_send "PI > CF: ${CF_SITE_HOSTNAME}: Down — Restarting" \
+        ntfy_send "pi2s3: Tunnel Down — Restarting" \
             "Targeted restart failed after ${CF_PHASE1_MAX} attempts. Full Docker stack restart.
 
 Reasons: ${REASON_STR}
@@ -345,7 +345,7 @@ ${DIAG_MEM} | ${DIAG_SWAP}" \
        && [[ "${NEW_HTTP}" != "ERR" && "${NEW_HTTP:0:1}" != "5" ]]; then
         rm -f "${STATE_FILE}"
         logger -t "${LOG_TAG}" "Phase 2 recovery succeeded"
-        ntfy_send "PI > CF: ${CF_SITE_HOSTNAME}: Restored" \
+        ntfy_send "pi2s3: Tunnel Restored" \
             "Full stack restart succeeded (attempt ${ATTEMPT}).
 ha_connections=${NEW_CONNS:-n/a} | HTTP=${NEW_HTTP}" \
             "default" "white_check_mark"
@@ -365,7 +365,7 @@ else
         MINS_AGO=$(( SINCE_LAST / 60 ))
         logger -t "${LOG_TAG}" \
             "RATE LIMIT: rebooted ${MINS_AGO} min ago — not rebooting again yet"
-        ntfy_send "PI > CF: ${CF_SITE_HOSTNAME}: Stuck Down" \
+        ntfy_send "pi2s3: Tunnel Stuck Down" \
             "Site down 40+ min. Watchdog rebooted ${MINS_AGO}m ago — not rebooting again.
 
 Manual action required.
@@ -389,7 +389,7 @@ Pre-reboot diag: ${PREDIAG_LOG}" \
 
     echo "${NOW}" > "${REBOOT_TS_FILE}"
 
-    ntfy_send "PI > CF: ${CF_SITE_HOSTNAME}: Rebooting" \
+    ntfy_send "pi2s3: Rebooting" \
         "Stack restart failed after ${ATTEMPT} attempts. Rebooting now.
 
 Reasons: ${REASON_STR}
