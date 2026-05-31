@@ -364,8 +364,14 @@ db_exec() {
     # real MariaDB error on failure, while stdout still carries only query output.
     local _ef _rc; _ef=$(mktemp 2>/dev/null || echo "/tmp/pi2s3-dbexec.$$")
     if [[ -n "${_c}" ]]; then
+        # Try the `mariadb` client, falling back to `mysql` — older MariaDB and
+        # MySQL images ship only the `mysql` binary (no `mariadb`), so a hardcoded
+        # `mariadb` exec fails with "executable not found" and the quiesce silently
+        # no-ops. Mirrors the native branch below.
         docker exec -e "MYSQL_PWD=${_pw}" "${_c}" \
-            mariadb -u root --batch --silent "$@" 2>"${_ef}"
+            mariadb -u root --batch --silent "$@" 2>"${_ef}" \
+        || docker exec -e "MYSQL_PWD=${_pw}" "${_c}" \
+            mysql -u root --batch --silent "$@" 2>"${_ef}"
     else
         MYSQL_PWD="${_pw}" mariadb -u root --batch --silent "$@" 2>"${_ef}" \
             || MYSQL_PWD="${_pw}" mysql -u root --batch --silent "$@" 2>"${_ef}"
