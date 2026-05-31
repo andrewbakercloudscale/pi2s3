@@ -12,6 +12,12 @@ All notable changes to pi2s3 are documented here.
 - **Native (non-Docker) database detection** (`lib/containers.sh`) — `DB_CONTAINER="auto"` now detects a database running **natively on the host** (`mariadbd`/`mysqld`/`postgres` processes), not just in Docker. Native MySQL/MariaDB previously fell back to a stop-the-service downtime; it now uses the zero-downtime path (set `DB_ROOT_PASSWORD` — there is no container env to read it from). Native PostgreSQL with peer auth needs no password.
 - **`DB_ENGINE` and `DB_PG_USER` config** (`config.env.example`) — `DB_ENGINE` (`auto` | `mysql` | `mariadb` | `postgres`) forces the engine for an explicit native install where auto-detection can't see a container. `DB_PG_USER` is the PostgreSQL superuser used for `CHECKPOINT`.
 - **`AGENTS.md` + `pi2s3.com/llms.txt`** — agent-facing instructions so an AI assistant (e.g. Claude) pointed at the repo or the site can install pi2s3 and run a backup unattended ("backup my site with pi2s3").
+- **`--db-check` diagnostic mode** (`pi-image-backup.sh`) — reports DB detection (engine, container/native), connecting user, version, and whether the read-only quiesce actually engages, then exits without imaging. Briefly toggles `read_only` and restores it (zero downtime). Use it to confirm a backup will be zero-downtime before relying on it.
+
+### Fixed
+
+- **Container DB client fell back to `mysql`** (`pi-image-backup.sh`) — `db_exec` hardcoded the `mariadb` client for the Docker path. MySQL images (and MariaDB before 10.5) ship only the `mysql` binary, so `docker exec … mariadb` failed with "executable not found", the read-only quiesce silently no-op'd, and the backup fell back to `STOP_DOCKER` — causing avoidable downtime. Now tries `mariadb` then `mysql`, mirroring the native branch. (Found in production: a MySQL 8.0 analytics container was auto-detected and the quiesce silently failed.)
+- **Silent quiesce failures now logged** (`pi-image-backup.sh`) — `db_exec` captured stderr to `/dev/null`, so a failed quiesce gave no cause. It now captures stderr into `_DB_LAST_ERR` and `db_lock_mysql` logs the real MariaDB/MySQL error in its fallback branch.
 
 ### Changed
 
