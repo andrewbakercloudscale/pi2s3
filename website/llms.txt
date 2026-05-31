@@ -28,6 +28,7 @@ Never run `pi-image-restore.sh` unless explicitly asked — it overwrites a disk
 
 - `bash pi-image-backup.sh --force` — run a backup now
 - `bash pi-image-backup.sh --dry-run` — show the plan, upload nothing
+- `bash pi-image-backup.sh --db-check` — confirm DB detection + zero-downtime quiesce (no imaging)
 - `bash pi-image-backup.sh --list` / `--verify` — list / verify S3 backups
 - `bash pi-image-backup.sh --cost` — S3 usage and estimated monthly cost
 - `bash install.sh --iam-policy` — print the minimum AWS IAM policy
