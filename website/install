@@ -12,8 +12,16 @@
 set -euo pipefail
 
 # When piped through bash stdin is the script, not the terminal.
-# Redirect to /dev/tty so interactive prompts work.
-[[ -t 0 ]] || exec </dev/tty
+# Redirect to /dev/tty so interactive prompts work — UNLESS this is a
+# non-interactive (agent/automation) install driven by env vars, in which case
+# there may be no controlling terminal and install.sh needs no prompts.
+if [[ ! -t 0 ]]; then
+    if [[ -n "${S3_BUCKET:-}" && -n "${S3_REGION:-}" ]]; then
+        export PI2S3_YES="${PI2S3_YES:-1}"   # auto-confirm; install.sh runs unattended
+    else
+        exec </dev/tty 2>/dev/null || true
+    fi
+fi
 
 # ── Colour output ─────────────────────────────────────────────────────────────
 if [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]]; then

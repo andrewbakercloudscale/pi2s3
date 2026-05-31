@@ -47,6 +47,27 @@ ok()   { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ $*"; }
 warn() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ⚠ $*"; }
 die()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✗ ERROR: $*" >&2; exit 1; }
 
+# ── Interactivity ─────────────────────────────────────────────────────────────
+# Supports a fully non-interactive install (for AI agents / automation): provide
+# S3_BUCKET, S3_REGION (and optionally NTFY_URL) in the environment and set
+# PI2S3_YES=1 to auto-confirm. With no TTY and PI2S3_YES unset, yes/no prompts
+# take their default and value prompts that have no env value abort with guidance.
+INTERACTIVE=true
+[[ -t 0 ]] || INTERACTIVE=false
+PI2S3_YES="${PI2S3_YES:-}"
+
+# confirm "prompt" "default(Y|N)" → 0 for yes, 1 for no.
+confirm() {
+    local _prompt="$1" _default="${2:-Y}" _ans
+    if [[ -n "${PI2S3_YES}" ]]; then return 0; fi
+    if [[ "${INTERACTIVE}" != "true" ]]; then
+        [[ "${_default^^}" == "Y" ]]; return
+    fi
+    read -r -p "${_prompt}" _ans || _ans=""
+    [[ -z "${_ans}" ]] && _ans="${_default}"
+    [[ "${_ans,,}" != "n" ]]
+}
+
 # Save a snapshot of the current user crontab before modifying it.
 # Prints the backup path. Safe to call multiple times — idempotent per session.
 _CRONTAB_SNAPSHOT=""
@@ -398,18 +419,24 @@ else
     [[ ! -f "${CONFIG_EXAMPLE}" ]] && die "config.env.example not found. Re-clone the repo."
     cp "${CONFIG_EXAMPLE}" "${CONFIG_FILE}"
     log "  Created config.env from config.env.example."
-    log ""
-    log "  Fill in the required values now:"
-    echo ""
 
-    # Prompt for required values interactively
-    read -r -p "  S3 bucket name:  " input_bucket
-    [[ -z "${input_bucket}" ]] && die "S3_BUCKET cannot be empty."
+    # Take values from the environment first (non-interactive / agent install),
+    # then prompt for anything still missing when a TTY is available.
+    input_bucket="${S3_BUCKET:-}"
+    input_region="${S3_REGION:-}"
+    input_ntfy="${NTFY_URL:-}"
 
-    read -r -p "  AWS region (e.g. af-south-1, us-east-1):  " input_region
-    [[ -z "${input_region}" ]] && die "S3_REGION cannot be empty."
+    if [[ "${INTERACTIVE}" == "true" ]]; then
+        log ""
+        log "  Fill in the required values now:"
+        echo ""
+        [[ -z "${input_bucket}" ]] && read -r -p "  S3 bucket name:  " input_bucket
+        [[ -z "${input_region}" ]] && read -r -p "  AWS region (e.g. af-south-1, us-east-1):  " input_region
+        [[ -z "${input_ntfy}"   ]] && read -r -p "  ntfy URL (e.g. https://ntfy.sh/my-topic, or Enter to skip):  " input_ntfy
+    fi
 
-    read -r -p "  ntfy URL (e.g. https://ntfy.sh/my-topic, or Enter to skip):  " input_ntfy
+    [[ -z "${input_bucket}" ]] && die "S3_BUCKET not set. Run interactively, or: S3_BUCKET=my-bucket S3_REGION=us-east-1 bash install.sh"
+    [[ -z "${input_region}" ]] && die "S3_REGION not set. Run interactively, or: S3_BUCKET=my-bucket S3_REGION=us-east-1 bash install.sh"
 
     # Write the values into config.env
     sed -i \
@@ -523,8 +550,7 @@ if [[ ${_aws_ls_rc} -ne 0 ]]; then
     if echo "${_aws_ls_err}" | grep -qiE "NoSuchBucket|does not exist"; then
         warn "Bucket s3://${S3_BUCKET}/ does not exist."
         echo ""
-        read -r -p "  Create it now in ${S3_REGION}? [Y/n] " do_create
-        if [[ "${do_create,,}" != "n" ]]; then
+        if confirm "  Create it now in ${S3_REGION}? [Y/n] " Y; then
             if [[ "${S3_REGION}" == "us-east-1" ]]; then
                 if ${AWS_CMD} s3 mb "s3://${S3_BUCKET}/"; then
                     ok "Bucket created: s3://${S3_BUCKET}/"
@@ -548,8 +574,9 @@ if [[ ${_aws_ls_rc} -ne 0 ]]; then
         echo "  Required IAM permissions (run to see the exact policy):"
         echo "    bash install.sh --iam-policy"
         echo ""
-        read -r -p "  Run 'aws configure' now? [y/N] " do_configure
-        if [[ "${do_configure,,}" == "y" ]]; then
+        # 'aws configure' is itself interactive — only offer it with a real TTY,
+        # never under PI2S3_YES. A non-interactive caller must set AWS creds first.
+        if [[ "${INTERACTIVE}" == "true" ]] && confirm "  Run 'aws configure' now? [y/N] " N; then
             aws configure
             if ${AWS_CMD} s3 ls "s3://${S3_BUCKET}/" > /dev/null 2>&1; then
                 ok "AWS access confirmed."
@@ -557,7 +584,7 @@ if [[ ${_aws_ls_rc} -ne 0 ]]; then
                 die "Still cannot access bucket. Run 'bash install.sh --iam-policy' to see required permissions."
             fi
         else
-            warn "Skipping. Run 'aws configure' before the first backup."
+            warn "AWS credentials not configured. Set them up (e.g. 'aws configure' or an instance role) before the first backup."
         fi
     else
         warn "Cannot access s3://${S3_BUCKET}/: ${_aws_ls_err}"
@@ -718,8 +745,7 @@ log "Step 9: Dry run..."
 if bash "${BACKUP_SCRIPT}" --dry-run; then
     ok "Dry run successful — everything looks good."
     echo ""
-    read -r -p "  Run a real backup now? This uploads to S3 immediately. [Y/n] " do_backup
-    if [[ "${do_backup,,}" != "n" ]]; then
+    if confirm "  Run a real backup now? This uploads to S3 immediately. [Y/n] " Y; then
         log ""
         log "  Running first backup..."
         if bash "${BACKUP_SCRIPT}" --force; then
