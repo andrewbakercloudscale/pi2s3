@@ -163,6 +163,7 @@ _DB_ROOT_PASSWORD=""
 _DB_LOCK_PID=""
 _DB_CONN_ID=""
 _DB_LOCK_TAG="pi2s3-lock-$$"
+_DB_LAST_ERR=""
 _DB_RO_CHANGED=false
 # Sentinel recording that WE flipped the server read-only. Lets the next backup
 # recover a stale read-only state if a previous run was hard-killed (SIGKILL/power
@@ -356,13 +357,19 @@ _write_standby_sync_marker() {
 # If container is empty, runs mariadb/mysql locally with MYSQL_PWD in the environment.
 db_exec() {
     local _c="$1" _pw="$2"; shift 2
+    # Capture stderr into _DB_LAST_ERR (not /dev/null) so callers can log the
+    # real MariaDB error on failure, while stdout still carries only query output.
+    local _ef _rc; _ef=$(mktemp 2>/dev/null || echo "/tmp/pi2s3-dbexec.$$")
     if [[ -n "${_c}" ]]; then
         docker exec -e "MYSQL_PWD=${_pw}" "${_c}" \
-            mariadb -u root --batch --silent "$@" 2>/dev/null
+            mariadb -u root --batch --silent "$@" 2>"${_ef}"
     else
-        MYSQL_PWD="${_pw}" mariadb -u root --batch --silent "$@" 2>/dev/null \
-            || MYSQL_PWD="${_pw}" mysql -u root --batch --silent "$@" 2>/dev/null
+        MYSQL_PWD="${_pw}" mariadb -u root --batch --silent "$@" 2>"${_ef}" \
+            || MYSQL_PWD="${_pw}" mysql -u root --batch --silent "$@" 2>"${_ef}"
     fi
+    _rc=$?
+    _DB_LAST_ERR=$(cat "${_ef}" 2>/dev/null); rm -f "${_ef}"
+    return ${_rc}
 }
 
 # Run a single PostgreSQL statement.
@@ -522,18 +529,21 @@ db_lock_mysql() {
 
     # Flip to read-only. read_only blocks the (non-SUPER) app user; super_read_only
     # (MySQL only) additionally blocks SUPER users — best-effort so MariaDB is fine.
+    local _set_err=""
     db_exec "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" \
-        -e "SET GLOBAL read_only=ON;" 2>/dev/null || true
+        -e "SET GLOBAL read_only=ON;" >/dev/null || true
+    _set_err="${_DB_LAST_ERR}"
     db_exec "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" \
-        -e "SET GLOBAL super_read_only=ON;" 2>/dev/null || true
+        -e "SET GLOBAL super_read_only=ON;" >/dev/null || true
     db_exec "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" \
-        -e "FLUSH LOGS;" 2>/dev/null || true
+        -e "FLUSH LOGS;" >/dev/null || true
 
     # Verify it took effect before trusting the snapshot.
     _ro=$(db_exec "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" \
         -e "SELECT @@global.read_only;" | tail -1 || true)
     if [[ "${_ro}" != "1" ]]; then
         log "  WARNING: SET GLOBAL read_only did not take effect — falling back to STOP_DOCKER"
+        [[ -n "${_set_err}" ]] && log "    mariadb: ${_set_err}"
         _DB_CONTAINER=""; _DB_ENGINE=""; return 0
     fi
 
