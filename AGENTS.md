@@ -98,6 +98,15 @@ auto-detecting it whether it runs in Docker or natively on the host:
 You normally don't touch any of this. Only edit `config.env` (`DB_ENGINE`,
 `DB_ROOT_PASSWORD`, `DB_PG_USER`) if the user reports the DB wasn't detected.
 
+To confirm the quiesce will be zero-downtime *before* relying on it, run the
+diagnostic (no imaging, no downtime):
+```bash
+bash ~/pi2s3/pi-image-backup.sh --db-check
+```
+It prints the detected engine/container, the connecting user, and whether
+`read_only` actually engages. If it reports FAILED, the backup would fall back
+to stopping containers (brief downtime) — surface that to the user.
+
 ## Scheduling
 
 `install.sh` installs a nightly cron job (2am by default). To change it, set

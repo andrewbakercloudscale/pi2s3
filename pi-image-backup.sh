@@ -120,6 +120,7 @@ VERIFY=false
 VERIFY_DATE=""
 STALE_CHECK=false
 COST=false
+DB_CHECK=false
 
 for arg in "$@"; do
     case "$arg" in
@@ -132,6 +133,7 @@ for arg in "$@"; do
         --no-stop-docker)  STOP_DOCKER=false ;;
         --stale-check)     STALE_CHECK=true ;;
         --cost)            COST=true ;;
+        --db-check)        DB_CHECK=true ;;
         --help)            echo "Usage: pi-image-backup.sh [options]
   (no args)          Run nightly backup
   --force            Skip duplicate-check (run even if today's backup exists)
@@ -143,6 +145,7 @@ for arg in "$@"; do
   --stale-check      Alert via ntfy if latest backup is older than STALE_BACKUP_HOURS
   --cost             Show S3 storage used and estimated monthly cost
   --no-stop-docker   Skip Docker stop (for daytime test runs, no downtime)
+  --db-check         Diagnose DB detection + read-only quiesce, then exit (no imaging)
   --help             Show this help
 
 Config: ${SCRIPT_DIR}/config.env
@@ -163,6 +166,7 @@ _DB_ROOT_PASSWORD=""
 _DB_LOCK_PID=""
 _DB_CONN_ID=""
 _DB_LOCK_TAG="pi2s3-lock-$$"
+_DB_LAST_ERR=""
 _DB_RO_CHANGED=false
 # Sentinel recording that WE flipped the server read-only. Lets the next backup
 # recover a stale read-only state if a previous run was hard-killed (SIGKILL/power
@@ -356,13 +360,25 @@ _write_standby_sync_marker() {
 # If container is empty, runs mariadb/mysql locally with MYSQL_PWD in the environment.
 db_exec() {
     local _c="$1" _pw="$2"; shift 2
+    # Capture stderr into _DB_LAST_ERR (not /dev/null) so callers can log the
+    # real MariaDB error on failure, while stdout still carries only query output.
+    local _ef _rc; _ef=$(mktemp 2>/dev/null || echo "/tmp/pi2s3-dbexec.$$")
     if [[ -n "${_c}" ]]; then
+        # Try the `mariadb` client, falling back to `mysql` — older MariaDB and
+        # MySQL images ship only the `mysql` binary (no `mariadb`), so a hardcoded
+        # `mariadb` exec fails with "executable not found" and the quiesce silently
+        # no-ops. Mirrors the native branch below.
         docker exec -e "MYSQL_PWD=${_pw}" "${_c}" \
-            mariadb -u root --batch --silent "$@" 2>/dev/null
+            mariadb -u root --batch --silent "$@" 2>"${_ef}" \
+        || docker exec -e "MYSQL_PWD=${_pw}" "${_c}" \
+            mysql -u root --batch --silent "$@" 2>"${_ef}"
     else
-        MYSQL_PWD="${_pw}" mariadb -u root --batch --silent "$@" 2>/dev/null \
-            || MYSQL_PWD="${_pw}" mysql -u root --batch --silent "$@" 2>/dev/null
+        MYSQL_PWD="${_pw}" mariadb -u root --batch --silent "$@" 2>"${_ef}" \
+            || MYSQL_PWD="${_pw}" mysql -u root --batch --silent "$@" 2>"${_ef}"
     fi
+    _rc=$?
+    _DB_LAST_ERR=$(cat "${_ef}" 2>/dev/null); rm -f "${_ef}"
+    return ${_rc}
 }
 
 # Run a single PostgreSQL statement.
@@ -522,18 +538,21 @@ db_lock_mysql() {
 
     # Flip to read-only. read_only blocks the (non-SUPER) app user; super_read_only
     # (MySQL only) additionally blocks SUPER users — best-effort so MariaDB is fine.
+    local _set_err=""
     db_exec "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" \
-        -e "SET GLOBAL read_only=ON;" 2>/dev/null || true
+        -e "SET GLOBAL read_only=ON;" >/dev/null || true
+    _set_err="${_DB_LAST_ERR}"
     db_exec "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" \
-        -e "SET GLOBAL super_read_only=ON;" 2>/dev/null || true
+        -e "SET GLOBAL super_read_only=ON;" >/dev/null || true
     db_exec "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" \
-        -e "FLUSH LOGS;" 2>/dev/null || true
+        -e "FLUSH LOGS;" >/dev/null || true
 
     # Verify it took effect before trusting the snapshot.
     _ro=$(db_exec "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" \
         -e "SELECT @@global.read_only;" | tail -1 || true)
     if [[ "${_ro}" != "1" ]]; then
         log "  WARNING: SET GLOBAL read_only did not take effect — falling back to STOP_DOCKER"
+        [[ -n "${_set_err}" ]] && log "    mariadb: ${_set_err}"
         _DB_CONTAINER=""; _DB_ENGINE=""; return 0
     fi
 
@@ -620,6 +639,64 @@ db_unlock() {
     _DB_RO_CHANGED=false; _DB_LOCKED=false
     log "  DB read-write — writes unblocked."
 }
+
+# ── DB diagnostic (--db-check) ────────────────────────────────────────────────
+# Reports how the DB would be detected and whether the read-only quiesce works,
+# without imaging anything. For MySQL/MariaDB it briefly toggles read_only and
+# restores it, logging the connecting user and any error. Safe to run any time.
+db_check() {
+    log "========================================================"
+    log "  pi2s3 — DB quiesce check"
+    log "========================================================"
+    log "  DB_CONTAINER=${DB_CONTAINER}  DB_ENGINE=${DB_ENGINE}"
+    if ! db_resolve_target; then
+        log "  RESULT: no DB resolved — backup would use STOP_DOCKER (downtime)."
+        exit 0
+    fi
+    log "  Resolved: engine=${_DB_ENGINE}  location=${_DB_CONTAINER:-<native host>}"
+
+    if [[ "${_DB_ENGINE}" == "postgres" ]]; then
+        local _v
+        _v=$(db_exec_pg "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" "SELECT version();" || true)
+        if [[ -n "${_v}" ]]; then
+            log "  Connected. ${_v}"
+            log "  RESULT: OK — PostgreSQL CHECKPOINT path will be used (zero downtime)."
+        else
+            log "  RESULT: could not connect (check DB_PG_USER) — would use STOP_DOCKER."
+        fi
+        exit 0
+    fi
+
+    # MySQL / MariaDB
+    log "  current_user: $(db_exec "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" -e "SELECT CURRENT_USER();" | tail -1)"
+    log "  version:      $(db_exec "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" -e "SELECT VERSION();" | tail -1)"
+    local _ro0 _ro1
+    _ro0=$(db_exec "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" -e "SELECT @@global.read_only;" | tail -1 || true)
+    log "  prior read_only=${_ro0:-<none>}  super_read_only=$(db_exec "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" -e "SELECT @@global.super_read_only;" | tail -1 || true)"
+    if [[ "${_ro0}" == "1" ]]; then
+        log "  Server is already read-only (replica?) — pi2s3 would leave it untouched. OK."
+        exit 0
+    fi
+
+    log "  Attempting SET GLOBAL read_only=ON ..."
+    db_exec "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" -e "SET GLOBAL read_only=ON;" >/dev/null || true
+    log "    read_only SET error: ${_DB_LAST_ERR:-<none>}"
+    db_exec "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" -e "SET GLOBAL super_read_only=ON;" >/dev/null || true
+    log "    super_read_only SET error: ${_DB_LAST_ERR:-<none>}"
+    _ro1=$(db_exec "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" -e "SELECT @@global.read_only;" | tail -1 || true)
+    log "  read_only after SET=${_ro1:-<none>}"
+    # Restore
+    db_exec "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" -e "SET GLOBAL super_read_only=OFF;" >/dev/null || true
+    db_exec "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" -e "SET GLOBAL read_only=OFF;" >/dev/null || true
+
+    if [[ "${_ro1}" == "1" ]]; then
+        log "  RESULT: OK — read-only quiesce works (zero downtime). Restored to read-write."
+    else
+        log "  RESULT: FAILED — read_only would not engage; backup falls back to STOP_DOCKER (downtime)."
+    fi
+    exit 0
+}
+[[ "${DB_CHECK}" == "true" ]] && db_check
 
 # ── Site availability probe ───────────────────────────────────────────────────
 # Pings the site every PROBE_INTERVAL seconds during partition imaging.

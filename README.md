@@ -355,6 +355,7 @@ pi-image-backup.sh [options]
   --stale-check     Ntfy alert if latest backup is older than STALE_BACKUP_HOURS
   --cost            Show S3 storage used and estimated monthly cost
   --no-stop-docker  Skip Docker stop (for daytime test runs with no downtime)
+  --db-check        Diagnose DB detection + read-only quiesce, then exit (no imaging)
   --help            Show usage
 ```
 
