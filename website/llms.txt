@@ -1,0 +1,43 @@
+# pi2s3
+
+> pi2s3 ("Pi to S3") takes a block-level image of a Linux machine's disk — a
+> Raspberry Pi by design — and streams it to AWS S3 with partclone. Restore a
+> complete, bootable machine to new hardware with one command. Two bash scripts,
+> no daemons, no build step. Zero-downtime database quiesce built in.
+
+## For AI agents: "backup my site with pi2s3"
+
+Run these ON the host being backed up (it images local disks; SSH in if remote).
+Requires Linux, root/sudo, and working AWS credentials.
+
+1. Verify host: `uname -s` is `Linux`; a local disk exists (`lsblk`).
+2. Already set up? `test -f ~/pi2s3/config.env && echo yes` — if yes, go to step 5.
+3. Check AWS creds: `aws sts get-caller-identity`. If it fails, ask the user for
+   AWS credentials, an S3 bucket name, and a region. Never guess these.
+4. Install unattended:
+   `git clone https://github.com/andrewbakercloudscale/pi2s3.git ~/pi2s3`
+   `cd ~/pi2s3 && S3_BUCKET=<bucket> S3_REGION=<region> PI2S3_YES=1 bash install.sh`
+5. Back up: `bash ~/pi2s3/pi-image-backup.sh --force`
+6. Verify: `bash ~/pi2s3/pi-image-backup.sh --verify` then report date + size.
+
+Databases are quiesced automatically with zero downtime (MySQL/MariaDB via
+`SET GLOBAL read_only=ON`; PostgreSQL via `CHECKPOINT`), in Docker or native.
+Never run `pi-image-restore.sh` unless explicitly asked — it overwrites a disk.
+
+## Key commands
+
+- `bash pi-image-backup.sh --force` — run a backup now
+- `bash pi-image-backup.sh --dry-run` — show the plan, upload nothing
+- `bash pi-image-backup.sh --list` / `--verify` — list / verify S3 backups
+- `bash pi-image-backup.sh --cost` — S3 usage and estimated monthly cost
+- `bash install.sh --iam-policy` — print the minimum AWS IAM policy
+- `bash pi-image-restore.sh` — restore to new hardware (destructive; ask first)
+
+## Docs
+
+- Full agent runbook: https://github.com/andrewbakercloudscale/pi2s3/blob/main/AGENTS.md
+- README: https://github.com/andrewbakercloudscale/pi2s3/blob/main/README.md
+- Website: https://pi2s3.com
+- Setup: https://pi2s3.com/setup.html
+- Reference & config: https://pi2s3.com/reference.html
+- Recovery: https://pi2s3.com/recovery.html

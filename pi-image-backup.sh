@@ -90,6 +90,8 @@ STANDBY_FAILOVER_TIMEOUT_SECS="${STANDBY_FAILOVER_TIMEOUT_SECS:-300}"
 STANDBY_SYNC_MARKER_KEY="${STANDBY_SYNC_MARKER_KEY:-standby-sync-ready/latest.json}"
 DB_CONTAINER="${DB_CONTAINER:-auto}"
 DB_ROOT_PASSWORD="${DB_ROOT_PASSWORD:-}"
+DB_ENGINE="${DB_ENGINE:-auto}"          # "auto" | "mysql" | "mariadb" | "postgres"
+DB_PG_USER="${DB_PG_USER:-postgres}"    # superuser used for the PostgreSQL CHECKPOINT
 PROBE_URL="${PROBE_URL:-}"
 PROBE_LATEST_POST="${PROBE_LATEST_POST:-true}"
 PROBE_INTERVAL="${PROBE_INTERVAL:-60}"
@@ -155,11 +157,18 @@ _PRE_BACKUP_RAN=false
 _POST_BACKUP_RAN=false
 _USE_DB_LOCK=false
 _DB_LOCKED=false
+_DB_ENGINE=""
 _DB_CONTAINER=""
 _DB_ROOT_PASSWORD=""
 _DB_LOCK_PID=""
 _DB_CONN_ID=""
 _DB_LOCK_TAG="pi2s3-lock-$$"
+_DB_RO_CHANGED=false
+# Sentinel recording that WE flipped the server read-only. Lets the next backup
+# recover a stale read-only state if a previous run was hard-killed (SIGKILL/power
+# loss). On /tmp so it survives between runs but resets on reboot — same lifecycle
+# as MySQL's runtime read_only flag, which is not persisted across a restart.
+_DB_RO_SENTINEL="/tmp/pi2s3-db-readonly.state"
 _PROBE_PID=""
 _PROBE_LOG=""
 _PROBE_URL_USED=""
@@ -356,79 +365,217 @@ db_exec() {
     fi
 }
 
-# ── MariaDB/MySQL consistent-snapshot lock ───────────────────────────────────
-# Issues FLUSH TABLES WITH READ LOCK, keeping all containers/services running.
-# Reads and cached pages are served normally during imaging; only writes block.
-# The lock is held by a background connection using SELECT SLEEP(86400) as a
-# keepalive. db_unlock() kills that connection by its ID, releasing the lock.
+# Run a single PostgreSQL statement.
+# Usage: db_exec_pg [container] password "SQL"
+# Container mode: docker exec into the container and run psql as DB_PG_USER.
+# Native mode: connect over the local socket. With a password, PGPASSWORD is used;
+# without one, peer auth via `sudo -u <user> psql` (the default for host installs).
+# The official postgres image allows local trust auth, so a password is usually
+# unnecessary in container mode.
+db_exec_pg() {
+    local _c="$1" _pw="$2" _sql="$3"
+    local _user="${DB_PG_USER:-postgres}"
+    if [[ -n "${_c}" ]]; then
+        if [[ -n "${_pw}" ]]; then
+            docker exec -e "PGPASSWORD=${_pw}" "${_c}" psql -U "${_user}" -tAc "${_sql}" 2>/dev/null
+        else
+            docker exec "${_c}" psql -U "${_user}" -tAc "${_sql}" 2>/dev/null
+        fi
+    elif [[ -n "${_pw}" ]]; then
+        PGPASSWORD="${_pw}" psql -U "${_user}" -h localhost -tAc "${_sql}" 2>/dev/null
+    else
+        sudo -u "${_user}" psql -tAc "${_sql}" 2>/dev/null
+    fi
+}
+
+# ── Resolve which database to quiesce ────────────────────────────────────────
+# Determines the engine (mysql|postgres) and location (container name, or empty
+# for a native host install), and reads the root password where needed.
+# Sets _DB_ENGINE, _DB_CONTAINER and _DB_ROOT_PASSWORD on success.
+# Returns 1 (caller falls back to STOP_DOCKER) when no DB can be quiesced.
 #
-# Supports three modes (set via DB_CONTAINER in config.env):
-#   "auto"          — scan running containers for any mariadb/mysql image
-#   "my_container"  — explicit container name
-#   ""              — no container; use native mariadb/mysql on localhost
-# DB_ROOT_PASSWORD: leave blank to auto-read from the container's environment.
+# Config (config.env):
+#   DB_CONTAINER  "auto" — detect container OR native host process
+#                 "name" — explicit container name
+#                 ""     — native host install (no Docker)
+#   DB_ENGINE     "auto" — derive from the detected image/process (default)
+#                 "mysql"|"mariadb"|"postgres" — force the engine
+#   DB_ROOT_PASSWORD  blank = auto-read from a MySQL/MariaDB container's env.
+db_resolve_target() {
+    local _detected="" _engine="${DB_ENGINE}"
+    [[ "${_engine}" == "mariadb" ]] && _engine="mysql"
+
+    if [[ "${DB_CONTAINER}" == "auto" ]]; then
+        _detected=$(find_db)
+        if [[ -z "${_detected}" ]]; then
+            log "  DB quiesce: no MariaDB/MySQL/PostgreSQL database found — using STOP_DOCKER fallback"
+            return 1
+        fi
+        [[ "${_engine}" == "auto" ]] && _engine="${_detected%% *}"
+        _DB_CONTAINER="${_detected#* }"        # container name, or empty for native
+    elif [[ -n "${DB_CONTAINER}" ]]; then
+        _DB_CONTAINER="${DB_CONTAINER}"
+        [[ "${_engine}" == "auto" ]] && _engine=$(container_db_engine "${_DB_CONTAINER}")
+    else
+        # Explicit native install (DB_CONTAINER=""). Need either a password
+        # (mysql) or an engine hint; otherwise nothing to do → STOP_DOCKER.
+        _DB_CONTAINER=""
+        if [[ "${_engine}" == "auto" ]]; then
+            [[ -z "${DB_ROOT_PASSWORD}" ]] && return 1
+            _engine="mysql"
+        fi
+    fi
+
+    _DB_ENGINE="${_engine}"
+    _DB_ROOT_PASSWORD="${DB_ROOT_PASSWORD:-}"
+
+    if [[ "${_DB_ENGINE}" == "mysql" ]]; then
+        # MySQL/MariaDB need root creds. Auto-read from a container's env; a
+        # native install must supply DB_ROOT_PASSWORD explicitly.
+        if [[ -z "${_DB_ROOT_PASSWORD}" && -n "${_DB_CONTAINER}" ]]; then
+            _DB_ROOT_PASSWORD=$(read_container_db_password "${_DB_CONTAINER}")
+        fi
+        if [[ -z "${_DB_ROOT_PASSWORD}" ]]; then
+            if [[ -n "${_DB_CONTAINER}" ]]; then
+                log "  DB quiesce: could not read root password from ${_DB_CONTAINER} env — using STOP_DOCKER fallback"
+            else
+                log "  DB quiesce: native MySQL/MariaDB detected but DB_ROOT_PASSWORD is not set — using STOP_DOCKER fallback"
+                log "             set DB_ROOT_PASSWORD in config.env for a zero-downtime lock."
+            fi
+            _DB_CONTAINER=""; _DB_ENGINE=""
+            return 1
+        fi
+    fi
+    return 0
+}
+
+# ── Quiesce the database for a consistent snapshot ───────────────────────────
+# Dispatches on the resolved engine. MySQL/MariaDB use FLUSH TABLES WITH READ
+# LOCK; PostgreSQL uses CHECKPOINT + WAL crash-recovery (see db_lock_postgres).
 # If no DB is found/configured, falls back silently to STOP_DOCKER.
 db_lock() {
-    # ── Resolve container ────────────────────────────────────────────────────
-    if [[ "${DB_CONTAINER}" == "auto" ]]; then
-        _DB_CONTAINER=$(find_db_container)
-        if [[ -z "${_DB_CONTAINER}" ]]; then
-            log "  DB lock: no MariaDB/MySQL container found — using STOP_DOCKER fallback"
-            return 0
-        fi
-    elif [[ -n "${DB_CONTAINER}" && "${DB_CONTAINER}" != "auto" ]]; then
-        _DB_CONTAINER="${DB_CONTAINER}"
-    fi
-    # Both blank → no DB lock configured; caller falls back to STOP_DOCKER
-    if [[ -z "${_DB_CONTAINER}" && -z "${DB_ROOT_PASSWORD}" ]]; then
-        return 0
-    fi
+    db_resolve_target || return 0
+    [[ -z "${_DB_ENGINE}" ]] && return 0
+    case "${_DB_ENGINE}" in
+        mysql)    db_lock_mysql ;;
+        postgres) db_lock_postgres ;;
+        *)        log "  DB quiesce: unknown engine '${_DB_ENGINE}' — using STOP_DOCKER fallback"; _DB_ENGINE="" ;;
+    esac
+}
 
-    # ── Resolve password ─────────────────────────────────────────────────────
-    _DB_ROOT_PASSWORD="${DB_ROOT_PASSWORD:-}"
-    if [[ -z "${_DB_ROOT_PASSWORD}" && -n "${_DB_CONTAINER}" ]]; then
-        _DB_ROOT_PASSWORD=$(read_container_db_password "${_DB_CONTAINER}")
-        if [[ -z "${_DB_ROOT_PASSWORD}" ]]; then
-            log "  DB lock: could not read root password from container env — using STOP_DOCKER fallback"
-            _DB_CONTAINER=""
-            return 0
-        fi
-    fi
-
+# ── MariaDB/MySQL consistent-snapshot quiesce (global read-only) ──────────────
+# Flips the server to read-only for the brief flush window rather than holding a
+# global read lock. `SET GLOBAL read_only=ON` blocks writes from the application
+# (a non-SUPER user) while reads and cached pages are served normally; on MySQL
+# we additionally set `super_read_only=ON` (best-effort — MariaDB has no such
+# variable) to block SUPER users too. The flag is released right after `sync`, so
+# writes resume during imaging; InnoDB crash-recovery makes the fuzzy snapshot
+# consistent on restore.
+#
+# This is gentler than FLUSH TABLES WITH READ LOCK: it never holds a global lock
+# and needs no keepalive connection. Safety:
+#  - We read the prior read_only state and only flip it when it was OFF, so a
+#    legitimately read-only server (e.g. a replica) is left untouched.
+#  - A sentinel file records that WE enabled read-only. If a previous run was
+#    hard-killed with read-only still ON, the next backup detects the stale
+#    sentinel and clears it. (The on-exit trap restores read-write on any normal
+#    or error exit; a reboot resets read_only on its own.)
+db_lock_mysql() {
     local _target="${_DB_CONTAINER:-localhost}"
     log ""
-    log "Locking DB for consistent snapshot (${_target})..."
+    log "Setting DB read-only for consistent snapshot (mysql/mariadb: ${_target})..."
 
     if [[ "${DRY_RUN}" == "true" ]]; then
-        log "  [DRY RUN] FLUSH TABLES WITH READ LOCK — skipped"
+        log "  [DRY RUN] SET GLOBAL read_only=ON — skipped"
         _DB_LOCKED=true
         return 0
     fi
 
-    # Run FTWRL in background. The SLEEP(86400) keepalive holds the connection
-    # (and the global read lock) open until db_unlock() kills the connection ID.
-    # A unique comment allows processlist lookup even if multiple sleep queries exist.
-    db_exec "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" \
-        -e "FLUSH TABLES WITH READ LOCK; FLUSH LOGS; SELECT /* ${_DB_LOCK_TAG} */ SLEEP(86400);" &
-    _DB_LOCK_PID=$!
+    local _ro
+    _ro=$(db_exec "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" \
+        -e "SELECT @@global.read_only;" | tail -1 || true)
 
-    sleep 3  # allow FTWRL to establish before imaging starts
-
-    if ! kill -0 "${_DB_LOCK_PID}" 2>/dev/null; then
-        log "  WARNING: DB lock process exited immediately — check DB_ROOT_PASSWORD / container name"
-        log "  Falling back to STOP_DOCKER"
-        _DB_CONTAINER=""; _DB_LOCK_PID=""; return 0
+    # Recover a stale read-only state left by a previously hard-killed backup.
+    if [[ "${_ro}" == "1" && -f "${_DB_RO_SENTINEL}" ]]; then
+        log "  Stale read-only state from a previous crashed backup — clearing it."
+        db_exec "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" \
+            -e "SET GLOBAL super_read_only=OFF;" 2>/dev/null || true
+        db_exec "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" \
+            -e "SET GLOBAL read_only=OFF;" 2>/dev/null || true
+        rm -f "${_DB_RO_SENTINEL}"
+        _ro=0
     fi
 
-    # Find the connection ID so db_unlock() can KILL it cleanly via SQL.
-    # Use the comment markers (not just the label) so this lookup does not match itself in PROCESSLIST.
-    local _q="SELECT ID FROM information_schema.PROCESSLIST WHERE INFO LIKE '%/* ${_DB_LOCK_TAG} */%' AND TIME > 0 LIMIT 1;"
-    _DB_CONN_ID=$(db_exec "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" -e "${_q}" \
-        | tail -1 || true)
+    if [[ -z "${_ro}" ]]; then
+        log "  WARNING: could not query read_only state — check DB_ROOT_PASSWORD / container name"
+        log "  Falling back to STOP_DOCKER"
+        _DB_CONTAINER=""; _DB_ENGINE=""; return 0
+    fi
 
+    if [[ "${_ro}" == "1" ]]; then
+        # Already read-only (replica / intentional) — writes are already quiesced.
+        log "  DB is already read-only (replica?) — leaving as-is, not modifying."
+        _DB_RO_CHANGED=false
+        _DB_LOCKED=true
+        return 0
+    fi
+
+    # Flip to read-only. read_only blocks the (non-SUPER) app user; super_read_only
+    # (MySQL only) additionally blocks SUPER users — best-effort so MariaDB is fine.
+    db_exec "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" \
+        -e "SET GLOBAL read_only=ON;" 2>/dev/null || true
+    db_exec "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" \
+        -e "SET GLOBAL super_read_only=ON;" 2>/dev/null || true
+    db_exec "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" \
+        -e "FLUSH LOGS;" 2>/dev/null || true
+
+    # Verify it took effect before trusting the snapshot.
+    _ro=$(db_exec "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" \
+        -e "SELECT @@global.read_only;" | tail -1 || true)
+    if [[ "${_ro}" != "1" ]]; then
+        log "  WARNING: SET GLOBAL read_only did not take effect — falling back to STOP_DOCKER"
+        _DB_CONTAINER=""; _DB_ENGINE=""; return 0
+    fi
+
+    printf 'pid=%s\ttarget=%s\n' "$$" "${_target}" > "${_DB_RO_SENTINEL}" 2>/dev/null || true
+    _DB_RO_CHANGED=true
     _DB_LOCKED=true
-    log "  LOCKED — FLUSH TABLES WITH READ LOCK active (conn ${_DB_CONN_ID:-?})"
-    log "  Site stays UP. Reads/cached pages served. Writes blocked during imaging."
+    log "  READ-ONLY — SET GLOBAL read_only=ON active."
+    log "  Site stays UP. Reads/cached pages served. Writes blocked during flush."
+}
+
+# ── PostgreSQL consistent-snapshot quiesce ───────────────────────────────────
+# PostgreSQL has no FLUSH TABLES WITH READ LOCK. For a single-volume, block-level
+# filesystem image (the whole data directory, including pg_wal, lands in the same
+# partclone image) the correct technique is a crash-consistent snapshot:
+#   1. CHECKPOINT  — flush dirty shared buffers to disk so the on-disk state is
+#      as current as possible before `sync` runs.
+#   2. Image the live filesystem (writes continue — never blocked).
+#   3. On restore, PostgreSQL replays WAL exactly as it would after a power loss
+#      and comes up consistent. This is the documented method for filesystem
+#      snapshots that capture the entire data directory atomically.
+# There is therefore nothing to hold open and nothing to release — db_unlock()
+# is a no-op for postgres. Zero downtime: writes are never blocked.
+db_lock_postgres() {
+    local _target="${_DB_CONTAINER:-localhost}"
+    log ""
+    log "Quiescing PostgreSQL for consistent snapshot (postgres: ${_target})..."
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        log "  [DRY RUN] CHECKPOINT — skipped"
+        _DB_LOCKED=true
+        return 0
+    fi
+
+    if db_exec_pg "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" "CHECKPOINT;" >/dev/null 2>&1; then
+        _DB_LOCKED=true
+        log "  CHECKPOINT issued — dirty buffers flushed to disk."
+        log "  Site stays UP. Writes continue; WAL crash-recovery makes the image consistent on restore."
+    else
+        log "  WARNING: PostgreSQL CHECKPOINT failed — check DB_PG_USER / credentials."
+        log "  Falling back to STOP_DOCKER"
+        _DB_CONTAINER=""; _DB_ENGINE=""; return 0
+    fi
 }
 
 db_kill_orphaned_locks() {
@@ -451,25 +598,27 @@ db_kill_orphaned_locks() {
 
 db_unlock() {
     [[ "${_DB_LOCKED}" != "true" ]] && return 0
-    log ""
-    log "Unlocking DB..."
 
-    if [[ "${DRY_RUN}" != "true" && -n "${_DB_CONN_ID:-}" ]]; then
-        # KILL the lock-holding connection by its ID — releases FTWRL server-side
+    # PostgreSQL holds nothing open (CHECKPOINT is one-shot) — just clear state.
+    if [[ "${_DB_ENGINE}" == "postgres" ]]; then
+        _DB_LOCKED=false
+        return 0
+    fi
+
+    log ""
+    log "Restoring DB read-write..."
+
+    # Only flip read_only back if WE turned it on (a replica we left alone keeps
+    # its state). super_read_only must be cleared before read_only.
+    if [[ "${DRY_RUN}" != "true" && "${_DB_RO_CHANGED}" == "true" ]]; then
         db_exec "${_DB_CONTAINER:-}" "${_DB_ROOT_PASSWORD:-}" \
-            -e "KILL ${_DB_CONN_ID};" 2>/dev/null || true
+            -e "SET GLOBAL super_read_only=OFF;" 2>/dev/null || true
+        db_exec "${_DB_CONTAINER:-}" "${_DB_ROOT_PASSWORD:-}" \
+            -e "SET GLOBAL read_only=OFF;" 2>/dev/null || true
     fi
-    # Kill the mariadb client inside the container directly — killing the host-side
-    # docker exec wrapper (below) does not reliably terminate the process inside
-    # the container, leaving an orphaned SLEEP(86400) connection.
-    if [[ "${DRY_RUN}" != "true" && -n "${_DB_CONTAINER:-}" ]]; then
-        docker exec "${_DB_CONTAINER}" pkill -9 -f "${_DB_LOCK_TAG}" 2>/dev/null || true
-    fi
-    # Kill the host-side docker exec wrapper and wait for it to exit.
-    [[ -n "${_DB_LOCK_PID:-}" ]] && kill "${_DB_LOCK_PID}" 2>/dev/null || true
-    wait "${_DB_LOCK_PID:-}" 2>/dev/null || true
-    _DB_LOCK_PID=""; _DB_CONN_ID=""; _DB_LOCKED=false
-    log "  DB unlocked — writes unblocked."
+    rm -f "${_DB_RO_SENTINEL}" 2>/dev/null || true
+    _DB_RO_CHANGED=false; _DB_LOCKED=false
+    log "  DB read-write — writes unblocked."
 }
 
 # ── Site availability probe ───────────────────────────────────────────────────
@@ -1129,11 +1278,13 @@ preflight_health
 # site available to users for the full duration of the backup window.
 standby_failover
 
-# ── Consistent snapshot: DB lock (preferred) or Docker stop (fallback) ────────
-# DB lock path: start probe + FLUSH TABLES WITH READ LOCK. All containers stay
-# running. Site serves reads/cached pages throughout imaging (~5-15 min).
-# Docker stop path: used only when no DB is configured (STOP_DOCKER=true).
-if [[ -n "${DB_CONTAINER}" || -n "${DB_ROOT_PASSWORD}" ]]; then
+# ── Consistent snapshot: DB quiesce (preferred) or Docker stop (fallback) ─────
+# Quiesce path: start probe, then engine-aware quiesce — SET GLOBAL read_only
+# (MySQL/MariaDB) or CHECKPOINT (PostgreSQL). All containers/services stay
+# running and the site serves traffic throughout imaging (~5-15 min).
+# Docker stop path: used only when no DB is detected/configured (STOP_DOCKER=true).
+if [[ -n "${DB_CONTAINER}" || -n "${DB_ROOT_PASSWORD}" \
+      || ( "${DB_ENGINE}" != "auto" && -n "${DB_ENGINE}" ) ]]; then
     probe_start
     db_kill_orphaned_locks
     db_lock
@@ -1182,14 +1333,15 @@ log "Syncing filesystem..."
 sync
 echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null 2>&1 || true
 
-# ── Release DB lock immediately after flush ───────────────────────────────────────
-# InnoDB dirty pages are now fully on disk. FTWRL was only needed for the
-# flush itself (~seconds). Releasing here lets writes resume during the
-# multi-minute partclone imaging window. InnoDB crash-recovery replays any
-# redo log entries that land during imaging -- fuzzy snapshots are safe.
+# ── Restore DB read-write immediately after flush ─────────────────────────────
+# InnoDB dirty pages are now fully on disk. The read-only window (or PostgreSQL
+# CHECKPOINT) was only needed up to the flush. Restoring read-write here lets
+# writes resume during the multi-minute partclone imaging window. InnoDB/WAL
+# crash-recovery replays any entries that land during imaging -- fuzzy snapshots
+# are safe.
 if [[ "${_USE_DB_LOCK}" == "true" ]]; then
     db_unlock
-    log "  DB lock released -- site fully operational during imaging."
+    log "  DB read-write restored -- site fully operational during imaging."
     _USE_DB_LOCK=false
 fi
 

@@ -14,9 +14,10 @@ Think of it as an AMI for your Pi.
 ```
 BACKUP (runs on Pi nightly via cron)
 
-  1. Quiesce the database
-     ├─ MariaDB/MySQL detected → FLUSH TABLES WITH READ LOCK (zero downtime)
-     └─ No DB detected        → stop Docker briefly (~10s)
+  1. Quiesce the database  (engine-aware, container or native)
+     ├─ MariaDB/MySQL detected → SET GLOBAL read_only=ON (writes blocked <10s)
+     ├─ PostgreSQL detected    → CHECKPOINT (writes never blocked)
+     └─ No DB detected         → stop Docker briefly (~10s)
 
   2. Sync filesystem  (instant)
      └─ flush dirty pages and drop caches
@@ -61,23 +62,26 @@ RESTORE (run on a Linux machine or another Pi)
 | S3 upload size | ~10 GB (compressed zeros) | ~3–5 GB |
 | Restore | gunzip \| dd | partclone per partition |
 
-### Zero-downtime mode (default for MariaDB/MySQL)
+### Zero-downtime mode (default for MariaDB/MySQL and PostgreSQL)
 
-**No config needed.** The default `DB_CONTAINER="auto"` automatically scans for a running MariaDB/MySQL container. If found, pi2s3 uses `FLUSH TABLES WITH READ LOCK` (FTWRL) instead of stopping Docker. The lock is held only while `sync` and `drop_caches` complete (typically **under 10 seconds**), then released — DB writes resume while `partclone` images the partitions. Same technique as mariabackup/xtrabackup.
+**No config needed.** The default `DB_CONTAINER="auto"` detects a running database — first scanning Docker containers, then native host processes — and quiesces it with the right technique for its engine. The often-quoted "5–15 min downtime" applies **only to the fallback path** (no DB detected). With a supported DB the real write-blocking window is **under 10 seconds** (MySQL/MariaDB) or **zero** (PostgreSQL).
 
-What happens automatically:
-1. Kills any orphaned `pi2s3-lock` connections left by previous crashed backups (`db_kill_orphaned_locks`)
-2. Scans running containers for any MariaDB/MySQL image
-3. Auto-reads `MYSQL_ROOT_PASSWORD` / `MARIADB_ROOT_PASSWORD` from the container env
-4. Issues `FLUSH TABLES WITH READ LOCK` via a persistent background connection
+**MariaDB / MySQL** — flips the server to read-only with `SET GLOBAL read_only=ON` (plus `super_read_only=ON` on MySQL) instead of stopping Docker or holding a global read lock. Read-only is held only while `sync` and `drop_caches` complete (typically **under 10 seconds**), then cleared — DB writes resume while `partclone` images the partitions.
+
+1. Detects the DB (container image or native `mariadbd`/`mysqld` process)
+2. Auto-reads `MYSQL_ROOT_PASSWORD` / `MARIADB_ROOT_PASSWORD` from the container env (a **native** install must set `DB_ROOT_PASSWORD` in `config.env` — there's no container env to read)
+3. Reads the current `read_only` state — if the server is **already** read-only (e.g. a replica) it's left untouched; a stale read-only state from a previously hard-killed backup is detected via a sentinel file and cleared
+4. Issues `SET GLOBAL read_only=ON` (writes from the app's non-SUPER user are blocked; reads and cached pages keep serving) and verifies it took effect
 5. Runs `sync` + `drop_caches` to flush InnoDB dirty pages to disk (~5–10 seconds)
-6. **Releases the lock** — all containers stay up for the full imaging window
+6. **Restores read-write** — all containers stay up for the full imaging window
 7. Images all partitions with `partclone` — site serves reads *and* writes throughout
 8. Reports probe pass/fail in the ntfy notification
 
-InnoDB replays any redo log entries written during imaging on the next startup — fuzzy snapshots taken after lock release are fully consistent and bootable.
+The read-only flag is restored on any normal or error exit (the on-exit trap), and only ever flipped back if pi2s3 was the one that set it. InnoDB replays any redo log entries written during imaging on the next startup — fuzzy snapshots are fully consistent and bootable.
 
-If no MariaDB/MySQL container is found (or the lock fails), the script falls back to `STOP_DOCKER=true` automatically and logs why.
+**PostgreSQL** — there is no `FLUSH TABLES WITH READ LOCK` equivalent, and none is needed for a single-volume block image. The whole data directory (including `pg_wal`) lands in the same partclone image, so pi2s3 issues a `CHECKPOINT` to flush dirty buffers, then images the live filesystem. **Writes are never blocked.** On restore, PostgreSQL replays WAL exactly as it would after a power loss and comes up consistent — the documented method for filesystem snapshots that capture the entire data directory. Container and native peer-auth setups need no password; set `DB_PG_USER` if the superuser isn't `postgres`.
+
+If no supported DB is detected (or quiesce fails), the script falls back to `STOP_DOCKER=true` automatically and logs why. To force an engine for an explicit native install, set `DB_ENGINE="postgres"` (or `mysql`/`mariadb`) in `config.env`.
 
 A background **site availability probe** runs every `PROBE_INTERVAL` seconds (default: 60) during imaging — cache-busted requests to confirm the site stays up. `PROBE_LATEST_POST=true` (default) auto-discovers the latest WordPress post via REST API and probes real dynamic content instead of the homepage.
 
@@ -258,9 +262,11 @@ MAX_IMAGES=60
 AWS_PROFILE=""                 # blank = default profile or instance role
 S3_STORAGE_CLASS="STANDARD_IA" # ~40% cheaper than STANDARD for backups
 
-# Zero-downtime DB lock (recommended for MariaDB/MySQL setups)
+# Zero-downtime DB quiesce (MariaDB/MySQL and PostgreSQL; container or native)
 DB_CONTAINER="auto"            # "auto" | "container-name" | "" (native)
-DB_ROOT_PASSWORD=""            # blank = auto-read from container env
+DB_ROOT_PASSWORD=""            # MySQL/MariaDB: blank = auto-read from container env
+DB_ENGINE="auto"               # "auto" | "mysql" | "mariadb" | "postgres"
+DB_PG_USER="postgres"          # PostgreSQL superuser used for CHECKPOINT
 
 # Site availability probe (used with DB lock)
 PROBE_URL=""                   # blank = auto-detect from CF_SITE_HOSTNAME
@@ -730,16 +736,20 @@ The script will then image both devices, storing the second as `pi-image-extra-s
 
 If you run services **outside of Docker** — native MySQL, MariaDB, nginx, php-fpm, or any other systemd service — use `PRE_BACKUP_CMD` and `POST_BACKUP_CMD` to stop them before imaging and restart them after.
 
+> **Native databases have a zero-downtime path too.** `DB_CONTAINER="auto"` now also detects a **native** `mariadbd`/`mysqld`/`postgres` process — you don't have to stop the database. For native MySQL/MariaDB set `DB_ROOT_PASSWORD` (there's no container env to read it from); native PostgreSQL with peer auth needs nothing. Reserve the stop-the-service hooks below for *other* services (nginx, php-fpm) or databases pi2s3 can't quiesce.
+
 ### Native WordPress example
 
 ```bash
-# config.env
+# config.env — zero-downtime DB, only the web tier briefly stopped
 STOP_DOCKER=false   # no Docker on this Pi
-PRE_BACKUP_CMD="systemctl stop nginx php8.2-fpm mariadb"
-POST_BACKUP_CMD="systemctl start mariadb php8.2-fpm nginx"
+DB_CONTAINER="auto"               # detects native mariadbd — FTWRL, no DB downtime
+DB_ROOT_PASSWORD="your-root-pw"   # required for a native MySQL/MariaDB lock
+PRE_BACKUP_CMD="systemctl stop nginx php8.2-fpm"
+POST_BACKUP_CMD="systemctl start php8.2-fpm nginx"
 ```
 
-Imaging takes 5–15 minutes. MariaDB/nginx are down only for that window.
+To stop the database too (e.g. if you prefer a cold image), add `mariadb` to the hooks and leave `DB_ROOT_PASSWORD` blank — imaging takes 5–15 minutes and the DB is down only for that window.
 
 ### How it works
 

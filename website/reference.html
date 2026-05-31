@@ -173,18 +173,20 @@
     </div>
     <div class="card reveal">
       <h3>Pre/post backup hooks</h3>
-      <p>Not running Docker? Stop any service (MariaDB, nginx, php-fpm) before imaging and restart it after. Works for native WordPress, Samba, or any systemd service. The crash trap also runs <code>POST_BACKUP_CMD</code> on failure, so services always come back up.</p>
-      <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="cmt"># native WordPress example</span>
-<span class="val">PRE_BACKUP_CMD</span>=<span class="str">"systemctl stop nginx php8.2-fpm mariadb"</span>
-<span class="val">POST_BACKUP_CMD</span>=<span class="str">"systemctl start mariadb php8.2-fpm nginx"</span></pre>
+      <p>Native databases get the zero-downtime path too — <code>DB_CONTAINER="auto"</code> detects a native <code>mariadbd</code>/<code>mysqld</code>/<code>postgres</code> process, not just Docker. Use these hooks for <em>other</em> services (nginx, php-fpm) or databases pi2s3 can't quiesce. The crash trap also runs <code>POST_BACKUP_CMD</code> on failure, so services always come back up.</p>
+      <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="cmt"># native WordPress: zero-downtime DB, web tier briefly stopped</span>
+<span class="val">DB_ROOT_PASSWORD</span>=<span class="str">"your-root-pw"</span>   <span class="cmt"># native MySQL/MariaDB lock</span>
+<span class="val">PRE_BACKUP_CMD</span>=<span class="str">"systemctl stop nginx php8.2-fpm"</span>
+<span class="val">POST_BACKUP_CMD</span>=<span class="str">"systemctl start php8.2-fpm nginx"</span></pre>
     </div>
     <div class="card reveal">
-      <h3>Zero-downtime DB lock</h3>
-      <p>For MariaDB/MySQL setups, pi2s3 issues <code>FLUSH TABLES WITH READ LOCK</code> instead of stopping Docker. The lock is released after <code>sync</code> + <code>drop_caches</code> flush InnoDB dirty pages — typically under 10 seconds. Writes resume immediately; partclone images in the background. A background probe pings your site every 60 seconds to confirm it stays up.</p>
+      <h3>Zero-downtime DB quiesce</h3>
+      <p>For MariaDB/MySQL, pi2s3 issues <code>SET GLOBAL read_only=ON</code> instead of stopping Docker — gentler than a global read lock and held only while <code>sync</code> + <code>drop_caches</code> flush InnoDB dirty pages (typically under 10 seconds), then cleared. A replica that is already read-only is left untouched. For PostgreSQL it issues a <code>CHECKPOINT</code> and never blocks writes; WAL crash-recovery makes the image consistent. Works for Docker and native installs alike. A background probe pings your site every 60 seconds to confirm it stays up.</p>
       <pre style="margin-top:0.75rem; font-size:0.8rem;"><span class="cmt"># config.env</span>
-<span class="val">DB_CONTAINER</span>=<span class="str">"auto"</span>        <span class="cmt"># auto-detect</span>
-<span class="val">PROBE_LATEST_POST</span>=<span class="str">true</span>   <span class="cmt"># probe latest WP post</span></pre>
-      <p style="margin-top:0.5rem; color: var(--muted); font-size:0.85rem;">Falls back to <code>STOP_DOCKER</code> automatically if no DB container is found or the lock fails.</p>
+<span class="val">DB_CONTAINER</span>=<span class="str">"auto"</span>      <span class="cmt"># container or native</span>
+<span class="val">DB_ENGINE</span>=<span class="str">"auto"</span>         <span class="cmt"># mysql | mariadb | postgres</span>
+<span class="val">DB_PG_USER</span>=<span class="str">"postgres"</span>   <span class="cmt"># PostgreSQL CHECKPOINT user</span></pre>
+      <p style="margin-top:0.5rem; color: var(--muted); font-size:0.85rem;">Falls back to <code>STOP_DOCKER</code> automatically if no supported DB is found or quiesce fails.</p>
     </div>
   </div>
 </section>
