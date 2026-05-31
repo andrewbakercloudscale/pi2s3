@@ -120,6 +120,7 @@ VERIFY=false
 VERIFY_DATE=""
 STALE_CHECK=false
 COST=false
+DB_CHECK=false
 
 for arg in "$@"; do
     case "$arg" in
@@ -132,6 +133,7 @@ for arg in "$@"; do
         --no-stop-docker)  STOP_DOCKER=false ;;
         --stale-check)     STALE_CHECK=true ;;
         --cost)            COST=true ;;
+        --db-check)        DB_CHECK=true ;;
         --help)            echo "Usage: pi-image-backup.sh [options]
   (no args)          Run nightly backup
   --force            Skip duplicate-check (run even if today's backup exists)
@@ -143,6 +145,7 @@ for arg in "$@"; do
   --stale-check      Alert via ntfy if latest backup is older than STALE_BACKUP_HOURS
   --cost             Show S3 storage used and estimated monthly cost
   --no-stop-docker   Skip Docker stop (for daytime test runs, no downtime)
+  --db-check         Diagnose DB detection + read-only quiesce, then exit (no imaging)
   --help             Show this help
 
 Config: ${SCRIPT_DIR}/config.env
@@ -630,6 +633,64 @@ db_unlock() {
     _DB_RO_CHANGED=false; _DB_LOCKED=false
     log "  DB read-write — writes unblocked."
 }
+
+# ── DB diagnostic (--db-check) ────────────────────────────────────────────────
+# Reports how the DB would be detected and whether the read-only quiesce works,
+# without imaging anything. For MySQL/MariaDB it briefly toggles read_only and
+# restores it, logging the connecting user and any error. Safe to run any time.
+db_check() {
+    log "========================================================"
+    log "  pi2s3 — DB quiesce check"
+    log "========================================================"
+    log "  DB_CONTAINER=${DB_CONTAINER}  DB_ENGINE=${DB_ENGINE}"
+    if ! db_resolve_target; then
+        log "  RESULT: no DB resolved — backup would use STOP_DOCKER (downtime)."
+        exit 0
+    fi
+    log "  Resolved: engine=${_DB_ENGINE}  location=${_DB_CONTAINER:-<native host>}"
+
+    if [[ "${_DB_ENGINE}" == "postgres" ]]; then
+        local _v
+        _v=$(db_exec_pg "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" "SELECT version();" || true)
+        if [[ -n "${_v}" ]]; then
+            log "  Connected. ${_v}"
+            log "  RESULT: OK — PostgreSQL CHECKPOINT path will be used (zero downtime)."
+        else
+            log "  RESULT: could not connect (check DB_PG_USER) — would use STOP_DOCKER."
+        fi
+        exit 0
+    fi
+
+    # MySQL / MariaDB
+    log "  current_user: $(db_exec "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" -e "SELECT CURRENT_USER();" | tail -1)"
+    log "  version:      $(db_exec "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" -e "SELECT VERSION();" | tail -1)"
+    local _ro0 _ro1
+    _ro0=$(db_exec "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" -e "SELECT @@global.read_only;" | tail -1 || true)
+    log "  prior read_only=${_ro0:-<none>}  super_read_only=$(db_exec "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" -e "SELECT @@global.super_read_only;" | tail -1 || true)"
+    if [[ "${_ro0}" == "1" ]]; then
+        log "  Server is already read-only (replica?) — pi2s3 would leave it untouched. OK."
+        exit 0
+    fi
+
+    log "  Attempting SET GLOBAL read_only=ON ..."
+    db_exec "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" -e "SET GLOBAL read_only=ON;" >/dev/null || true
+    log "    read_only SET error: ${_DB_LAST_ERR:-<none>}"
+    db_exec "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" -e "SET GLOBAL super_read_only=ON;" >/dev/null || true
+    log "    super_read_only SET error: ${_DB_LAST_ERR:-<none>}"
+    _ro1=$(db_exec "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" -e "SELECT @@global.read_only;" | tail -1 || true)
+    log "  read_only after SET=${_ro1:-<none>}"
+    # Restore
+    db_exec "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" -e "SET GLOBAL super_read_only=OFF;" >/dev/null || true
+    db_exec "${_DB_CONTAINER}" "${_DB_ROOT_PASSWORD}" -e "SET GLOBAL read_only=OFF;" >/dev/null || true
+
+    if [[ "${_ro1}" == "1" ]]; then
+        log "  RESULT: OK — read-only quiesce works (zero downtime). Restored to read-write."
+    else
+        log "  RESULT: FAILED — read_only would not engage; backup falls back to STOP_DOCKER (downtime)."
+    fi
+    exit 0
+}
+[[ "${DB_CHECK}" == "true" ]] && db_check
 
 # ── Site availability probe ───────────────────────────────────────────────────
 # Pings the site every PROBE_INTERVAL seconds during partition imaging.
