@@ -4,6 +4,22 @@ All notable changes to pi2s3 are documented here.
 
 ---
 
+## [1.10.0] — 2026-05-31
+
+### Added
+
+- **PostgreSQL zero-downtime quiesce** (`pi-image-backup.sh`, `lib/containers.sh`) — pi2s3 now backs up PostgreSQL with no downtime. PostgreSQL has no `FLUSH TABLES WITH READ LOCK` equivalent and needs none for a single-volume block image: the whole data directory (including `pg_wal`) lands in the same partclone image, so `db_lock_postgres()` issues a `CHECKPOINT` to flush dirty buffers and then images the live filesystem. **Writes are never blocked.** On restore, PostgreSQL replays WAL exactly as it would after a power loss and comes up consistent — the documented method for filesystem snapshots that capture the entire data directory. Container installs and native peer-auth setups need no password; `DB_PG_USER` sets the superuser (default `postgres`).
+- **Native (non-Docker) database detection** (`lib/containers.sh`) — `DB_CONTAINER="auto"` now detects a database running **natively on the host** (`mariadbd`/`mysqld`/`postgres` processes), not just in Docker. Native MySQL/MariaDB previously fell back to a stop-the-service downtime; it now uses the zero-downtime path (set `DB_ROOT_PASSWORD` — there is no container env to read it from). Native PostgreSQL with peer auth needs no password.
+- **`DB_ENGINE` and `DB_PG_USER` config** (`config.env.example`) — `DB_ENGINE` (`auto` | `mysql` | `mariadb` | `postgres`) forces the engine for an explicit native install where auto-detection can't see a container. `DB_PG_USER` is the PostgreSQL superuser used for `CHECKPOINT`.
+- **`AGENTS.md` + `pi2s3.com/llms.txt`** — agent-facing instructions so an AI assistant (e.g. Claude) pointed at the repo or the site can install pi2s3 and run a backup unattended ("backup my site with pi2s3").
+
+### Changed
+
+- **MySQL/MariaDB quiesce switched from `FLUSH TABLES WITH READ LOCK` to `SET GLOBAL read_only`** (`pi-image-backup.sh`) — gentler than holding a global read lock and needs no keepalive connection. `SET GLOBAL read_only=ON` (plus `super_read_only=ON` on MySQL, best-effort — MariaDB has no such variable) blocks application writes during the sub-10-second flush window while reads and cached pages keep serving; read-write is restored before imaging. Safety: the prior `read_only` state is read first, so a server that is **already** read-only (e.g. a replica) is left untouched; a sentinel file lets the next backup recover a stale read-only state left by a hard-killed run, and the on-exit trap restores read-write on any normal or error exit.
+- **Engine-aware quiesce dispatch** (`pi-image-backup.sh`) — `db_lock()` now resolves the engine and location (container or native) via `db_resolve_target()` and dispatches to `db_lock_mysql()` or `db_lock_postgres()`. Falls back to `STOP_DOCKER` only when no supported database is detected or quiesce fails.
+
+---
+
 ## [1.9.0] — 2026-04-27
 
 ### Added

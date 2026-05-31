@@ -166,7 +166,7 @@
     </div>
     <div class="terminal-body">
       <div><span class="prompt">$ </span><span class="cmd">bash pi-image-backup.sh <span class="flag">--force</span></span></div>
-      <div><span class="comment"># FLUSH TABLES WITH READ LOCK (containers stay up)</span></div>
+      <div><span class="comment"># SET GLOBAL read_only=ON (containers stay up)</span></div>
       <div><span class="comment"># partclone | pigz | aws s3 cp  (no local file)</span></div>
       <div>&nbsp;</div>
       <div><span class="out">✔ DB lock acquired  (site is live)</span></div>
@@ -227,7 +227,7 @@
     <div class="step">
       <div class="step-num">BACKUP · STEP 01</div>
       <h3>Quiesce the database</h3>
-      <p>MariaDB/MySQL: <code>FLUSH TABLES WITH READ LOCK</code>. Containers stay up, only writes are blocked. No Docker: Docker is stopped briefly. Either way, no dirty pages and no recovery needed on restore.</p>
+      <p>MariaDB/MySQL: <code>SET GLOBAL read_only=ON</code> for the brief flush window — containers stay up, only writes are blocked. PostgreSQL: a <code>CHECKPOINT</code>, writes never blocked. Detected automatically whether your DB runs in Docker or natively. No DB: Docker is stopped briefly. Either way, crash-recovery makes the restore consistent.</p>
     </div>
     <div class="step">
       <div class="step-num">BACKUP · STEP 02</div>
@@ -275,7 +275,7 @@
     <div class="stat">
       <div class="stat-num" style="color:var(--accent2);">0 min</div>
       <div class="stat-label">Downtime during backup</div>
-      <div class="stat-context">FTWRL holds writes for &lt;10 s · containers stay up · site stays live</div>
+      <div class="stat-context">read-only holds writes for &lt;10 s · containers stay up · site stays live</div>
     </div>
     <div class="stat">
       <div class="stat-num">~35 min</div>
