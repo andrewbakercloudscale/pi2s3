@@ -72,6 +72,24 @@ bash extras/fleet-deploy.sh fleet.csv --parallel
 
 ---
 
+## Token-based tunnel preservation (added 2026-06-01, from a live QA failover)
+
+When restoring a PROD image onto a box that must keep its OWN cloudflared tunnel,
+the existing `post-restore-example.sh` (credentials-file approach) is insufficient:
+modern tunnels run via `cloudflared tunnel run --token …` with no `config.yml`, so
+the token lives in the systemd unit and a restore silently overwrites it with the
+source image's tunnel — taking every hostname on the target's tunnel dark
+(including the SSH hostname used to manage it).
+
+- DONE: added `extras/post-restore-cloudflared-token-example.sh` (copies the live
+  token unit into the restored image, enables it, removes any conflicting config.yml).
+- TODO (engine, needs a publish to `pi2s3.com/restore` — do in a non-incident window):
+  - Optional `--preserve-tunnel` flag that auto-detects a `--token` unit on the
+    running/recovery system and re-applies it to the restored image, so callers
+    don't need a bespoke post-restore script.
+  - Detect a tunnel-ID mismatch between source image and the box being restored
+    and WARN loudly (or refuse without `--yes`).
+
 ## Next ideas (not yet scoped)
 
 - Embed AWS credentials in Pi 5 EEPROM `CUSTOM_ETH_CONFIG` for fully unattended netboot restore
