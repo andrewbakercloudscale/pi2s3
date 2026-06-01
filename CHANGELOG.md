@@ -4,6 +4,19 @@ All notable changes to pi2s3 are documented here.
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **Restore-readiness on prepared SD cards** (`extras/firstboot/prepare-sd.sh`) — `firstrun.sh` now provisions, in both flash and inject modes, passwordless sudo (`/etc/sudoers.d`, visudo-validated) for the provisioned user and tty1 console autologin. Without this, an unattended restore that reboots into a freshly-prepared card strands: the restore can't run privileged commands (no sudo) and a headless box appears "stuck at a login screen". Found during a live failover restore.
+- **Token-tunnel post-restore template** (`extras/post-restore-cloudflared-token-example.sh`) — preserves a modern token-based cloudflared tunnel (`cloudflared tunnel run --token …`, no `config.yml`) across a restore by copying the live systemd unit into the restored image and removing a conflicting `config.yml`. The existing credentials-file example (`post-restore-example.sh`) does not cover token tunnels, so a restore would silently boot the source image's tunnel and take the target's hostnames (incl. its SSH hostname) dark.
+
+### Changed
+
+- **`website/restore` no longer aborts on a dirty `~/pi2s3`** — a local patch or diverged tree previously made `git pull --ff-only` hard-fail mid-restore. The bootstrap now continues with the *installed* version and prints how to update; set `PI2S3_FORCE_UPDATE=1` to auto-stash and pull (never stashes silently, to avoid hiding an intentional local fix).
+
+---
+
 ## [1.10.0] — 2026-05-31
 
 ### Added
