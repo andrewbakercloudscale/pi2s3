@@ -375,6 +375,30 @@ logger -t pi2s3-firstboot "cloudflared setup complete — ${CF_HOSTNAME}"
 SNIPEOF
 )
 
+# Restore-readiness snippet — injected in BOTH flash and inject modes.
+# Prevents the two failure modes that strand an unattended restore:
+#   1. No passwordless sudo  → the restore stream can't run privileged commands
+#      after it reboots into this system, so it dies with the site down.
+#   2. Interactive console login → a headless box appears "stuck at a login
+#      screen" with no clear signal that SSH is the intended path.
+# Scoped to the provisioned user. ${PI_USER} is expanded here at build time.
+PROVISION_SNIPPET=$(cat << SNIPEOF
+
+# ── pi2s3: restore-readiness (passwordless sudo + tty1 autologin) ─────────────
+install -d -m 0755 /etc/sudoers.d
+echo '${PI_USER} ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/010-pi2s3-nopasswd
+chmod 0440 /etc/sudoers.d/010-pi2s3-nopasswd
+visudo -cf /etc/sudoers.d/010-pi2s3-nopasswd >> /boot/firmware/pi2s3-firstboot.log 2>&1 \\
+    || { logger -t pi2s3-firstboot "WARN: bad sudoers, removing"; rm -f /etc/sudoers.d/010-pi2s3-nopasswd; }
+# Console autologin on tty1 (recovery convenience; SSH stays the primary path)
+mkdir -p /etc/systemd/system/getty@tty1.service.d
+printf '[Service]\\nExecStart=\\nExecStart=-/sbin/agetty --autologin ${PI_USER} --noclear %%I \$TERM\\n' \\
+    > /etc/systemd/system/getty@tty1.service.d/autologin.conf
+logger -t pi2s3-firstboot "restore-readiness: passwordless sudo + tty1 autologin for ${PI_USER}"
+# ─────────────────────────────────────────────────────────────────────────────
+SNIPEOF
+)
+
 if [[ -n "${WIFI_SSID}" ]]; then
     WIFI_SNIPPET=$(cat << WSNIPEOF
 
@@ -421,6 +445,9 @@ EOF
     # Append cloudflared block
     printf '%s\n' "${CF_SNIPPET}" >> "${VOLUME}/firstrun.sh"
 
+    # Append restore-readiness block (passwordless sudo + autologin)
+    printf '%s\n' "${PROVISION_SNIPPET}" >> "${VOLUME}/firstrun.sh"
+
     # Append SSH enable + cleanup
     cat >> "${VOLUME}/firstrun.sh" << 'SHEOF'
 
@@ -456,7 +483,7 @@ import sys, re
 path = sys.argv[1]
 content = open(path).read()
 content = re.sub(
-    r'\n# ── pi2s3: cloudflared.*?# ─{40,}\n',
+    r'\n# ── pi2s3:.*?# ─{40,}\n',
     '\n',
     content,
     flags=re.DOTALL
@@ -465,8 +492,8 @@ open(path, 'w').write(content)
 PYEOF
     fi
 
-    # Also inject WiFi snippet if we have one
-    FULL_INJECT="${WIFI_SNIPPET}${CF_SNIPPET}"
+    # Also inject WiFi snippet if we have one, plus restore-readiness provisioning
+    FULL_INJECT="${WIFI_SNIPPET}${CF_SNIPPET}${PROVISION_SNIPPET}"
 
     # Write snippet to a temp file to avoid heredoc escaping issues in Python
     _TMP=$(mktemp)
