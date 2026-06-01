@@ -54,10 +54,26 @@ echo "    Hostname set to: ${NEW_HOSTNAME}"
 #     echo "    .env updated."
 # fi
 
-# ── 4. Regenerate SSH host keys (avoids host key conflicts with original) ──
-# Uncomment if you want the clone to have different SSH host keys.
-#
-# sudo rm -f "${RESTORE_ROOT}"/etc/ssh/ssh_host_*
-# echo "    SSH host keys removed — will regenerate on first boot."
+# ── 4. SSH host keys + sshd enabled ────────────────────────────────────────
+# Always regenerate — avoids host key conflicts AND ensures sshd starts.
+# Missing host keys cause sshd to refuse to start; HTTP works but SSH and
+# CF SSH tunnels go dark until manually fixed on the Pi console.
+sudo rm -f "${RESTORE_ROOT}"/etc/ssh/ssh_host_* 2>/dev/null || true
+if sudo ssh-keygen -A -f "${RESTORE_ROOT}" >/dev/null 2>&1; then
+    echo "    SSH host keys: regenerated (fresh, unique to this Pi)."
+else
+    echo "    WARNING: ssh-keygen -A failed — run 'sudo ssh-keygen -A' after first boot." >&2
+fi
+for _svc in ssh sshd; do
+    _unit="${RESTORE_ROOT}/lib/systemd/system/${_svc}.service"
+    [[ -f "${_unit}" ]] || _unit="${RESTORE_ROOT}/usr/lib/systemd/system/${_svc}.service"
+    if [[ -f "${_unit}" ]]; then
+        sudo mkdir -p "${RESTORE_ROOT}/etc/systemd/system/multi-user.target.wants"
+        sudo ln -sf "/lib/systemd/system/${_svc}.service" \
+            "${RESTORE_ROOT}/etc/systemd/system/multi-user.target.wants/${_svc}.service" 2>/dev/null || true
+        echo "    sshd: enabled at boot (${_svc}.service)."
+        break
+    fi
+done
 
 echo "==> Post-restore complete."

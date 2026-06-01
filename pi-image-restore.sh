@@ -1299,6 +1299,87 @@ if [[ "${OS_TYPE}" == "Darwin" ]]; then
     diskutil eject "${TARGET_DEVICE}" 2>/dev/null || true
 fi
 
+# ── SSH hardening — always run, regardless of --post-restore ─────────────────
+# WHY: A restore overwrites the target's filesystem with the source image,
+# including its SSH host keys and sshd enabled/disabled state. Without this
+# step three things can go wrong:
+#   1. The restored Pi has identical SSH host keys to the source → known_hosts
+#      conflicts lock you out (or worse, silently allow MITM).
+#   2. sshd host keys can be absent after a restore to bare media → sshd refuses
+#      to start, HTTP works fine but SSH (and CF SSH tunnels) goes dark.
+#   3. sshd or its systemd unit may be disabled on the source image → same result.
+# We mount the root partition (already mounted by --post-restore if used, or
+# we mount it here) and fix all three in one pass.
+_ssh_root=""
+_ssh_mounted_here=0
+
+# Re-use the root partition we already identified for --post-restore, or
+# re-detect it from the manifest so this block works without --post-restore.
+if [[ -n "${RESTORE_ROOT:-}" && -d "${RESTORE_ROOT}" ]]; then
+    _ssh_root="${RESTORE_ROOT}"
+else
+    local _sr_name _sr_num _sr_target
+    IFS=$'\t' read -r _sr_name < <(echo "${MANIFEST}" | python3 -c "
+import json, sys
+m = json.load(sys.stdin)
+parts = [p for p in m.get('partitions', []) if p.get('fstype','') not in ('vfat','fat32','fat16','')]
+if parts:
+    print(parts[-1].get('name',''))
+" 2>/dev/null || true)
+    if [[ -n "${_sr_name:-}" ]]; then
+        _sr_num=$(echo "${_sr_name}" | grep -o '[0-9]*$' || true)
+        if [[ "${TARGET_DEVICE}" =~ (nvme|mmcblk) ]]; then
+            _sr_target="${TARGET_DEVICE}p${_sr_num}"
+        else
+            _sr_target="${TARGET_DEVICE}${_sr_num}"
+        fi
+        _ssh_root=$(mktemp -d)
+        if sudo mount -o rw "${_sr_target}" "${_ssh_root}" 2>/dev/null; then
+            _ssh_mounted_here=1
+        else
+            log "WARNING: SSH hardening — could not mount ${_sr_target}; skipping."
+            _ssh_root=""
+        fi
+    fi
+fi
+
+if [[ -n "${_ssh_root}" ]]; then
+    log "SSH hardening on restored root (${_ssh_root})..."
+
+    # 1. Regenerate SSH host keys so the restored Pi doesn't share keys with source.
+    #    ssh-keygen -A creates all missing key types; removing existing ones first
+    #    ensures they are genuinely fresh, not duplicates of the source.
+    sudo rm -f "${_ssh_root}"/etc/ssh/ssh_host_* 2>/dev/null || true
+    if sudo ssh-keygen -A -f "${_ssh_root}" >/dev/null 2>&1; then
+        log "  SSH host keys: regenerated (fresh, unique to this Pi)."
+    else
+        log "  WARNING: ssh-keygen -A failed — sshd may not start (no host keys)."
+        log "           Run: sudo ssh-keygen -A   on the Pi after first boot."
+    fi
+
+    # 2. Enable sshd at boot via systemd symlink (idempotent).
+    #    Covers both 'ssh.service' (Debian/Pi OS) and 'sshd.service' (some distros).
+    local _svc
+    for _svc in ssh sshd; do
+        local _unit="${_ssh_root}/lib/systemd/system/${_svc}.service"
+        [[ -f "${_unit}" ]] || _unit="${_ssh_root}/usr/lib/systemd/system/${_svc}.service"
+        if [[ -f "${_unit}" ]]; then
+            sudo mkdir -p "${_ssh_root}/etc/systemd/system/multi-user.target.wants"
+            local _symlink="${_ssh_root}/etc/systemd/system/multi-user.target.wants/${_svc}.service"
+            if [[ ! -L "${_symlink}" ]]; then
+                sudo ln -sf "/lib/systemd/system/${_svc}.service" "${_symlink}" 2>/dev/null || \
+                sudo ln -sf "/usr/lib/systemd/system/${_svc}.service" "${_symlink}" 2>/dev/null || true
+                log "  sshd: enabled at boot (${_svc}.service)."
+            else
+                log "  sshd: already enabled at boot (${_svc}.service)."
+            fi
+            break
+        fi
+    done
+
+    [[ "${_ssh_mounted_here}" -eq 1 ]] && sudo umount "${_ssh_root}" 2>/dev/null || true
+fi
+
 # ── Done ─────────────────────────────────────────────────────────────────────
 echo ""
 log "========================================================"
@@ -1319,9 +1400,7 @@ log "    1. Remove the device from this machine"
 log "    2. Insert into the target Pi and power on"
 log "    3. Root filesystem expands automatically on first boot (if --resize was used)"
 log ""
-log "  SSH host key note:"
-log "    The restored Pi has the SAME SSH key as the original."
-log "    Clear the old entry if needed:"
+log "  SSH: host keys regenerated (fresh, unique). Clear your local known_hosts if needed:"
 log "      ssh-keygen -R <hostname-or-ip>"
 log ""
 log "  Verify after boot:"

@@ -68,4 +68,27 @@ else
     exit 1
 fi
 
+# ── SSH host keys + sshd enabled ────────────────────────────────────────────
+# Regenerate so the restored Pi doesn't share host keys with the source, AND
+# ensure sshd is enabled — without this, HTTP works but SSH (and the CF SSH
+# tunnel above) goes dark after restore.
+echo "==> SSH: regenerating host keys..."
+sudo rm -f "${RESTORE_ROOT}"/etc/ssh/ssh_host_* 2>/dev/null || true
+if sudo ssh-keygen -A -f "${RESTORE_ROOT}" >/dev/null 2>&1; then
+    echo "    SSH host keys: regenerated."
+else
+    echo "    WARNING: ssh-keygen -A failed — run 'sudo ssh-keygen -A' after first boot." >&2
+fi
+for _svc in ssh sshd; do
+    _unit="${RESTORE_ROOT}/lib/systemd/system/${_svc}.service"
+    [[ -f "${_unit}" ]] || _unit="${RESTORE_ROOT}/usr/lib/systemd/system/${_svc}.service"
+    if [[ -f "${_unit}" ]]; then
+        sudo mkdir -p "${RESTORE_ROOT}/etc/systemd/system/multi-user.target.wants"
+        sudo ln -sf "/lib/systemd/system/${_svc}.service" \
+            "${RESTORE_ROOT}/etc/systemd/system/multi-user.target.wants/${_svc}.service" 2>/dev/null || true
+        echo "    sshd: enabled at boot (${_svc}.service)."
+        break
+    fi
+done
+
 echo "==> Post-restore (keep token tunnel): done"
