@@ -138,9 +138,25 @@ INSTALL_DIR="${HOME}/pi2s3"
 REPO_URL="https://github.com/andrewbakercloudscale/pi2s3.git"
 
 if [[ -d "${INSTALL_DIR}/.git" ]]; then
-    info "Already installed — pulling latest..."
-    git -C "${INSTALL_DIR}" pull --ff-only
-    ok "Up to date ($(git -C "${INSTALL_DIR}" rev-parse --short HEAD))"
+    info "Already installed — updating..."
+    # Do NOT let a dirty/diverged tree abort the whole restore. A bare recovery
+    # box may carry a local patch; in that case continue with the installed
+    # version rather than dying. Opt into auto-stash with PI2S3_FORCE_UPDATE=1
+    # (never stash silently — that could hide an intentional local fix).
+    if ! git -C "${INSTALL_DIR}" pull --ff-only 2>/dev/null; then
+        if [[ "${PI2S3_FORCE_UPDATE:-}" == "1" ]]; then
+            warn "Local changes present — stashing and updating (PI2S3_FORCE_UPDATE=1)."
+            git -C "${INSTALL_DIR}" stash -u >/dev/null 2>&1 || true
+            git -C "${INSTALL_DIR}" pull --ff-only \
+                || warn "Update still failed — continuing with the installed version."
+        else
+            warn "Could not fast-forward ${INSTALL_DIR} (local changes or diverged)."
+            warn "Continuing with the INSTALLED version. To update later, run one of:"
+            warn "    git -C ${INSTALL_DIR} stash && git -C ${INSTALL_DIR} pull --ff-only"
+            warn "    PI2S3_FORCE_UPDATE=1 <re-run>   (stashes automatically)"
+        fi
+    fi
+    ok "Using $(git -C "${INSTALL_DIR}" rev-parse --short HEAD)"
 else
     info "Cloning into ${INSTALL_DIR}..."
     git clone "${REPO_URL}" "${INSTALL_DIR}"
