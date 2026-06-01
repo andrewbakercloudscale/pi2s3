@@ -147,6 +147,41 @@ else
     fi
 fi
 
+# ── 5. SSH host keys + sshd enabled ─────────────────────────────────────────
+# A restore can leave the target with: (a) the source's SSH host keys (causing
+# known_hosts conflicts / MITM risk), (b) missing host keys if the source image
+# had none (sshd refuses to start — HTTP works, SSH and CF SSH tunnel go dark).
+# Regenerate unconditionally and ensure sshd is enabled at boot.
+log "SSH: regenerating host keys..."
+sudo rm -f "${RESTORE_ROOT}"/etc/ssh/ssh_host_* 2>/dev/null || true
+if sudo ssh-keygen -A -f "${RESTORE_ROOT}" >/dev/null 2>&1; then
+    log "SSH: host keys regenerated (fresh, unique to this Pi)."
+else
+    warn "ssh-keygen -A failed — run 'sudo ssh-keygen -A' on the Pi after first boot."
+    ERRORS=$(( ERRORS + 1 ))
+fi
+
+# Enable sshd at boot (idempotent; covers both ssh.service and sshd.service).
+_ssh_enabled=0
+for _svc in ssh sshd; do
+    _unit="${RESTORE_ROOT}/lib/systemd/system/${_svc}.service"
+    [[ -f "${_unit}" ]] || _unit="${RESTORE_ROOT}/usr/lib/systemd/system/${_svc}.service"
+    if [[ -f "${_unit}" ]]; then
+        sudo mkdir -p "${RESTORE_ROOT}/etc/systemd/system/multi-user.target.wants"
+        _symlink="${RESTORE_ROOT}/etc/systemd/system/multi-user.target.wants/${_svc}.service"
+        if [[ ! -L "${_symlink}" ]]; then
+            sudo ln -sf "/lib/systemd/system/${_svc}.service" "${_symlink}" 2>/dev/null || \
+            sudo ln -sf "/usr/lib/systemd/system/${_svc}.service" "${_symlink}" 2>/dev/null || true
+            log "SSH: sshd enabled at boot (${_svc}.service symlink created)."
+        else
+            log "SSH: sshd already enabled at boot (${_svc}.service)."
+        fi
+        _ssh_enabled=1
+        break
+    fi
+done
+[[ "${_ssh_enabled}" -eq 0 ]] && warn "SSH: no ssh.service/sshd.service found in restored root — enable manually."
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
 if [[ ${ERRORS} -eq 0 ]]; then
