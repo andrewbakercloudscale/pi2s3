@@ -34,6 +34,28 @@ while true; do
     THROTTLED_NOW=$(( ${THROTTLED:-0} & 0xF ))
     [[ "$THROTTLED_NOW" -eq 0 ]] && VOLT="ok" || VOLT="WARN(${THROTTLED})"
 
+    # ── SSH ───────────────────────────────────────────────────
+    SSH_ACTIVE=0
+    for _s in ssh sshd; do systemctl is-active --quiet "${_s}" 2>/dev/null && SSH_ACTIVE=1 && break; done
+    _sshport=$(grep -E '^[[:space:]]*Port[[:space:]]' /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' | head -1 || echo '22')
+    _sshport="${_sshport:-22}"
+    _sshopen=$(ss -tlnp 2>/dev/null | awk -v p=":${_sshport} " '$0~p{print "1"}' | head -1 || echo '')
+    if [[ "${SSH_ACTIVE}" -eq 1 && "${_sshopen}" == "1" ]]; then
+        SSH_INFO="ssh=up:${_sshport}"
+    else
+        SSH_INFO="ssh=DOWN"
+    fi
+
+    # ── Cloudflare tunnel ─────────────────────────────────────
+    CF_INFO="cf=$(systemctl is-active cloudflared 2>/dev/null || echo inactive)"
+
+    # ── Internet ─────────────────────────────────────────────
+    _t0=$(date +%s%3N)
+    _gc=$(curl -s -o /dev/null -w '%{http_code}' --max-time 6 https://www.google.com 2>/dev/null || echo '000')
+    _gms=$(( $(date +%s%3N) - _t0 ))
+    [[ "$_gc" == "200" || "$_gc" == "301" || "$_gc" == "302" ]] \
+        && INET="inet=ok(${_gms}ms)" || INET="inet=FAIL(${_gc})"
+
     # ── Optional HTTP probe ───────────────────────────────────
     if [[ -n "${HEARTBEAT_HTTP_URL:-}" ]]; then
         START=$(date +%s%3N)
@@ -58,7 +80,7 @@ while true; do
     TEMP=$(awk '{printf "%.0f°C", $1/1000}' \
         /sys/class/thermal/thermal_zone0/temp 2>/dev/null || echo '?')
 
-    echo "   $(date '+%H:%M')  net=${NET}  volt=${VOLT}${HTTP_INFO}  disk=${DISK}  mem=${MEM}  load=${LOAD}  temp=${TEMP}"
+    echo "   $(date '+%H:%M')  net=${NET}  ${INET}  ${SSH_INFO}  ${CF_INFO}  volt=${VOLT}${HTTP_INFO}  disk=${DISK}  mem=${MEM}  load=${LOAD}  temp=${TEMP}"
 
     sleep "$INTERVAL"
 done

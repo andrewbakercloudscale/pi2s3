@@ -1,0 +1,16 @@
+[Unit]
+Description=Pi boot connectivity monitor — polls internet/SSH/CF tunnel for 10 min
+After=network-online.target cloudflared.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/pi-boot-connectivity-monitor.sh
+StandardOutput=journal+console
+StandardError=journal+console
+# Runs for ~10 minutes then exits cleanly
+TimeoutStartSec=660
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target
