@@ -43,7 +43,14 @@ while true; do
     if [[ "${SSH_ACTIVE}" -eq 1 && "${_sshopen}" == "1" ]]; then
         SSH_INFO="ssh=up:${_sshport}"
     else
-        SSH_INFO="ssh=DOWN"
+        _sshsub=$(systemctl show ssh sshd --property=SubState 2>/dev/null \
+            | grep -v '^$' | head -1 | cut -d= -f2 || echo '?')
+        _sshkeys=$(ls /etc/ssh/ssh_host_*_key 2>/dev/null | wc -l || echo 0)
+        if [[ "${_sshkeys}" -eq 0 ]]; then
+            SSH_INFO="ssh=DOWN:no-host-keys"
+        else
+            SSH_INFO="ssh=DOWN:${_sshsub}"
+        fi
     fi
 
     # ── Cloudflare tunnel ─────────────────────────────────────
