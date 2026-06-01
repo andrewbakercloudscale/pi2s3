@@ -60,28 +60,12 @@ for _s in ssh sshd; do
     fi
 done
 
-if [[ -n "${SSH_SVC_NAME}" ]]; then
-    ok "Service:  ${SSH_SVC_NAME} is active"
-else
-    bad "Service:  sshd is NOT running"
-    # Show why — most common cause is missing host keys
-    SSH_FAIL=$(journalctl -u ssh -u sshd -n 5 --no-pager -o cat 2>/dev/null | tail -3 || true)
-    [[ -n "$SSH_FAIL" ]] && echo "    Last log: ${SSH_FAIL}" || true
-    warn "Fix: sudo ssh-keygen -A && sudo systemctl enable --now ssh"
-fi
-
 # Actual listening port from sshd config (may differ from 22)
 SSH_CFG_PORT=$(grep -E '^[[:space:]]*Port[[:space:]]' /etc/ssh/sshd_config 2>/dev/null \
     | awk '{print $2}' | head -1 || echo '22')
 SSH_CFG_PORT="${SSH_CFG_PORT:-22}"
-SSH_LISTEN=$(ss -tlnp 2>/dev/null | awk -v p=":${SSH_CFG_PORT} " '$0~p {print "open"}' | head -1)
-if [[ "${SSH_LISTEN}" == "open" ]]; then
-    ok "Port ${SSH_CFG_PORT}: open (listening)"
-else
-    bad "Port ${SSH_CFG_PORT}: CLOSED — sshd not listening"
-fi
 
-# Host key summary
+# Host key check — the #1 reason sshd fails to start after a restore
 SSH_KEY_COUNT=$(ls /etc/ssh/ssh_host_*_key 2>/dev/null | wc -l || echo 0)
 if [[ "${SSH_KEY_COUNT}" -gt 0 ]]; then
     ok "Host keys: ${SSH_KEY_COUNT} key(s) present"
@@ -89,8 +73,41 @@ if [[ "${SSH_KEY_COUNT}" -gt 0 ]]; then
         echo "    $(ssh-keygen -l -f "${k}" 2>/dev/null || echo "    (unreadable: ${k})")"
     done
 else
-    bad "Host keys: NONE — sshd cannot start without them"
-    warn "Fix: sudo ssh-keygen -A"
+    bad "Host keys: NONE"
+    echo "    ↳ This is why sshd cannot start. Regenerating now..."
+    if ssh-keygen -A 2>&1 | sed 's/^/    /'; then
+        ok "Host keys regenerated — starting sshd..."
+        for _svc in ssh sshd; do
+            systemctl enable --now "${_svc}" 2>/dev/null && ok "sshd started (${_svc})" && break
+        done
+    else
+        bad "ssh-keygen -A FAILED — check disk space and /etc/ssh permissions"
+    fi
+fi
+
+if [[ -n "${SSH_SVC_NAME}" ]]; then
+    ok "Service:  ${SSH_SVC_NAME} active"
+else
+    # Get the real reason from the journal — don't make the user guess
+    SSH_STATE=$(systemctl show ssh sshd --property=ActiveState,SubState,Result 2>/dev/null \
+        | grep -v '^$' | paste -sd '  ' || echo "unknown")
+    bad "Service:  sshd NOT running  (${SSH_STATE})"
+    echo ""
+    echo "  ── sshd journal (last 15 lines) ──"
+    journalctl -u ssh -u sshd -n 15 --no-pager --output=short 2>/dev/null \
+        | sed 's/^/    /' || echo "    (no journal entries)"
+    echo ""
+    warn "Auto-fix: sudo ssh-keygen -A && sudo systemctl enable --now ssh"
+fi
+
+SSH_LISTEN=$(ss -tlnp 2>/dev/null | awk -v p=":${SSH_CFG_PORT} " '$0~p {print "open"}' | head -1)
+if [[ "${SSH_LISTEN}" == "open" ]]; then
+    ok "Port ${SSH_CFG_PORT}: open"
+else
+    bad "Port ${SSH_CFG_PORT}: CLOSED"
+    # Show what IS listening so the user knows what port sshd ended up on
+    LISTENING=$(ss -tlnp 2>/dev/null | awk 'NR>1 {print $4}' | grep -v '0.0.0.0:\*\|:::\*' | head -8 || true)
+    [[ -n "${LISTENING}" ]] && echo "    Listening ports: $(echo "${LISTENING}" | tr '\n' '  ')"
 fi
 
 # Authorized keys for current/admin user
