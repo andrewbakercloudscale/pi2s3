@@ -53,6 +53,8 @@ fi
 source "${CONFIG_FILE}"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/lib/log.sh"
+# shellcheck source=lib/notify.sh
+source "${SCRIPT_DIR}/lib/notify.sh"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/lib/aws.sh"
 # shellcheck disable=SC1091
@@ -61,7 +63,7 @@ source "${SCRIPT_DIR}/lib/containers.sh"
 # ── Validate required config ─────────────────────────────────────────────────
 [[ -z "${S3_BUCKET:-}"  ]] && { echo "ERROR: S3_BUCKET is not set in config.env" >&2; exit 1; }
 [[ -z "${S3_REGION:-}"  ]] && { echo "ERROR: S3_REGION is not set in config.env" >&2; exit 1; }
-[[ -z "${NTFY_URL:-}"   ]] && echo "WARNING: NTFY_URL is not set — backups will run silently with no push notifications."
+notify_configured || echo "WARNING: no notifier configured (TG_BOT_TOKEN+TG_CHAT_ID, or NTFY_URL) — backups will run silently, INCLUDING failures."
 
 # ── Defaults for optional config ─────────────────────────────────────────────
 MAX_IMAGES="${MAX_IMAGES:-60}"
@@ -183,28 +185,8 @@ _BG_PIDS=()
 _BG_RESULT_DIR=""
 _STANDBY_ACTIVE=false
 
-ntfy_send() {
-    [[ -z "${NTFY_URL:-}" ]] && return 0
-    local title="$1" msg="$2" priority="${3:-default}" tags="${4:-}"
-    local extra=()
-    [[ -n "$tags" ]] && extra+=(-H "Tags: $tags")
-    local _attempt _rc=1
-    for _attempt in 1 2 3; do
-        curl -s --max-time 10 \
-            -H "Title: $title" \
-            -H "Priority: $priority" \
-            "${extra[@]}" \
-            -d "$msg" \
-            "${NTFY_URL}" > /dev/null 2>&1 && { _rc=0; break; }
-        [[ ${_attempt} -lt 3 ]] && sleep $(( _attempt * 5 ))
-    done
-    if [[ ${_rc} -eq 0 ]]; then
-        log "  ntfy sent: ${title}"
-    else
-        log "  WARNING: ntfy failed (all retries): ${title}"
-    fi
-    return ${_rc}
-}
+# Notifications: see lib/notify.sh, sourced above. ntfy_send() is kept there as an
+# alias of notify_send() so every call site below reads unchanged.
 
 # ── Hot standby failover / failback ──────────────────────────────────────────
 # standby_failover: called before Docker/DB stop. Runs STANDBY_FAILOVER_CMD

@@ -26,9 +26,16 @@ CONFIG_FILE="${SCRIPT_DIR}/config.env"
 # shellcheck disable=SC1090
 source "${CONFIG_FILE}"
 
+# shellcheck source=lib/log.sh
+source "${SCRIPT_DIR}/lib/log.sh"
+# shellcheck source=lib/notify.sh
+source "${SCRIPT_DIR}/lib/notify.sh"
+
 # Respect the enabled flag — safe to run even if disabled (cron may fire anyway)
-[[ "${NTFY_HEARTBEAT_ENABLED:-false}" != "true" ]] && exit 0
-[[ -z "${NTFY_URL:-}" ]] && exit 0
+# TG_HEARTBEAT_ENABLED is the current name; NTFY_HEARTBEAT_ENABLED is honoured so an
+# existing ntfy install keeps working after this upgrade without editing config.env.
+_HB_ENABLED="${TG_HEARTBEAT_ENABLED:-${NTFY_HEARTBEAT_ENABLED:-false}}"
+[[ "${_HB_ENABLED}" != "true" ]] && exit 0
 
 # ── Gather system info ────────────────────────────────────────────────────────
 HOST="${CF_SITE_HOSTNAME:-$(hostname)}"
@@ -59,11 +66,10 @@ Disk:    ${ROOT_USAGE}${NVME_INFO}
 Docker:  ${CONTAINER_INFO}
 Load:    ${LOAD}"
 
-curl -s --max-time 10 \
-    -H "Title: pi2s3: Heartbeat" \
-    -H "Priority: min" \
-    -H "Tags: white_check_mark" \
-    -d "${MSG}" \
-    "${NTFY_URL}" > /dev/null 2>&1
+# Sent through the shared notifier so the heartbeat reaches whichever transport this
+# host is configured for. It used to curl NTFY_URL directly, so on a Telegram host it
+# posted to an empty URL every morning and failed silently — the one message whose
+# entire job is to prove the alerting path still works.
+notify_send "pi2s3: Heartbeat" "${MSG}" "min" "white_check_mark"
 
 exit 0

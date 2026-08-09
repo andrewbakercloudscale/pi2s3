@@ -41,6 +41,10 @@ HEARTBEAT_CRON_MARKER="pi2s3-heartbeat.sh"
 POST_CHECK_SCRIPT="${SCRIPT_DIR}/pi2s3-post-backup-check.sh"
 POST_CHECK_CRON_MARKER="pi2s3-post-backup-check.sh"
 STALE_CHECK_CRON_MARKER="pi-image-backup.sh --stale-check"
+# shellcheck source=lib/notify.sh
+# Sourced for notify_transport()/notify_configured(), so the installer reports the
+# transport this host will actually use instead of assuming ntfy.
+[[ -f "$(dirname "${BASH_SOURCE[0]}")/lib/notify.sh" ]] && source "$(dirname "${BASH_SOURCE[0]}")/lib/notify.sh"
 
 log()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 ok()   { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ $*"; }
@@ -189,23 +193,53 @@ upgrade() {
         ok "Backup cron refreshed: ${CRON_SCHEDULE}"
     fi
 
-    # Update stale-check cron schedule if it changed
+    # Converge the stale-check cron: refresh it if present, INSTALL it if missing.
+    #
+    # This block used to only refresh an entry that already existed, so a host
+    # installed before --stale-check was added never got it, and --upgrade kept
+    # reporting success while adding nothing. andrew-pi-5 was in exactly that state:
+    # the nights of 2026-08-03 and 2026-08-05 had no backup at all (the machine was
+    # down at 02:00) and nothing said so, because the watchdog that notices was in
+    # nobody's crontab.
+    #
+    # Guarded on the main backup cron being present, so an --upgrade after
+    # --uninstall does not resurrect watchdogs on a host that was deliberately
+    # emptied. Config is the declared intent; the backup cron is the evidence that
+    # this host is still meant to be running pi2s3 at all.
+    STALE_CHECK_ENABLED="${STALE_CHECK_ENABLED:-true}"
     STALE_CHECK_SCHEDULE="${STALE_CHECK_SCHEDULE:-0 6 * * *}"
-    if crontab -l 2>/dev/null | grep -qF "${STALE_CHECK_CRON_MARKER}"; then
+    if [[ "${STALE_CHECK_ENABLED}" == "true" ]] \
+       && crontab -l 2>/dev/null | grep -qF "${CRON_MARKER}"; then
         STALE_CHECK_CRON_LINE="${STALE_CHECK_SCHEDULE} bash ${BACKUP_SCRIPT} --stale-check >> ${LOG_FILE} 2>&1"
-        ( crontab -l 2>/dev/null | grep -vF "${STALE_CHECK_CRON_MARKER}"; echo "${STALE_CHECK_CRON_LINE}" ) | crontab -
-        ok "Stale-check cron refreshed: ${STALE_CHECK_SCHEDULE}"
+        if crontab -l 2>/dev/null | grep -qF "${STALE_CHECK_CRON_MARKER}"; then
+            crontab_snapshot
+            ( crontab -l 2>/dev/null | grep -vF "${STALE_CHECK_CRON_MARKER}"; echo "${STALE_CHECK_CRON_LINE}" ) | crontab -
+            ok "Stale-check cron refreshed: ${STALE_CHECK_SCHEDULE}"
+        else
+            crontab_snapshot
+            ( crontab -l 2>/dev/null; echo "${STALE_CHECK_CRON_LINE}" ) | crontab -
+            ok "Stale-check cron INSTALLED (was missing): ${STALE_CHECK_SCHEDULE}"
+        fi
     fi
 
     # Update post-backup check cron if schedule changed
     POST_BACKUP_CHECK_ENABLED="${POST_BACKUP_CHECK_ENABLED:-true}"
     POST_BACKUP_CHECK_SCHEDULE="${POST_BACKUP_CHECK_SCHEDULE:-30 2 * * *}"
+    # Converge, for the same reason as the stale-check above: refresh if present,
+    # install if missing, and only on a host whose main backup cron still exists.
     if [[ "${POST_BACKUP_CHECK_ENABLED}" == "true" ]] \
-       && crontab -l 2>/dev/null | grep -qF "${POST_CHECK_CRON_MARKER}"; then
+       && crontab -l 2>/dev/null | grep -qF "${CRON_MARKER}"; then
         POST_CHECK_CRON_LINE="${POST_BACKUP_CHECK_SCHEDULE} bash ${POST_CHECK_SCRIPT} >> ${LOG_FILE} 2>&1"
-        ( crontab -l 2>/dev/null | grep -vF "${POST_CHECK_CRON_MARKER}"
-          echo "${POST_CHECK_CRON_LINE}" ) | crontab -
-        ok "Post-backup check cron refreshed: ${POST_BACKUP_CHECK_SCHEDULE}"
+        if crontab -l 2>/dev/null | grep -qF "${POST_CHECK_CRON_MARKER}"; then
+            crontab_snapshot
+            ( crontab -l 2>/dev/null | grep -vF "${POST_CHECK_CRON_MARKER}"
+              echo "${POST_CHECK_CRON_LINE}" ) | crontab -
+            ok "Post-backup check cron refreshed: ${POST_BACKUP_CHECK_SCHEDULE}"
+        else
+            crontab_snapshot
+            ( crontab -l 2>/dev/null; echo "${POST_CHECK_CRON_LINE}" ) | crontab -
+            ok "Post-backup check cron INSTALLED (was missing): ${POST_BACKUP_CHECK_SCHEDULE}"
+        fi
     fi
 
     # Block direct commits on the Pi
@@ -458,7 +492,10 @@ source "${CONFIG_FILE}"
 
 [[ -z "${S3_BUCKET:-}" ]] && die "S3_BUCKET is empty in config.env. Edit it and re-run."
 [[ -z "${S3_REGION:-}" ]] && die "S3_REGION is empty in config.env. Edit it and re-run."
-[[ -z "${NTFY_URL:-}"  ]] && warn "NTFY_URL is not set — backups will run silently with no push notifications."
+# Either transport counts. This warned about NTFY_URL alone, so a correctly configured
+# Telegram host was told its backups would be silent, and a host with neither was told
+# the same thing — the warning could not distinguish the two.
+notify_configured 2>/dev/null || warn "No notifier configured (TG_BOT_TOKEN+TG_CHAT_ID, or NTFY_URL) — backups will run silently, INCLUDING failures."
 
 CRON_SCHEDULE="${CRON_SCHEDULE:-0 2 * * *}"
 MAX_IMAGES="${MAX_IMAGES:-60}"
@@ -695,7 +732,7 @@ if [[ "${STALE_CHECK_ENABLED}" == "true" ]]; then
         ( crontab -l 2>/dev/null; echo "${STALE_CHECK_CRON_LINE}" ) | crontab -
         ok "Stale-check cron installed: ${STALE_CHECK_SCHEDULE}"
     fi
-    log "  Alerts via ntfy if no backup seen in ${STALE_BACKUP_HOURS:-25}h."
+    log "  Alerts via $(notify_transport 2>/dev/null || echo "the configured notifier") if no backup seen in ${STALE_BACKUP_HOURS:-25}h."
 else
     log "  Stale-check disabled (STALE_CHECK_ENABLED=false in config.env)."
 fi
