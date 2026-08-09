@@ -154,6 +154,29 @@ chk "post-backup check does not exit when no notifier is configured" \
     "$(grep -q 'NTFY_URL not set in config.env"; exit 1' "${ROOT}/pi2s3-post-backup-check.sh" && echo no || echo yes)" \
     "it restarts containers the backup left down; refusing to run because nobody can be told is the opposite of a safety net"
 
+# ── 9. Every script must SOURCE the lib before it CALLS it ──────────────────
+# Caught in production, not here, the first time: the post-backup check called
+# notify_configured() six lines before sourcing notify.sh, so bash printed
+# "notify_configured: command not found" and the `||` branch fired unconditionally —
+# a correctly configured Telegram host was told it had no notifier. Absence of an
+# `exit 1` was not enough to assert; the ORDER is the property.
+order_bad=""
+for f in "${ROOT}"/pi-image-backup.sh "${ROOT}"/pi2s3-post-backup-check.sh \
+         "${ROOT}"/pi2s3-heartbeat.sh "${ROOT}"/install.sh; do
+    [[ -f "$f" ]] || continue
+    src_line="$(grep -nE 'source .*lib/notify\.sh' "$f" | head -1 | cut -d: -f1)"
+    use_line="$(grep -nE 'notify_send |notify_configured|notify_transport' "$f" \
+                | grep -vE '^[0-9]+:[[:space:]]*#' | head -1 | cut -d: -f1)"
+    # A script that never calls the lib needs no source line.
+    [[ -z "${use_line}" ]] && continue
+    if [[ -z "${src_line}" ]] || [[ "${src_line}" -ge "${use_line}" ]]; then
+        order_bad+=" $(basename "$f")(source=${src_line:-none},use=${use_line})"
+    fi
+done
+chk "every script sources lib/notify.sh before calling it" \
+    "$([[ -z "${order_bad}" ]] && echo yes || echo no)" \
+    "calling it first yields 'command not found' and a wrong warning:${order_bad}"
+
 rm -f "${CURL_LOG}"
 echo "────────────────────────────"
 if [[ ${FAIL} -eq 0 ]]; then
