@@ -29,29 +29,19 @@ fi
 # shellcheck disable=SC1090
 source "${CONFIG_FILE}"
 
-[[ -z "${NTFY_URL:-}" ]] && { echo "ERROR: NTFY_URL not set in config.env"; exit 1; }
+# A missing notifier must NOT stop this script. It restarts containers the backup
+# left down; refusing to run because nobody can be told is the opposite of a safety
+# net, and it is exactly what happened here for 38 nights.
+notify_configured || echo "WARNING: no notifier configured — the container check still runs, but its alerts go nowhere."
 
 _SITE="${CF_SITE_HOSTNAME:-$(hostname)}"
 
 log()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] POST-CHECK: $*"; }
 
-ntfy_send() {
-    local title="$1" msg="$2" priority="${3:-default}" tags="${4:-}"
-    local extra=()
-    [[ -n "$tags" ]] && extra+=(-H "Tags: $tags")
-    local _rc=0
-    curl -s --max-time 10 \
-        -H "Title: $title" \
-        -H "Priority: $priority" \
-        "${extra[@]}" \
-        -d "$msg" \
-        "${NTFY_URL}" > /dev/null 2>&1 || _rc=$?
-    if [[ ${_rc} -eq 0 ]]; then
-        log "  ntfy sent: ${title}"
-    else
-        log "  WARNING: ntfy failed (all retries): ${title}"
-    fi
-}
+# shellcheck source=lib/notify.sh
+# Sourced AFTER log() so notify_send()'s messages carry this script's prefix.
+source "${SCRIPT_DIR}/lib/notify.sh"
+
 
 # Docker not installed or daemon not running — nothing to check.
 if ! command -v docker &>/dev/null || ! docker info &>/dev/null 2>&1; then
