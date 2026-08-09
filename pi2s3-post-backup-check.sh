@@ -29,18 +29,19 @@ fi
 # shellcheck disable=SC1090
 source "${CONFIG_FILE}"
 
-# A missing notifier must NOT stop this script. It restarts containers the backup
-# left down; refusing to run because nobody can be told is the opposite of a safety
-# net, and it is exactly what happened here for 38 nights.
-notify_configured || echo "WARNING: no notifier configured — the container check still runs, but its alerts go nowhere."
-
 _SITE="${CF_SITE_HOSTNAME:-$(hostname)}"
 
 log()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] POST-CHECK: $*"; }
 
 # shellcheck source=lib/notify.sh
-# Sourced AFTER log() so notify_send()'s messages carry this script's prefix.
+# Sourced AFTER log() so notify_send()'s messages carry this script's prefix, and
+# BEFORE the notify_configured() call below, which is the whole point of the order.
 source "${SCRIPT_DIR}/lib/notify.sh"
+
+# A missing notifier must NOT stop this script. It restarts containers the backup left
+# down; refusing to run because nobody can be told is the opposite of a safety net, and
+# an `exit 1` here is exactly what kept it from running for 38 nights.
+notify_configured || log "WARNING: no notifier configured — the container check still runs, but its alerts go nowhere."
 
 
 # Docker not installed or daemon not running — nothing to check.
