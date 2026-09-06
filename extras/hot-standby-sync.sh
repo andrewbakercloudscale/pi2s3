@@ -50,6 +50,8 @@ source "${CONFIG_FILE}"
 source "${PARENT_DIR}/lib/log.sh"
 # shellcheck disable=SC1091
 source "${PARENT_DIR}/lib/aws.sh"
+# shellcheck source=lib/notify.sh
+source "${PARENT_DIR}/lib/notify.sh"
 
 # ── Config defaults ───────────────────────────────────────────────────────────
 HOT_STANDBY_SYNC_ENABLED="${HOT_STANDBY_SYNC_ENABLED:-false}"
@@ -62,28 +64,16 @@ STANDBY_SYNC_PRIMARY_URL="${STANDBY_SYNC_PRIMARY_URL:-}"
 [[ -z "${S3_REGION:-}"   ]] && { echo "ERROR: S3_REGION not set";  exit 1; }
 [[ -z "${AWS_PROFILE:-}" ]] && unset AWS_PROFILE || true
 
-_NTFY_SITE="${CF_SITE_HOSTNAME:-$(hostname -s)}"
-
 # ── Guard ─────────────────────────────────────────────────────────────────────
 [[ "${HOT_STANDBY_SYNC_ENABLED}" == "true" ]] || exit 0
 
-ntfy_send() {
-    [[ -z "${NTFY_URL:-}" ]] && return 0
-    local title="$1" msg="$2" priority="${3:-default}" tags="${4:-}"
-    local extra=()
-    [[ -n "$tags" ]] && extra+=(-H "Tags: $tags")
-    local _attempt _rc=1
-    for _attempt in 1 2 3; do
-        curl -s --max-time 10 \
-            -H "Title: $title" \
-            -H "Priority: $priority" \
-            "${extra[@]}" \
-            -d "$msg" \
-            "${NTFY_URL}" > /dev/null 2>&1 && { _rc=0; break; }
-        [[ ${_attempt} -lt 3 ]] && sleep $(( _attempt * 5 ))
-    done
-    return ${_rc}
-}
+# Notifications come from lib/notify.sh (sourced above with log.sh/aws.sh).
+#
+# This file kept a private ntfy_send() that opened with the NTFY_URL early-return —
+# the same silent global mute that discarded 38 nights of backup alerts. Deleting the
+# copy fixes two things at once: on a Telegram host these six sync alerts were going
+# nowhere at all, and now that they go through notify_send() they carry the site name
+# in the title like every other alert.
 
 log "========================================================"
 log "  pi2s3 standby sync check — $(date)"

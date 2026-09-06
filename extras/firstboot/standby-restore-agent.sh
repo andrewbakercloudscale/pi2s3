@@ -68,15 +68,41 @@ source "${CONFIG_FILE}"
 
 _NTFY_SITE="${CF_SITE_HOSTNAME:-$(hostname -s)}"
 
-ntfy() {
-    [[ -z "${NTFY_URL:-}" ]] && return 0
-    curl -s --max-time 10 \
-        -H "Title: $1" \
-        -H "Priority: ${3:-default}" \
-        -H "Tags: ${4:-}" \
-        -d "$2" \
-        "${NTFY_URL}" > /dev/null 2>&1 || true
-}
+# Alerts go through the shared notifier so this agent reaches Telegram hosts too — its
+# private copy was gated on NTFY_URL and returned success when unset, which on this
+# fleet meant a standby restore ran start to finish in total silence.
+#
+# The fallback matters here and nowhere else: this runs on first boot of a freshly
+# restored disk, where lib/ may not have been unpacked yet. A restore that cannot
+# source the lib must still be able to say so, so the fallback is a working notifier
+# rather than an exit — but it names itself in the log so the degradation is visible.
+if [[ -f "${PI2S3_DIR}/lib/notify.sh" ]]; then
+    # shellcheck disable=SC1090
+    source "${PI2S3_DIR}/lib/notify.sh"
+else
+    echo "  WARNING: ${PI2S3_DIR}/lib/notify.sh missing — using built-in fallback notifier"
+    log() { echo "$*"; }
+    notify_send() {
+        local title="$1" msg="$2"
+        if [[ -n "${TG_BOT_TOKEN:-}" && -n "${TG_CHAT_ID:-}" ]]; then
+            curl -s --max-time 15 \
+                -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+                --data-urlencode "chat_id=${TG_CHAT_ID}" \
+                --data-urlencode "text=$(printf '%s\n\n%s' "${title}" "${msg}")" \
+                > /dev/null 2>&1 || true
+        elif [[ -n "${NTFY_URL:-}" ]]; then
+            curl -s --max-time 10 \
+                -H "Title: ${title}" -H "Priority: ${3:-default}" -H "Tags: ${4:-}" \
+                -d "${msg}" "${NTFY_URL}" > /dev/null 2>&1 || true
+        else
+            echo "  WARNING: no notifier configured — DISCARDED: ${title}"
+        fi
+    }
+fi
+
+# Titles here already carry ${_NTFY_SITE}, which notify_title() detects and leaves
+# alone rather than stamping the site a second time.
+ntfy() { notify_send "$@"; }
 
 # ── Safely parse trigger file (no source — avoids code injection) ─────────────
 # The trigger was written by hot-standby-sync.sh on the NVMe, but the NVMe

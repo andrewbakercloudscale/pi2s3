@@ -38,7 +38,10 @@ _HB_ENABLED="${TG_HEARTBEAT_ENABLED:-${NTFY_HEARTBEAT_ENABLED:-false}}"
 [[ "${_HB_ENABLED}" != "true" ]] && exit 0
 
 # ── Gather system info ────────────────────────────────────────────────────────
-HOST="${CF_SITE_HOSTNAME:-$(hostname)}"
+# The domain is added to the title by notify_send(); this is the MACHINE, which is
+# different information on a Pi that serves more than one site. It was computed here
+# and then dropped on the floor — the message went out naming neither.
+HOST=$(hostname 2>/dev/null || echo unknown)
 NOW=$(date '+%Y-%m-%d %H:%M')
 UPTIME=$(uptime -p 2>/dev/null || uptime 2>/dev/null || echo "unknown")
 
@@ -60,6 +63,7 @@ LOAD=$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo "?")
 
 # ── Send notification ─────────────────────────────────────────────────────────
 MSG="${NOW}
+Host:    ${HOST}
 Uptime: ${UPTIME}
 RAM:     ${MEM_INFO}
 Disk:    ${ROOT_USAGE}${NVME_INFO}

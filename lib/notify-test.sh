@@ -140,9 +140,16 @@ chk "ntfy_send() still delivers (≈20 existing call sites use it)" \
     "$([[ "$(cat "${CURL_LOG}")" == *"api.telegram.org"* ]] && echo yes || echo no)"
 
 # ── 7. No script may keep a private copy of the notifier ────────────────────
+# extras/ was outside this list for as long as it existed, and all four scripts there
+# still carried the NTFY_URL early-return: on this Telegram fleet the tunnel watchdog,
+# the standby sync, the FPM monitor and the restore agent were every one of them mute.
+# The lesson is the list, not the copies — a check that covers three of seven files
+# reports "no private copies" while four sit next door.
 ROOT="$(cd "${LIB_DIR}/.." && pwd)"
 private=""
-for f in "${ROOT}"/pi-image-backup.sh "${ROOT}"/pi2s3-post-backup-check.sh "${ROOT}"/pi2s3-heartbeat.sh; do
+for f in "${ROOT}"/pi-image-backup.sh "${ROOT}"/pi2s3-post-backup-check.sh \
+         "${ROOT}"/pi2s3-heartbeat.sh "${ROOT}"/extras/cf-tunnel-watchdog.sh \
+         "${ROOT}"/extras/hot-standby-sync.sh "${ROOT}"/extras/fpm-saturation-monitor.sh; do
     grep -qE '^\s*(ntfy_send|notify_send)\(\)' "$f" 2>/dev/null && private+=" $(basename "$f")"
 done
 chk "no shipped script redefines the notifier locally" \
@@ -162,7 +169,9 @@ chk "post-backup check does not exit when no notifier is configured" \
 # `exit 1` was not enough to assert; the ORDER is the property.
 order_bad=""
 for f in "${ROOT}"/pi-image-backup.sh "${ROOT}"/pi2s3-post-backup-check.sh \
-         "${ROOT}"/pi2s3-heartbeat.sh "${ROOT}"/install.sh; do
+         "${ROOT}"/pi2s3-heartbeat.sh "${ROOT}"/install.sh \
+         "${ROOT}"/extras/cf-tunnel-watchdog.sh "${ROOT}"/extras/hot-standby-sync.sh \
+         "${ROOT}"/extras/fpm-saturation-monitor.sh; do
     [[ -f "$f" ]] || continue
     src_line="$(grep -nE 'source .*lib/notify\.sh' "$f" | head -1 | cut -d: -f1)"
     use_line="$(grep -nE 'notify_send |notify_configured|notify_transport' "$f" \
@@ -176,6 +185,64 @@ done
 chk "every script sources lib/notify.sh before calling it" \
     "$([[ -z "${order_bad}" ]] && echo yes || echo no)" \
     "calling it first yields 'command not found' and a wrong warning:${order_bad}"
+
+# ── 10. Every alert must name the site it came from ─────────────────────────
+# The heartbeat that prompted this read "pi2s3: Heartbeat" — the same eight characters
+# every host in the fleet sends, on the one message whose entire job is to say WHICH
+# machine is still up. Asserted on the wire, not on the helper, because the property
+# that matters is what the phone receives.
+: > "${CURL_LOG}"
+TG_BOT_TOKEN="tok"; TG_CHAT_ID="chat"; NTFY_URL=""
+NOTIFY_SITE="example.com"
+notify_send 'pi2s3: Heartbeat' 'up 5 days' 'min' >/dev/null 2>&1
+sent="$(cat "${CURL_LOG}")"
+chk "the site appears in the title of a sent alert" \
+    "$([[ "${sent}" == *"example.com"* ]] && echo yes || echo no)" \
+    "sent: ${sent}"
+
+chk "the pi2s3 prefix survives the site tag" \
+    "$([[ "$(notify_title 'pi2s3: Backup Failed')" == "pi2s3 [example.com]: Backup Failed" ]] && echo yes || echo no)" \
+    "got: $(notify_title 'pi2s3: Backup Failed')"
+
+# ── 11. Tagging must be idempotent ──────────────────────────────────────────
+# extras/fpm-saturation-monitor.sh named its own site in the title for months. If the
+# central tag were unconditional those alerts would read the domain twice, and the
+# obvious fix — dropping the tag at those call sites — would silently re-mute anything
+# the list of call sites missed. Idempotence means the layers cannot conflict.
+chk "a title that already names the site is not tagged twice" \
+    "$([[ "$(notify_title 'PI: example.com: FPM Saturated')" == "PI: example.com: FPM Saturated" ]] && echo yes || echo no)" \
+    "got: $(notify_title 'PI: example.com: FPM Saturated')"
+chk "re-tagging an already-tagged title is a no-op" \
+    "$([[ "$(notify_title "$(notify_title 'pi2s3: Tunnel Down')")" == "pi2s3 [example.com]: Tunnel Down" ]] && echo yes || echo no)" \
+    "got: $(notify_title "$(notify_title 'pi2s3: Tunnel Down')")"
+
+# ── 12. The site must resolve from config, not only from an override ────────
+unset NOTIFY_SITE
+CF_SITE_HOSTNAME="configured.example"
+chk "CF_SITE_HOSTNAME supplies the site when NOTIFY_SITE is unset" \
+    "$([[ "$(notify_site)" == "configured.example" ]] && echo yes || echo no)" \
+    "got: $(notify_site)"
+
+# A site is never empty: an untagged title is exactly the state being fixed, and the
+# fallback chain must terminate on a hostname rather than on "".
+CF_SITE_HOSTNAME=""
+chk "the site falls back to a hostname rather than to nothing" \
+    "$([[ -n "$(notify_site)" ]] && echo yes || echo no)"
+chk "an untagged title is impossible even with no config" \
+    "$([[ "$(notify_title 'pi2s3: Heartbeat')" != "pi2s3: Heartbeat" ]] && echo yes || echo no)" \
+    "got: $(notify_title 'pi2s3: Heartbeat')"
+
+# ── 13. No shipped script may bypass the notifier with a raw ntfy curl ──────
+# Four did. A `curl -H "Title: ..."` is a notification that skips both the transport
+# choice and the site tag, so it is a mute and an anonymous alert in one line.
+raw=""
+while IFS= read -r f; do
+    grep -qE 'curl[^|]*-H "Title:' "$f" 2>/dev/null && raw+=" ${f#${ROOT}/}"
+done < <(find "${ROOT}" -name '*.sh' -not -path '*/.git/*' -not -path '*/website/*' \
+              -not -name 'notify.sh' -not -name 'notify-test.sh' 2>/dev/null)
+chk "no shipped script sends an ntfy notification by raw curl" \
+    "$([[ -z "${raw}" ]] && echo yes || echo no)" \
+    "these bypass both the transport choice and the site tag:${raw}"
 
 rm -f "${CURL_LOG}"
 echo "────────────────────────────"

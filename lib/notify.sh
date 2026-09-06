@@ -40,6 +40,52 @@ notify_configured() {
     return 1
 }
 
+# The site this host speaks for, resolved most-specific-first.
+#
+# WHY EVERY TITLE CARRIES IT
+# --------------------------
+# Titles were hard-coded as "pi2s3: Heartbeat", "pi2s3: Backup Failed" and so on —
+# identical on every host that runs this. On a phone holding alerts from more than
+# one Pi (or one Pi serving more than one domain) the message says a backup failed
+# but not WHOSE, and the reader has to SSH somewhere to find out which. A daily
+# heartbeat is the worst case: it is read half-awake, and its whole purpose is to
+# identify the machine still standing.
+#
+# NOTIFY_SITE is the explicit override; CF_SITE_HOSTNAME is what install.sh already
+# asks for and what the probe URL is built from. The FQDN is preferred over the bare
+# hostname only when it actually has a dot in it — many Pis report the short name for
+# both, and "andrew-pi-5" tagged as a domain would be a lie in the one field a reader
+# trusts.
+notify_site() {
+    local site="${NOTIFY_SITE:-${CF_SITE_HOSTNAME:-}}"
+    if [[ -z "${site}" ]]; then
+        site="$(hostname -f 2>/dev/null || true)"
+        [[ "${site}" == *.* ]] || site=""
+    fi
+    [[ -z "${site}" ]] && site="$(hostname 2>/dev/null || true)"
+    [[ -z "${site}" ]] && site="unknown-host"
+    printf '%s' "${site}"
+}
+
+# notify_title <title> — the title with the site in it, exactly once.
+#
+# Call sites pass "pi2s3: Backup Failed" and the phone shows
+# "pi2s3 [example.com]: Backup Failed". Idempotent by design: a caller that already
+# names its own site in the title (extras/fpm-saturation-monitor.sh has done so for
+# months) is left alone rather than tagged twice, and re-tagging an already-tagged
+# title is a no-op — so this can be applied at any layer without coordination.
+notify_title() {
+    local title="$1" site
+    site="$(notify_site)"
+    if [[ -z "${site}" || "${title}" == *"${site}"* ]]; then
+        printf '%s' "${title}"
+    elif [[ "${title}" == pi2s3:* ]]; then
+        printf 'pi2s3 [%s]:%s' "${site}" "${title#pi2s3:}"
+    else
+        printf '[%s] %s' "${site}" "${title}"
+    fi
+}
+
 # Which transport a message would use. Reported in logs so an operator can see
 # what the script believes, rather than inferring it from whether a phone buzzed.
 notify_transport() {
@@ -54,13 +100,18 @@ notify_transport() {
 
 # notify_send <title> <message> [priority] [tags]
 #
+# The title is rewritten by notify_title() first, so every message names the site it
+# came from whether the caller remembered to or not.
+#
 # priority/tags are ntfy concepts and are passed through for that transport;
 # Telegram has no equivalent, so the title becomes the message's first line.
 # Returns 0 when delivered, 1 when it could not be, 0 when nothing is configured
 # (there is no failure to report if there is no destination).
 notify_send() {
-    local title="$1" msg="$2" priority="${3:-default}" tags="${4:-}"
+    local title msg="$2" priority="${3:-default}" tags="${4:-}"
     local transport
+    # Applied here, not at the ~25 call sites, so a title added later cannot forget it.
+    title="$(notify_title "$1")"
     transport="$(notify_transport)"
 
     if [[ "${transport}" == "none" ]]; then
