@@ -16,21 +16,35 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_FILE="${SCRIPT_DIR}/config.env"
+
+# This file reads config.env and lib/ from the pi2s3 root, but it SHIPS in extras/ and
+# is what andrew-pi-5's cron actually runs from there. Looking only beside the script
+# therefore found neither: both loads were `[[ -f ]] &&` guarded, so for as long as the
+# cron entry has existed it has run with no config.env at all — no NTFY_URL, no Telegram
+# credentials, no FPM alert ever sent, and nothing said so.
+#
+# Resolve the root before loading anything. Script dir first so a copy placed in the
+# root keeps working unchanged.
+PI2S3_DIR=""
+for _cand in "${SCRIPT_DIR}" "$(dirname "${SCRIPT_DIR}")"; do
+    [[ -f "${_cand}/lib/notify.sh" ]] && { PI2S3_DIR="${_cand}"; break; }
+done
+if [[ -z "${PI2S3_DIR}" ]]; then
+    echo "ERROR: lib/notify.sh not found in ${SCRIPT_DIR} or $(dirname "${SCRIPT_DIR}") — cannot alert" >&2
+    exit 1
+fi
+
+CONFIG_FILE="${PI2S3_DIR}/config.env"
+# shellcheck disable=SC1090
 [[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
 # shellcheck disable=SC1091
-[[ -f "${SCRIPT_DIR}/lib/containers.sh" ]] && source "${SCRIPT_DIR}/lib/containers.sh"
+[[ -f "${PI2S3_DIR}/lib/containers.sh" ]] && source "${PI2S3_DIR}/lib/containers.sh"
 
 # Alerts go through the shared notifier rather than four inline `curl -H Title:` blocks
 # each guarded by `[[ -n "$NTFY_URL" ]]`. Those guards are the silent global mute: this
 # fleet runs Telegram, so NTFY_URL is unset and every FPM alert was skipped outright.
-if [[ -f "${SCRIPT_DIR}/lib/notify.sh" ]]; then
-    # shellcheck disable=SC1091
-    source "${SCRIPT_DIR}/lib/notify.sh"
-else
-    echo "ERROR: ${SCRIPT_DIR}/lib/notify.sh not found — cannot alert" >&2
-    exit 1
-fi
+# shellcheck disable=SC1091
+source "${PI2S3_DIR}/lib/notify.sh"
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >&2; }
 
 NTFY_URL="${NTFY_URL:-}"
