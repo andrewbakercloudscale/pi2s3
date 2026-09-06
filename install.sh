@@ -36,6 +36,14 @@ CONFIG_EXAMPLE="${SCRIPT_DIR}/config.env.example"
 LOG_FILE="/var/log/pi2s3-backup.log"
 CRON_MARKER="pi-image-backup.sh"
 WATCHDOG_CRON_MARKER="pi2s3-watchdog.sh"
+# Watchdogs this one replaces. andrew-pi-5 accumulated three copies in /usr/local/bin
+# and root cron ran the one that was in no repository; installing without removing them
+# leaves two watchdogs racing the same recovery — both restarting cloudflared, both
+# counting attempts, both entitled to reboot the Pi.
+SUPERSEDED_WATCHDOGS=(
+    "/usr/local/bin/cloudflared-watchdog.sh"
+    "/usr/local/bin/pi-mi-watchdog.sh"
+)
 HEARTBEAT_SCRIPT="${SCRIPT_DIR}/pi2s3-heartbeat.sh"
 HEARTBEAT_CRON_MARKER="pi2s3-heartbeat.sh"
 POST_CHECK_SCRIPT="${SCRIPT_DIR}/pi2s3-post-backup-check.sh"
@@ -126,12 +134,34 @@ install_watchdog() {
     sudo chmod +x "${WATCHDOG_BIN}"
     ok "Watchdog installed to ${WATCHDOG_BIN}"
 
-    # Root cron: run every 5 minutes
+    # Root cron: run every 5 minutes, and retire any superseded watchdog first.
+    # Filtered by basename so an entry survives being moved between directories.
     WATCHDOG_CRON="*/5 * * * * ${WATCHDOG_BIN}"
     root_crontab_snapshot
-    ( sudo crontab -l 2>/dev/null | grep -v "${WATCHDOG_CRON_MARKER}" || true
-      echo "${WATCHDOG_CRON}" ) | sudo crontab -
+    _cron_filter=("${WATCHDOG_CRON_MARKER}")
+    for _old in "${SUPERSEDED_WATCHDOGS[@]}"; do
+        _cron_filter+=("$(basename "${_old}")")
+    done
+    _cron_new="$(sudo crontab -l 2>/dev/null || true)"
+    for _m in "${_cron_filter[@]}"; do
+        if grep -qF "${_m}" <<< "${_cron_new}"; then
+            [[ "${_m}" != "${WATCHDOG_CRON_MARKER}" ]] && warn "Removing superseded watchdog cron: ${_m}"
+            _cron_new="$(grep -vF "${_m}" <<< "${_cron_new}" || true)"
+        fi
+    done
+    printf '%s\n%s\n' "${_cron_new}" "${WATCHDOG_CRON}" | grep -v '^$' | sudo crontab -
     ok "Root cron installed: every 5 minutes"
+
+    # Move the superseded binaries aside rather than deleting them: they are the only
+    # copy of logic that ran this site for months, and cf-tunnel-watchdog.sh is a merge
+    # of one of them, not a drop-in twin. Renamed so no cron or hand-run can pick them
+    # up by accident, kept so the merge can be checked against the original.
+    for _old in "${SUPERSEDED_WATCHDOGS[@]}"; do
+        if [[ -f "${_old}" ]]; then
+            sudo mv "${_old}" "${_old}.superseded-$(date +%Y%m%d)"
+            warn "Retired ${_old} -> ${_old}.superseded-$(date +%Y%m%d)"
+        fi
+    done
 
     # Enable persistent journal so watchdog logs survive reboots
     sudo mkdir -p /var/log/journal /etc/systemd/journald.conf.d

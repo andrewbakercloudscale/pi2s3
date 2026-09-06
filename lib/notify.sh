@@ -157,6 +157,56 @@ notify_send() {
     return ${_rc}
 }
 
+# notify_file <title> <path> [tags] — send a file as an attachment.
+#
+# The watchdog captures a full diagnostic snapshot at the moment it first sees the site
+# down, which is the only time the crash state still exists; by the pre-reboot dump 40
+# minutes later it is gone. That snapshot is worth far more delivered than referenced,
+# so it goes out as an attachment rather than a path the reader has to SSH in to fetch.
+#
+# Telegram takes sendDocument; ntfy takes a PUT body with a Filename header. Returns 0
+# when delivered or when nothing is configured, 1 when a configured notifier failed.
+# Never retried: a failed 12 KB upload is not worth three attempts, and the alert that
+# matters has already gone out through notify_send().
+notify_file() {
+    local title msg_file="$2" tags="${3:-}"
+    local transport
+    title="$(notify_title "$1")"
+    transport="$(notify_transport)"
+
+    [[ -f "${msg_file}" ]] || { log "  WARNING: notify_file: no such file: ${msg_file}"; return 1; }
+    if [[ "${transport}" == "none" ]]; then
+        log "  (undelivered attachment) ${title}: ${msg_file}"
+        return 0
+    fi
+
+    local _rc=1
+    if [[ "${transport}" == "telegram" ]]; then
+        curl -s --max-time 60 \
+            -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
+            -F "chat_id=${TG_CHAT_ID}" \
+            -F "caption=${title}" \
+            -F "document=@${msg_file}" > /dev/null 2>&1 && _rc=0
+    else
+        local extra=()
+        [[ -n "${tags}" ]] && extra+=(-H "Tags: ${tags}")
+        curl -s --max-time 60 \
+            -H "Title: ${title}" \
+            -H "Priority: min" \
+            -H "Filename: $(basename "${msg_file}")" \
+            "${extra[@]}" \
+            -T "${msg_file}" \
+            "${NTFY_URL}" > /dev/null 2>&1 && _rc=0
+    fi
+
+    if [[ ${_rc} -eq 0 ]]; then
+        log "  ${transport} sent attachment: ${title} ($(basename "${msg_file}"))"
+    else
+        log "  WARNING: ${transport} attachment FAILED: ${title} ($(basename "${msg_file}"))"
+    fi
+    return ${_rc}
+}
+
 # Backwards compatibility for the ~20 existing call sites and for any operator
 # script written against the old name. Same arguments, same order.
 ntfy_send() { notify_send "$@"; }

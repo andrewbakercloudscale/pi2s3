@@ -272,6 +272,35 @@ chk "every script that sources the lib can reach it from its own directory" \
     "$([[ -z "${bad_path}" ]] && echo yes || echo no)" \
     "these resolve lib/notify.sh to a path that does not exist:${bad_path}"
 
+# ── 15. Attachments must reach both transports ──────────────────────────────
+# The watchdog's incident snapshot is captured at first detection because that is the
+# only moment the crash state still exists. It is worth having only if it is delivered.
+ATT_FILE="$(mktemp)"; echo "incident diag" > "${ATT_FILE}"
+: > "${CURL_LOG}"
+TG_BOT_TOKEN="tok"; TG_CHAT_ID="chat"; NTFY_URL=""
+notify_file 'pi2s3: Incident Log' "${ATT_FILE}" 'page_facing_up' >/dev/null 2>&1
+sent="$(cat "${CURL_LOG}")"
+chk "attachment goes to Telegram sendDocument" \
+    "$([[ "${sent}" == *"sendDocument"* && "${sent}" == *"document=@${ATT_FILE}"* ]] && echo yes || echo no)" \
+    "sent: ${sent}"
+chk "the attachment caption carries the site too" \
+    "$([[ "${sent}" == *"caption=pi2s3 ["* ]] && echo yes || echo no)" \
+    "sent: ${sent}"
+
+: > "${CURL_LOG}"
+TG_BOT_TOKEN=""; TG_CHAT_ID=""; NTFY_URL="https://ntfy.sh/topic"
+notify_file 'pi2s3: Incident Log' "${ATT_FILE}" 'page_facing_up' >/dev/null 2>&1
+chk "attachment goes to ntfy as a PUT body" \
+    "$([[ "$(cat "${CURL_LOG}")" == *"-T ${ATT_FILE}"* ]] && echo yes || echo no)" \
+    "sent: $(cat "${CURL_LOG}")"
+
+# A missing file must be reported, not silently skipped: the caller believes it sent.
+: > "${CURL_LOG}"
+notify_file 'pi2s3: Incident Log' "${ATT_FILE}.nope" >/dev/null 2>&1; rc=$?
+chk "a missing attachment file is a failure, not a silent skip" \
+    "$([[ ${rc} -ne 0 ]] && echo yes || echo no)"
+rm -f "${ATT_FILE}"
+
 rm -f "${CURL_LOG}"
 echo "────────────────────────────"
 if [[ ${FAIL} -eq 0 ]]; then
