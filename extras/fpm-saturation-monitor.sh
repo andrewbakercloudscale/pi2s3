@@ -10,7 +10,7 @@
 #   FPM_WP_CONTAINER          WordPress container name (default: pi_wordpress)
 #   FPM_DB_CONTAINER          MariaDB container name (default: pi_mariadb)
 #   FPM_ALERT_COOLDOWN        seconds between repeat alerts (default: 1800)
-#   NTFY_URL                  ntfy.sh topic URL (shared with pi2s3 config)
+#   NTFY_URL / TG_BOT_TOKEN+TG_CHAT_ID   notification transport (shared with pi2s3 config)
 
 # -e intentionally omitted: monitor must survive individual probe failures and continue checking
 set -uo pipefail
@@ -20,6 +20,18 @@ CONFIG_FILE="${SCRIPT_DIR}/config.env"
 [[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
 # shellcheck disable=SC1091
 [[ -f "${SCRIPT_DIR}/lib/containers.sh" ]] && source "${SCRIPT_DIR}/lib/containers.sh"
+
+# Alerts go through the shared notifier rather than four inline `curl -H Title:` blocks
+# each guarded by `[[ -n "$NTFY_URL" ]]`. Those guards are the silent global mute: this
+# fleet runs Telegram, so NTFY_URL is unset and every FPM alert was skipped outright.
+if [[ -f "${SCRIPT_DIR}/lib/notify.sh" ]]; then
+    # shellcheck disable=SC1091
+    source "${SCRIPT_DIR}/lib/notify.sh"
+else
+    echo "ERROR: ${SCRIPT_DIR}/lib/notify.sh not found — cannot alert" >&2
+    exit 1
+fi
+log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >&2; }
 
 NTFY_URL="${NTFY_URL:-}"
 FPM_PROBE_URL="${FPM_PROBE_URL:-http://localhost:8082/}"
@@ -34,6 +46,10 @@ FPM_CALLBACK_TOKEN="${FPM_CALLBACK_TOKEN:-}"
 FPM_AUTO_RESTART="${FPM_AUTO_RESTART:-false}"
 FPM_RESTART_COOLDOWN="${FPM_RESTART_COOLDOWN:-1200}"
 FPM_SITE_HOSTNAME="${FPM_SITE_HOSTNAME:-${CF_SITE_HOSTNAME:-$(hostname)}}"
+# This monitor may watch a specific vhost rather than the host's primary site, so its
+# own hostname wins over CF_SITE_HOSTNAME when notify_title() stamps the alerts. Set
+# here rather than repeated into each title, which is how the titles drifted apart.
+export NOTIFY_SITE="${NOTIFY_SITE:-${FPM_SITE_HOSTNAME}}"
 
 # Warn if the configured container names don't appear in the running container list.
 # This catches the "using defaults that don't match your actual stack" failure mode.
@@ -126,14 +142,9 @@ if $backup_lock; then
         now=$(date +%s)
         last_lock_alert=$(cat "$LOCK_ALERTED_FILE" 2>/dev/null || echo 0)
         if [[ $((now - last_lock_alert)) -gt 1800 ]]; then
-            if [[ -n "$NTFY_URL" ]]; then
-                curl -s -X POST "$NTFY_URL" \
-                    -H "Title: PI: ${FPM_SITE_HOSTNAME}: Backup Lock Killed" \
-                    -H "Priority: high" \
-                    -H "Tags: warning" \
-                    -d "Orphaned pi2s3 DB lock detected and killed (conn ${lock_ids}). All writes unblocked. Will not alert again for 30 min." \
-                    2>/dev/null || true
-            fi
+            notify_send "pi2s3: Backup Lock Killed" \
+                "Orphaned pi2s3 DB lock detected and killed (conn ${lock_ids}). All writes unblocked. Will not alert again for 30 min." \
+                "high" "warning" || true
             echo "$now" > "$LOCK_ALERTED_FILE"
         fi
     fi
@@ -148,14 +159,9 @@ else
     # Recovered — if we were previously alerted, send a recovery notice
     prev=$(cat "$STATE_FILE" 2>/dev/null || echo 0)
     if [[ "$prev" -ge "$FPM_SATURATION_THRESHOLD" ]]; then
-        if [[ -n "$NTFY_URL" ]]; then
-            curl -s -X POST "$NTFY_URL" \
-                -H "Title: PI: ${FPM_SITE_HOSTNAME}: FPM Recovered" \
-                -H "Priority: low" \
-                -H "Tags: white_check_mark" \
-                -d "Workers no longer saturated. DB stuck queries: ${db_stuck}." \
-                2>/dev/null || true
-        fi
+        notify_send "pi2s3: FPM Recovered" \
+            "Workers no longer saturated. DB stuck queries: ${db_stuck}." \
+            "low" "white_check_mark" || true
         if [[ -n "${FPM_CALLBACK_URL}" && -n "${FPM_CALLBACK_TOKEN}" ]]; then
             curl -s -X POST "${FPM_CALLBACK_URL}" \
                 --data-urlencode "action=csdt_fpm_report" \
@@ -181,14 +187,9 @@ if [[ "$count" -ge "$FPM_SATURATION_THRESHOLD" ]]; then
         else
             alert_action="SSH and run: docker restart ${FPM_WP_CONTAINER}"
         fi
-        if [[ -n "$NTFY_URL" ]]; then
-            curl -s -X POST "$NTFY_URL" \
-                -H "Title: PI: ${FPM_SITE_HOSTNAME}: FPM Saturated" \
-                -H "Priority: urgent" \
-                -H "Tags: fire,rotating_light" \
-                -d "All PHP workers exhausted for ${count} consecutive checks (${count} min). Reason: ${reason}. ${alert_action}" \
-                2>/dev/null || true
-        fi
+        notify_send "pi2s3: FPM Saturated" \
+            "All PHP workers exhausted for ${count} consecutive checks (${count} min). Reason: ${reason}. ${alert_action}" \
+            "urgent" "fire,rotating_light" || true
         if [[ -n "${FPM_CALLBACK_URL}" && -n "${FPM_CALLBACK_TOKEN}" ]]; then
             curl -s -X POST "${FPM_CALLBACK_URL}" \
                 --data-urlencode "action=csdt_fpm_report" \
@@ -213,14 +214,9 @@ if [[ "$count" -ge "$FPM_SATURATION_THRESHOLD" ]]; then
             fi
             docker restart "${FPM_WP_CONTAINER}" 2>/dev/null || true
             echo "$now" > "$RESTART_FILE"
-            if [[ -n "$NTFY_URL" ]]; then
-                curl -s -X POST "$NTFY_URL" \
-                    -H "Title: PI: ${FPM_SITE_HOSTNAME}: FPM Auto-Restarted" \
-                    -H "Priority: high" \
-                    -H "Tags: arrows_counterclockwise" \
-                    -d "${FPM_WP_CONTAINER} restarted automatically after ${count} consecutive saturated checks. Reason: ${reason}. Next auto-restart available in $((FPM_RESTART_COOLDOWN / 60)) min." \
-                    2>/dev/null || true
-            fi
+            notify_send "pi2s3: FPM Auto-Restarted" \
+                "${FPM_WP_CONTAINER} restarted automatically after ${count} consecutive saturated checks. Reason: ${reason}. Next auto-restart available in $((FPM_RESTART_COOLDOWN / 60)) min." \
+                "high" "arrows_counterclockwise" || true
             if [[ -n "${FPM_CALLBACK_URL}" && -n "${FPM_CALLBACK_TOKEN}" ]]; then
                 curl -s -X POST "${FPM_CALLBACK_URL}" \
                     --data-urlencode "action=csdt_fpm_report" \

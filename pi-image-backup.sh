@@ -103,7 +103,9 @@ BACKUP_EXTRA_DEVICE="${BACKUP_EXTRA_DEVICE:-}"
 DATE=$(date +%Y-%m-%d)
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 HOST_SHORT=$(hostname -s)
-_NTFY_SITE="${CF_SITE_HOSTNAME:-${HOST_SHORT}}"
+# The site every notification title is stamped with lives in notify_site() now.
+# _NTFY_SITE used to be computed here and in two other scripts and used by none of
+# them — three copies of an intention nobody had wired up.
 # Per-host retention override: MAX_IMAGES_<hostname> (hyphens → underscores)
 _HOST_MAX_VAR="MAX_IMAGES_${HOST_SHORT//-/_}"
 if [[ -n "${!_HOST_MAX_VAR:-}" ]]; then

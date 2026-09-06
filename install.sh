@@ -116,8 +116,9 @@ install_watchdog() {
     [[ -f "${CONFIG_FILE}" ]] && source "${CONFIG_FILE}" || true
 
     if [[ -z "${CF_SITE_HOSTNAME:-}" ]]; then
-        warn "CF_SITE_HOSTNAME is not set in config.env — notifications will use hostname"
-        warn "Set CF_SITE_HOSTNAME=\"your-site.com\" in config.env for better alerts"
+        warn "CF_SITE_HOSTNAME is not set in config.env — every alert title will be"
+        warn "stamped with the machine hostname ($(hostname)) instead of a domain."
+        warn "Set CF_SITE_HOSTNAME=\"your-site.com\" (or NOTIFY_SITE) so alerts say which site."
     fi
 
     # Install script to /usr/local/bin so root cron can find it
@@ -496,6 +497,14 @@ source "${CONFIG_FILE}"
 # Telegram host was told its backups would be silent, and a host with neither was told
 # the same thing — the warning could not distinguish the two.
 notify_configured 2>/dev/null || warn "No notifier configured (TG_BOT_TOKEN+TG_CHAT_ID, or NTFY_URL) — backups will run silently, INCLUDING failures."
+
+# Alerts that arrive but do not say who sent them are only marginally better than no
+# alerts on a fleet. Warn here, on the main install path, not only under --watchdog.
+if [[ -z "${NOTIFY_SITE:-}${CF_SITE_HOSTNAME:-}" ]]; then
+    warn "Neither NOTIFY_SITE nor CF_SITE_HOSTNAME is set — alert titles will read"
+    warn "\"pi2s3 [$(hostname)]: ...\" rather than naming the site this Pi serves."
+fi
+log "  Alerts will be titled: $(notify_title "pi2s3: Heartbeat" 2>/dev/null || echo "pi2s3: Heartbeat")"
 
 CRON_SCHEDULE="${CRON_SCHEDULE:-0 2 * * *}"
 MAX_IMAGES="${MAX_IMAGES:-60}"

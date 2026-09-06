@@ -39,15 +39,48 @@ set -uo pipefail
 # =============================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_FILE="${SCRIPT_DIR}/config.env"
 
-if [[ ! -f "${CONFIG_FILE}" ]]; then
-    echo "ERROR: config.env not found at ${CONFIG_FILE}"
+# Locate the pi2s3 checkout: the one that holds config.env, and with it lib/notify.sh.
+#
+# install.sh --watchdog copies this single file to /usr/local/bin, so for the copy
+# that cron actually runs SCRIPT_DIR is /usr/local/bin — which holds neither. Looking
+# only beside the script therefore worked in the repo and nowhere else. The candidates
+# below are tried in order and the first with a config.env wins, so an install that
+# already works keeps the directory it is already using.
+PI2S3_DIR=""
+for _cand in "${SCRIPT_DIR}" "$(dirname "${SCRIPT_DIR}")" \
+             "$(find /home -maxdepth 4 -name 'cf-tunnel-watchdog.sh' -path '*/pi2s3/*' 2>/dev/null \
+                | head -1 | xargs -r dirname | xargs -r dirname)"; do
+    [[ -n "${_cand}" && -f "${_cand}/config.env" ]] && { PI2S3_DIR="${_cand}"; break; }
+done
+
+if [[ -z "${PI2S3_DIR}" ]]; then
+    echo "ERROR: config.env not found (looked in ${SCRIPT_DIR}, its parent, and /home/*/pi2s3)"
     exit 1
 fi
+CONFIG_FILE="${PI2S3_DIR}/config.env"
 
 # shellcheck disable=SC1090
 source "${CONFIG_FILE}"
+
+# Notifications go through the shared notifier. This script kept a private ntfy_send()
+# hard-wired to NTFY_URL, so on a Telegram host every tunnel alert it raised — Down,
+# Stuck Down, Restored, Rebooting — was curled at an empty URL and swallowed by
+# `|| true`. That is the alert path for the machine being unreachable, muted on the
+# exact configuration this fleet runs.
+#
+# It also gives every title the site name, which matters more here than anywhere:
+# "pi2s3: Tunnel Down" does not say whose tunnel.
+if [[ -f "${PI2S3_DIR}/lib/notify.sh" ]]; then
+    # shellcheck disable=SC1090
+    source "${PI2S3_DIR}/lib/notify.sh"
+else
+    echo "ERROR: ${PI2S3_DIR}/lib/notify.sh not found — refusing to run a watchdog that cannot alert"
+    exit 1
+fi
+
+# notify.sh logs through log(); this script's log destination is the journal.
+log() { logger -t "${LOG_TAG:-pi2s3-watchdog}" "$*"; }
 
 # ── Config (set in config.env) ────────────────────────────────────────────────
 # Required:
@@ -98,17 +131,8 @@ if ! flock -n 9; then
 fi
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-ntfy_send() {
-    local title="$1" msg="$2" priority="${3:-default}" tags="${4:-}"
-    local extra=()
-    [[ -n "${tags}" ]] && extra+=(-H "Tags: ${tags}")
-    curl -s --max-time 10 \
-        -H "Title: ${title}" \
-        -H "Priority: ${priority}" \
-        "${extra[@]}" \
-        -d "${msg}" \
-        "${NTFY_URL}" > /dev/null 2>&1 || true
-}
+# ntfy_send() is lib/notify.sh's alias for notify_send(), so the call sites below
+# read unchanged while gaining Telegram support and the site-tagged title.
 
 # Run a recovery action, logging a warning if it fails (never aborts the watchdog).
 run_step() {
