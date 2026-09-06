@@ -244,6 +244,34 @@ chk "no shipped script sends an ntfy notification by raw curl" \
     "$([[ -z "${raw}" ]] && echo yes || echo no)" \
     "these bypass both the transport choice and the site tag:${raw}"
 
+# ── 14. A script must be able to FIND the lib from where it really lives ────
+# extras/fpm-saturation-monitor.sh loads config.env and lib/ from "${SCRIPT_DIR}/..",
+# but it ships in extras/ and andrew-pi-5's cron runs it from there — so both loads
+# resolved to extras/config.env and extras/lib/, neither of which exists. Being `[[ -f ]]`
+# guarded, it started anyway with no credentials loaded and alerted nobody, for as long
+# as the cron entry existed. Sourcing the notifier from the same wrong path turns that
+# quiet miss into an every-minute hard exit, which is how this was caught.
+#
+# Executed, not grepped: the property is that the path resolves, and only running the
+# resolution proves it.
+bad_path=""
+while IFS= read -r f; do
+    grep -qE 'lib/notify\.sh' "$f" 2>/dev/null || continue
+    # Exempt: a script that searches a fixed list of ABSOLUTE candidates is not anchored
+    # to its own directory on purpose. extras/firstboot/standby-restore-agent.sh runs on
+    # the first boot of a restored SD card, where the repo sits at an absolute path with
+    # no relation to wherever the agent itself was dropped — tying it to its own
+    # directory would be the bug, not the fix.
+    grep -q '"/home/pi/pi2s3"' "$f" 2>/dev/null && continue
+    d="$(cd "$(dirname "$f")" && pwd)"
+    [[ -f "${d}/lib/notify.sh" || -f "$(dirname "${d}")/lib/notify.sh" ]] \
+        || bad_path+=" ${f#${ROOT}/}"
+done < <(find "${ROOT}" -name '*.sh' -not -path '*/.git/*' -not -path '*/website/*' \
+              -not -path "${ROOT}/lib/*" 2>/dev/null)
+chk "every script that sources the lib can reach it from its own directory" \
+    "$([[ -z "${bad_path}" ]] && echo yes || echo no)" \
+    "these resolve lib/notify.sh to a path that does not exist:${bad_path}"
+
 rm -f "${CURL_LOG}"
 echo "────────────────────────────"
 if [[ ${FAIL} -eq 0 ]]; then
