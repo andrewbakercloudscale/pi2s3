@@ -19,3 +19,6 @@ website/test-results/
 
 # Misc local files
 *.docx
+
+# OMC session state (machine-local)
+.omc/
