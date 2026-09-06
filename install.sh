@@ -152,6 +152,22 @@ install_watchdog() {
     printf '%s\n%s\n' "${_cron_new}" "${WATCHDOG_CRON}" | grep -v '^$' | sudo crontab -
     ok "Root cron installed: every 5 minutes"
 
+    # Carry the reboot rate-limit timestamp across from the superseded watchdog.
+    #
+    # Asymmetric on purpose. The rate limit can only ever PREVENT a reboot, so
+    # inheriting it is always the safe direction: without it a Pi rebooted ten minutes
+    # ago by the old watchdog looks, to the new one, like a Pi that has never rebooted.
+    # The attempt counter is deliberately NOT carried — it can only ever ESCALATE, and
+    # a stale count would drop the new watchdog straight into a full stack restart or a
+    # reboot on its first tick. Starting at attempt 1 costs five minutes and risks
+    # nothing.
+    for _old_ts in /var/log/watchdog-last-reboot.ts; do
+        if [[ -f "${_old_ts}" && ! -f /var/log/pi2s3-watchdog-reboot.ts ]]; then
+            sudo cp "${_old_ts}" /var/log/pi2s3-watchdog-reboot.ts
+            ok "Carried reboot rate-limit timestamp over from ${_old_ts}"
+        fi
+    done
+
     # Move the superseded binaries aside rather than deleting them: they are the only
     # copy of logic that ran this site for months, and cf-tunnel-watchdog.sh is a merge
     # of one of them, not a drop-in twin. Renamed so no cron or hand-run can pick them
