@@ -1,0 +1,86 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1788696520373,
+  "projectRoot": "/Users/cp363412/Desktop/github/websites/pi2s3",
+  "techStack": {
+    "languages": [],
+    "frameworks": [],
+    "packageManager": null,
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": null,
+    "lintCommand": null,
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "lib"
+    ],
+    "gitBranches": {
+      "defaultBranch": "main",
+      "branchingStrategy": null
+    }
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "extras": {
+      "path": "extras",
+      "purpose": null,
+      "fileCount": 18,
+      "lastAccessed": 1788696520333,
+      "keyFiles": [
+        "DR-quickstart.md",
+        "README.md",
+        "build-netboot-image.sh",
+        "build-recovery-usb.sh",
+        "cf-tunnel-watchdog.sh"
+      ]
+    },
+    "lib": {
+      "path": "lib",
+      "purpose": "Library code",
+      "fileCount": 5,
+      "lastAccessed": 1788696520338,
+      "keyFiles": [
+        "aws.sh",
+        "containers.sh",
+        "log.sh",
+        "notify-test.sh",
+        "notify.sh"
+      ]
+    },
+    "website": {
+      "path": "website",
+      "purpose": null,
+      "fileCount": 15,
+      "lastAccessed": 1788696520342,
+      "keyFiles": [
+        "ads.txt",
+        "favicon.jpeg",
+        "index.html",
+        "install",
+        "llms.txt"
+      ]
+    },
+    "website/node_modules": {
+      "path": "website/node_modules",
+      "purpose": "Dependencies",
+      "fileCount": 1,
+      "lastAccessed": 1788696520342,
+      "keyFiles": []
+    }
+  },
+  "hotPaths": [],
+  "userDirectives": []
+}
