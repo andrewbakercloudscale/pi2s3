@@ -206,6 +206,41 @@ ha_connections() {
         | head -1
 }
 
+# Is the tunnel check active at all? Only an EMPTY CF_METRICS_URL disables it, and
+# that has to be set deliberately in config.env by someone running a host with no
+# cloudflared. CF_METRICS_URL otherwise always has a default, so "unset" is not a
+# state that occurs — which matters, because the old code justified skipping the
+# check on "e.g. not configured" and then applied that to every failure to reach
+# the endpoint.
+CF_TUNNEL_CHECK_ENABLED=1
+[[ -z "${CF_METRICS_URL}" ]] && CF_TUNNEL_CHECK_ENABLED=0
+
+# True when the tunnel is healthy, or when the check is deliberately disabled.
+#
+# AN UNREACHABLE METRICS ENDPOINT IS NOT HEALTHY. That is the whole point of this
+# function. Until 2026-09-12 a metrics endpoint that did not answer caused the
+# tunnel check to be SKIPPED, so a cloudflared that was wedged, not listening, or
+# on a changed port left the watchdog with two purely local checks — containers
+# running and localhost HTTP — both of which pass on a host that cannot reach the
+# internet. The script then logged OK and exited 0, indefinitely: no alert, no
+# recovery, no reboot. The script this one replaced on 2026-09-06 got this right by
+# treating an empty reading as down; the merge lost it.
+#
+# An unavailable checker must fail, not wave the thing through.
+tunnel_healthy() {
+    local _conns="${1:-}"
+    [[ ${CF_TUNNEL_CHECK_ENABLED} -eq 0 ]] && return 0
+    # Trim, then require a genuine positive count. Testing only for "not empty and
+    # not 0" was the first version of this and it let ANY other reading through as
+    # healthy — so a changed metrics format, a label where the value used to be, or
+    # a stray space would read as a working tunnel. Prometheus gauges are floats,
+    # hence the optional fraction.
+    _conns="${_conns#"${_conns%%[![:space:]]*}"}"
+    _conns="${_conns%"${_conns##*[![:space:]]}"}"
+    [[ "${_conns}" =~ ^[0-9]+(\.[0-9]+)?$ ]] || return 1
+    awk -v v="${_conns}" 'BEGIN { exit !(v + 0 > 0) }'
+}
+
 http_probe() {
     curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
         -H "Cache-Control: no-cache" \
@@ -289,8 +324,7 @@ fpm_soft_reset() {
     soft_conns="$(ha_connections)"
     logger -t "${LOG_TAG}" "Phase 0 result: ha_connections=${soft_conns:-?}, HTTP=${soft_http}"
 
-    if { [[ "${METRICS_AVAILABLE}" == "false" ]] \
-         || [[ -n "${soft_conns}" && "${soft_conns}" != "0" ]]; } \
+    if tunnel_healthy "${soft_conns}" \
        && [[ "${soft_http}" != "ERR" && "${soft_http:0:1}" != "5" ]]; then
         rm -f "${STATE_FILE}"
         logger -t "${LOG_TAG}" "Phase 0 soft recovery succeeded"
@@ -372,14 +406,10 @@ fi
 # 3. Cloudflare tunnel — must have at least one HA connection
 #    Skipped gracefully if metrics endpoint is unavailable (e.g. not configured)
 CONNS=$(ha_connections)
-METRICS_AVAILABLE=false
-if curl -s --max-time 3 "${CF_METRICS_URL}" > /dev/null 2>&1; then
-    METRICS_AVAILABLE=true
-    if [[ -z "${CONNS}" || "${CONNS}" == "0" ]]; then
-        DOWN_REASONS+=("CF ha_connections=${CONNS:-unreachable}")
-    fi
-else
-    logger -t "${LOG_TAG}" "INFO: CF metrics not available at ${CF_METRICS_URL} — skipping tunnel check"
+if [[ ${CF_TUNNEL_CHECK_ENABLED} -eq 0 ]]; then
+    logger -t "${LOG_TAG}" "INFO: CF_METRICS_URL is empty — tunnel check deliberately disabled on this host"
+elif ! tunnel_healthy "${CONNS}"; then
+    DOWN_REASONS+=("CF ha_connections=${CONNS:-UNREACHABLE at ${CF_METRICS_URL}}")
 fi
 
 # ── Healthy path ─────────────────────────────────────────────────────────────
@@ -468,8 +498,8 @@ ${DIAG_CF_LOG}" \
     fi
 
     # Restart cloudflared if tunnel connections are the issue
-    if [[ "${METRICS_AVAILABLE}" == "true" && ( -z "${CONNS}" || "${CONNS}" == "0" ) ]]; then
-        logger -t "${LOG_TAG}" "Phase 1: restarting cloudflared"
+    if ! tunnel_healthy "${CONNS}"; then
+        logger -t "${LOG_TAG}" "Phase 1: restarting cloudflared (ha_connections=${CONNS:-unreachable})"
         run_step "systemctl restart cloudflared" systemctl restart cloudflared
     elif ! systemctl is-active --quiet cloudflared 2>/dev/null; then
         logger -t "${LOG_TAG}" "Phase 1: cloudflared not active — starting"
@@ -493,8 +523,7 @@ ${DIAG_CF_LOG}" \
     logger -t "${LOG_TAG}" \
         "Phase 1 result: ha_connections=${NEW_CONNS:-?}, HTTP=${NEW_HTTP}"
 
-    if { [[ "${METRICS_AVAILABLE}" == "false" ]] \
-         || [[ -n "${NEW_CONNS}" && "${NEW_CONNS}" != "0" ]]; } \
+    if tunnel_healthy "${NEW_CONNS}" \
        && [[ "${NEW_HTTP}" != "ERR" && "${NEW_HTTP:0:1}" != "5" ]]; then
         rm -f "${STATE_FILE}"
         logger -t "${LOG_TAG}" "Phase 1 recovery succeeded"
@@ -546,8 +575,7 @@ ${DIAG_MEM} | ${DIAG_SWAP}" \
     logger -t "${LOG_TAG}" \
         "Phase 2 result: ha_connections=${NEW_CONNS:-?}, HTTP=${NEW_HTTP}"
 
-    if { [[ "${METRICS_AVAILABLE}" == "false" ]] \
-         || [[ -n "${NEW_CONNS}" && "${NEW_CONNS}" != "0" ]]; } \
+    if tunnel_healthy "${NEW_CONNS}" \
        && [[ "${NEW_HTTP}" != "ERR" && "${NEW_HTTP:0:1}" != "5" ]]; then
         rm -f "${STATE_FILE}"
         logger -t "${LOG_TAG}" "Phase 2 recovery succeeded"
