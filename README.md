@@ -1099,3 +1099,7 @@ bash ~/pi2s3/install.sh --upgrade    # git pull + redeploy watchdog binary + ref
 ## License
 
 MIT
+
+## Author
+
+Written by [Andrew Baker](https://github.com/andrewbakercloudscale), Group Chief Information Officer at [Capitec Bank](https://www.capitecbank.co.za/). Blog: [andrewbaker.ninja](https://andrewbaker.ninja/). LinkedIn: [andrew-baker-ninja](https://www.linkedin.com/in/andrew-baker-ninja/).
