@@ -59,6 +59,8 @@ source "${SCRIPT_DIR}/lib/notify.sh"
 source "${SCRIPT_DIR}/lib/aws.sh"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/lib/containers.sh"
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib/thermal.sh"
 
 # ── Validate required config ─────────────────────────────────────────────────
 [[ -z "${S3_BUCKET:-}"  ]] && { echo "ERROR: S3_BUCKET is not set in config.env" >&2; exit 1; }
@@ -98,6 +100,10 @@ PROBE_URL="${PROBE_URL:-}"
 PROBE_LATEST_POST="${PROBE_LATEST_POST:-true}"
 PROBE_INTERVAL="${PROBE_INTERVAL:-60}"
 BACKUP_EXTRA_DEVICE="${BACKUP_EXTRA_DEVICE:-}"
+BACKUP_COMPRESS_THREADS="${BACKUP_COMPRESS_THREADS:-}"   # blank = half the cores
+BACKUP_COMPRESS_LEVEL="${BACKUP_COMPRESS_LEVEL:-3}"
+BACKUP_NICE="${BACKUP_NICE:-19}"
+BACKUP_MAX_TEMP_C="${BACKUP_MAX_TEMP_C:-75}"             # 0 = never pause for heat
 # ─────────────────────────────────────────────────────────────────────────────
 
 DATE=$(date +%Y-%m-%d)
@@ -887,6 +893,24 @@ partclone_tool() {
     esac
 }
 
+# _niced <command...> — run a pipeline stage at BACKUP_NICE so the site's own
+# processes win every CPU contest with the backup. ONLY for use as a pipeline
+# stage: it renices the subshell the stage runs in (which is how a shell function
+# like aws_cmd gets niced at all), so called inline it would renice the caller.
+_niced() {
+    renice -n "${BACKUP_NICE}" -p "${BASHPID}" > /dev/null 2>&1 || true
+    "$@"
+}
+
+# The compressor stage: niced, and registered with the thermal governor so it can
+# be paused. exec keeps the PID, so the registered PID is the compressor itself.
+_compress_stage() {
+    renice -n "${BACKUP_NICE}" -p "${BASHPID}" > /dev/null 2>&1 || true
+    thermal_register
+    # shellcheck disable=SC2086
+    exec ${COMPRESSOR}
+}
+
 # image_to_s3 <device> <s3_key> <tool> <result_file>
 # Runs: partclone | compress | [encrypt] | [throttle] | aws s3 cp
 # On success: writes "sha256=<hash>\ncompressed=<bytes>" to <result_file>.
@@ -900,12 +924,12 @@ image_to_s3() {
     # can capture PIPESTATUS for per-stage diagnostics before returning.
     # shellcheck disable=SC2086
     set +e
-    sudo "${_tool}" -c -F -s "${_part}" -o - \
-        | ${COMPRESSOR} \
+    _niced sudo "${_tool}" -c -F -s "${_part}" -o - \
+        | _compress_stage \
         | tee >(sha256sum | awk '{print $1}' > "${_sha_tmp}") \
-        | ${ENCRYPT_CMD} \
+        | _niced ${ENCRYPT_CMD} \
         | ${PV_THROTTLE} \
-        | aws_cmd s3 cp - "s3://${S3_BUCKET}/${_key}" \
+        | _niced aws_cmd s3 cp - "s3://${S3_BUCKET}/${_key}" \
             --storage-class "${S3_STORAGE_CLASS}" \
             --no-progress
     # Capture before any other command resets PIPESTATUS
@@ -951,6 +975,7 @@ on_exit() {
         wait "${_bg_pid}" 2>/dev/null || true
     done
     [[ -n "${_BG_RESULT_DIR}" ]] && rm -rf "${_BG_RESULT_DIR}"
+    thermal_governor_stop
     # Safety net: ensure DB is unlocked and probe is stopped on crash
     [[ "${_DB_LOCKED}" == "true" ]] && db_unlock
     [[ -n "${_PROBE_PID:-}" ]] && { kill "${_PROBE_PID}" 2>/dev/null || true; wait "${_PROBE_PID}" 2>/dev/null || true; rm -f "${_PROBE_LOG:-}"; _PROBE_PID=""; }
@@ -1237,12 +1262,28 @@ DEV_SIZE=$(blockdev --getsize64 "${BOOT_DEV}" 2>/dev/null \
            || lsblk -bdno SIZE "${BOOT_DEV}" 2>/dev/null || echo "0")
 DEV_SIZE_HUMAN=$(numfmt --to=iec "${DEV_SIZE}" 2>/dev/null || echo "${DEV_SIZE} bytes")
 
+# How hard the backup may lean on the host. Unbounded, pigz takes every core at
+# level 6: on andrew-pi-5 that was 94% CPU and 84.8°C for the whole 26 minutes
+# while the upload, not the compressor, set the pace.
+[[ "${BACKUP_COMPRESS_LEVEL}" =~ ^[1-9]$ ]] \
+    || die "BACKUP_COMPRESS_LEVEL must be 1-9 (got '${BACKUP_COMPRESS_LEVEL}')"
+[[ "${BACKUP_NICE}" =~ ^([0-9]|1[0-9])$ ]] \
+    || die "BACKUP_NICE must be 0-19 (got '${BACKUP_NICE}')"
+[[ "${BACKUP_MAX_TEMP_C}" =~ ^[0-9]+$ ]] \
+    || die "BACKUP_MAX_TEMP_C must be a whole number of °C, or 0 to disable (got '${BACKUP_MAX_TEMP_C}')"
+if [[ -z "${BACKUP_COMPRESS_THREADS}" ]]; then
+    BACKUP_COMPRESS_THREADS=$(( $(nproc 2>/dev/null || echo 2) / 2 ))
+    (( BACKUP_COMPRESS_THREADS < 1 )) && BACKUP_COMPRESS_THREADS=1
+fi
+[[ "${BACKUP_COMPRESS_THREADS}" =~ ^[1-9][0-9]*$ ]] \
+    || die "BACKUP_COMPRESS_THREADS must be a positive whole number, or blank for half the cores (got '${BACKUP_COMPRESS_THREADS}')"
+
 if command -v pigz &>/dev/null; then
-    COMPRESSOR="pigz -c"
-    COMPRESSOR_NAME="pigz (parallel)"
+    COMPRESSOR="pigz -c -${BACKUP_COMPRESS_LEVEL} -p ${BACKUP_COMPRESS_THREADS}"
+    COMPRESSOR_NAME="pigz -${BACKUP_COMPRESS_LEVEL}, ${BACKUP_COMPRESS_THREADS} thread(s)"
 else
-    COMPRESSOR="gzip -c"
-    COMPRESSOR_NAME="gzip (install pigz for faster backups: sudo apt install pigz)"
+    COMPRESSOR="gzip -c -${BACKUP_COMPRESS_LEVEL}"
+    COMPRESSOR_NAME="gzip -${BACKUP_COMPRESS_LEVEL} (install pigz for faster backups: sudo apt install pigz)"
 fi
 
 # Bandwidth throttle via pv (optional)
@@ -1286,7 +1327,7 @@ mapfile -t BOOT_PARTITIONS < <(
 
 log "  Boot device:  ${BOOT_DEV} (${DEV_SIZE_HUMAN})"
 log "  Partitions:   ${BOOT_PARTITIONS[*]}"
-log "  Compressor:   ${COMPRESSOR_NAME}"
+log "  Compressor:   ${COMPRESSOR_NAME}, nice ${BACKUP_NICE}"
 [[ -n "${BACKUP_ENCRYPTION_PASSPHRASE}" ]] && log "  Encryption:   gpg AES-256"
 log "  Pi model:     ${PI_MODEL}"
 log "  OS:           ${OS_PRETTY}"
@@ -1438,6 +1479,7 @@ fi
 #     with the LAST NVMe partition — two separate buses, same upload pipe.
 #   • All other boot-device partitions run sequentially (same NVMe, upload-bound).
 BACKUP_START=$(date +%s)
+[[ "${DRY_RUN}" == "true" ]] || thermal_governor_start
 TOTAL_USED_BYTES=0
 TOTAL_COMPRESSED_BYTES=0
 PARTITIONS_JSON=""
@@ -1653,6 +1695,8 @@ BACKUP_DURATION=$(( BACKUP_END - BACKUP_START ))
 # ── Collect probe results ──────────────────────────────────────────────────
 # DB already unlocked after flush -- just stop the probe.
 probe_stop
+thermal_governor_stop
+[[ -n "${_THERMAL_RESULTS}" ]] && log "  ${_THERMAL_RESULTS}"
 
 # ── Restart Docker after imaging ──────────────────────────────────────────────
 if [[ "${_CONTAINERS_STOPPED}" == "true" && ${#_STOPPED_IDS[@]} -gt 0 ]]; then
@@ -1871,6 +1915,7 @@ if [[ "${NTFY_LEVEL}" != "failure" && "${DRY_RUN}" != "true" ]]; then
     [[ "${_VERIFY_STATUS}" == "failed" ]] && _VERIFY_LINE=$'\nVerify: FAILED — check log'
     _PROBE_LINE=""
     [[ -n "${_PROBE_RESULTS}" ]] && _PROBE_LINE=$'\n'"${_PROBE_RESULTS}"
+    [[ -n "${_THERMAL_RESULTS}" ]] && _PROBE_LINE+=$'\n'"${_THERMAL_RESULTS}"
     _NTFY_MSG="$(hostname) — ${DATE}
 Bucket: s3://${S3_BUCKET}/${S3_DATE_PREFIX}/
 Size:  ${TOTAL_COMPRESSED_HUMAN} compressed (from ${TOTAL_USED_HUMAN} used)
