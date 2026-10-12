@@ -281,6 +281,12 @@ CRON_SCHEDULE="0 2 * * *"     # 2:00am daily
 # Bandwidth throttle (requires: sudo apt install pv)
 AWS_TRANSFER_RATE_LIMIT=""     # e.g. "2m" = 2 MB/s, "500k" = 500 KB/s. blank = unlimited
 
+# Host load during backup (defaults favour the host over backup speed)
+BACKUP_COMPRESS_THREADS=""     # pigz threads. blank = half the cores
+BACKUP_COMPRESS_LEVEL=3        # 1 fastest .. 9 smallest. 3 = ~40% less CPU than 6, ~3% larger
+BACKUP_NICE=19                 # 0 normal .. 19 lowest priority
+BACKUP_MAX_TEMP_C=75           # pause compression at this CPU temp, resume 5°C lower. 0 = off
+
 # Client-side encryption (requires: sudo apt install gpg)
 BACKUP_ENCRYPTION_PASSPHRASE="" # blank = S3 SSE only. Set to encrypt before upload.
 
