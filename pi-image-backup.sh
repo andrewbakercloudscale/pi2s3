@@ -726,8 +726,11 @@ probe_start() {
             # non-zero, and set -e ends this subshell before the first result is
             # written — so every SUCCESSFUL probe was discarded and the summary
             # read "0/0 checks passed ✓" on every backup that had one.
+            # -L: the auto-discovered post URL has its trailing slash stripped, and
+            # WordPress answers that with a 301 to the slashed form. Unfollowed, a
+            # healthy site scores as non-200 on every check.
             read -r _code _elapsed < <(
-                curl -s -o /dev/null -w "%{http_code} %{time_total}\n" \
+                curl -sL -o /dev/null -w "%{http_code} %{time_total}\n" \
                     -H "Cache-Control: no-cache, no-store, must-revalidate" \
                     -H "Pragma: no-cache" \
                     -H "X-pi2s3-probe: 1" \
