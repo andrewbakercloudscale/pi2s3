@@ -716,14 +716,18 @@ probe_start() {
         while true; do
             local _t _code _elapsed
             _t=$(date +%s)
+            # The trailing \n is load-bearing: without it `read` hits EOF, returns
+            # non-zero, and set -e ends this subshell before the first result is
+            # written — so every SUCCESSFUL probe was discarded and the summary
+            # read "0/0 checks passed ✓" on every backup that had one.
             read -r _code _elapsed < <(
-                curl -s -o /dev/null -w "%{http_code} %{time_total}" \
+                curl -s -o /dev/null -w "%{http_code} %{time_total}\n" \
                     -H "Cache-Control: no-cache, no-store, must-revalidate" \
                     -H "Pragma: no-cache" \
                     -H "X-pi2s3-probe: 1" \
                     --max-time 15 \
                     "${url}?pi2s3t=${_t}" 2>/dev/null || echo "ERR 0"
-            )
+            ) || true
             printf '[%s] HTTP %s (%ss)\n' "$(date '+%H:%M:%S')" "${_code}" "${_elapsed}" \
                 >> "${_PROBE_LOG}"
             sleep "${PROBE_INTERVAL}"
@@ -748,7 +752,11 @@ probe_stop() {
     log "Site probe summary — ${_PROBE_URL_USED:-?} (${_total} check(s)):"
     while IFS= read -r _line; do log "  ${_line}"; done < "${_PROBE_LOG}"
 
-    if [[ "${_fail}" -gt 0 ]]; then
+    if [[ "${_total:-0}" -eq 0 ]]; then
+        # Nothing measured is not a pass.
+        _PROBE_RESULTS="Site probe: NO checks ran — availability during imaging is unknown"
+        log "  WARNING: the probe recorded no checks — availability during imaging is unknown"
+    elif [[ "${_fail}" -gt 0 ]]; then
         _PROBE_RESULTS="Site probe: ${_ok}/${_total} OK — ${_fail} non-200 during imaging"
         log "  WARNING: ${_fail} check(s) non-200 — site may have been partially unavailable"
     else
