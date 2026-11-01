@@ -1847,14 +1847,21 @@ fi
 if [[ "${TOTAL_IMAGES}" -gt "${MAX_IMAGES}" ]]; then
     DELETE_COUNT=$(( TOTAL_IMAGES - MAX_IMAGES ))
     TO_DELETE=$(echo "${BACKUP_DATES}" | grep -v "^${TIMESTAMP}$" | head -"${DELETE_COUNT}")
+    PRUNED=0
     while IFS= read -r old_date; do
         [[ -z "${old_date}" ]] && continue
         log "  Deleting: ${old_date}"
         if [[ "${DRY_RUN}" != "true" ]]; then
-            aws_cmd s3 rm "s3://${S3_BUCKET}/${S3_PREFIX}/${old_date}/" --recursive
+            # The new image is already safe in S3, so a key that may not delete must not
+            # turn this run into a failed backup. S3 lifecycle rules then do the expiry.
+            if ! aws_cmd s3 rm "s3://${S3_BUCKET}/${S3_PREFIX}/${old_date}/" --recursive; then
+                log "  WARN: could not delete ${old_date}; leaving retention to the bucket's lifecycle rule"
+                break
+            fi
         fi
+        PRUNED=$(( PRUNED + 1 ))
     done <<< "${TO_DELETE}"
-    log "  Pruned ${DELETE_COUNT} old image(s)."
+    log "  Pruned ${PRUNED} old image(s)."
 else
     log "  No pruning needed."
 fi
