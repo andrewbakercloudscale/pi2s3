@@ -81,6 +81,61 @@ t "0.0 -> DOWN"                                           1 "0.0"           1
 t "deliberately disabled, empty -> healthy"               0 ""              0
 t "deliberately disabled, 0 -> healthy"                   0 "0"             0
 
+# ── Network-fault path (2026-11-05 RCA) ─────────────────────────────────────
+# Prod's Wi-Fi stayed associated but carried no traffic for 47 minutes; Phases 1 and 2
+# restarted the stack eight times and only the reboot helped. A network fault must skip
+# the container restarts, bounce the uplink early and reboot after ~15 minutes.
+for f in net_plan is_network_fault internet_reachable; do
+    body="$(sed -n "/^${f}() {/,/^}/p" "${TARGET}")"
+    [[ -n "${body}" ]] || { echo "could not extract ${f}() from ${TARGET}" >&2; exit 2; }
+    eval "${body}"
+done
+
+c() { # $1 description, $2 expected, $3 got
+    checks=$((checks+1))
+    if [[ "$3" == "$2" ]]; then echo "  ok   $1"; else echo "  FAIL $1 (expected $2, got $3)"; fails=$((fails+1)); fi
+}
+
+echo ""
+echo "=== cf-tunnel-watchdog: network-fault path ==="
+echo ""
+CF_NET_BOUNCE_AT=2; CF_NET_REBOOT_AT=4
+c "attempt 1: restart cloudflared only"   cloudflared "$(net_plan 1)"
+c "attempt 2: bounce the uplink"          bounce      "$(net_plan 2)"
+c "attempt 3: bounce again"               bounce      "$(net_plan 3)"
+c "attempt 4 (about 15 min): reboot"      reboot      "$(net_plan 4)"
+c "attempt 9: still reboot"               reboot      "$(net_plan 9)"
+
+nf() { if is_network_fault "$@"; then echo yes; else echo no; fi; }
+c "tunnel down, HTTP 200, all up, no internet: network fault"     yes "$(nf 1 200 '' 1)"
+c "tunnel down, HTTP 301, no internet: network fault"             yes "$(nf 1 301 '' 1)"
+c "internet reachable: not a network fault"                       no  "$(nf 1 200 '' 0)"
+c "tunnel healthy: not a network fault"                           no  "$(nf 0 200 '' 1)"
+c "HTTP 502 locally: the stack is broken, not the network"        no  "$(nf 1 502 '' 1)"
+c "HTTP ERR locally: the stack is broken, not the network"        no  "$(nf 1 ERR '' 1)"
+c "a stopped container: the stack is broken, not the network"     no  "$(nf 1 200 'pi_nginx' 1)"
+
+ir() { if internet_reachable; then echo yes; else echo no; fi; }
+PORT=$(( 20000 + RANDOM % 20000 ))
+python3 -c "import socket,time;s=socket.socket();s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);s.bind(('127.0.0.1',${PORT}));s.listen(5);time.sleep(8)" &
+LPID=$!; sleep 0.5
+CF_NET_PROBES="127.0.0.1:${PORT}";                c "a probe that accepts: reachable"              yes "$(ir)"
+CF_NET_PROBES="127.0.0.1:1 127.0.0.1:${PORT}";    c "any one probe accepting is enough"            yes "$(ir)"
+CF_NET_PROBES="127.0.0.1:1 127.0.0.1:2";          c "no probe accepts: unreachable"                no  "$(ir)"
+CF_NET_PROBES="";                                 c "empty probe list: path off, reads reachable"  yes "$(ir)"
+kill ${LPID} 2>/dev/null; wait ${LPID} 2>/dev/null
+
+# Wiring: the network branch runs before Phase 1, exits, and Phase 3 reuses the
+# rate-limited reboot.
+nl=$(grep -n 'if \[\[ ${NETWORK_FAULT} -eq 1 \]\]; then' "${TARGET}" | head -1 | cut -d: -f1)
+p1=$(grep -n '^# ── Phase 1: targeted restart' "${TARGET}" | head -1 | cut -d: -f1)
+c "the network branch comes before Phase 1"   yes "$([[ -n "${nl}" && -n "${p1}" && ${nl} -lt ${p1} ]] && echo yes || echo no)"
+c "the network branch exits instead of falling into Phase 1" yes "$(sed -n "${nl},${p1}p" "${TARGET}" | grep -q '^    exit 0$' && echo yes || echo no)"
+c "the network plan's reboot step calls the rate-limited reboot" yes "$(sed -n "${nl},${p1}p" "${TARGET}" | awk '/^        reboot\)/{f=1;next} f&&/;;/{exit} f' | grep -q 'reboot_pi' && echo yes || echo no)"
+c "Phase 3 calls the shared rate-limited reboot" yes "$(sed -n '/^# ── Phase 3/,/^fi$/p' "${TARGET}" | grep -q 'reboot_pi' && echo yes || echo no)"
+c "reboot_pi keeps the 6-hour rate limit"     yes "$(sed -n '/^reboot_pi() {/,/^}/p' "${TARGET}" | grep -q 'CF_REBOOT_MIN_INTERVAL' && echo yes || echo no)"
+c "the reason names the gateway, for the RCA" yes "$(grep -q 'gateway ${UPLINK_GW} reachable=${UPLINK_GW_OK}' "${TARGET}" && echo yes || echo no)"
+
 echo ""
 if [[ ${fails} -gt 0 ]]; then
     printf "FAILED: %d of %d checks.\n" "${fails}" "${checks}"

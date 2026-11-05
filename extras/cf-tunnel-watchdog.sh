@@ -26,6 +26,10 @@ set -uo pipefail
 #   Phase 3 (attempt 9+, 40+ min)
 #     → reboot Pi (rate-limited: max once per 6 hours)
 #
+#   Network fault (the stack is fine locally, the host has no internet)
+#     → skips Phases 0 to 3: restart cloudflared (attempt 1), bounce the
+#       uplink (attempts 2–3), reboot (attempt 4, about 15 min, same limit)
+#
 # Recovery is confirmed by re-running all checks after each action.
 # Push notifications sent via ntfy on first failure, each phase
 # escalation, recovery, and stuck-down alerts.
@@ -149,6 +153,17 @@ CF_WEB_CONTAINER="${CF_WEB_CONTAINER:-pi_wordpress}"
 CF_PHASE1_MAX="${CF_PHASE1_MAX:-4}"
 CF_PHASE2_MAX="${CF_PHASE2_MAX:-8}"
 CF_REBOOT_MIN_INTERVAL="${CF_REBOOT_MIN_INTERVAL:-21600}"
+
+# Network-fault path (2026-11-05 RCA). When the site is healthy locally but this host
+# cannot reach the internet, restarting containers cannot help: on 2026-11-05 the Wi-Fi
+# stayed associated but carried no traffic, Phases 1 and 2 restarted the stack eight
+# times over 40 minutes, and only the reboot brought it back. On a network fault the
+# watchdog instead restarts cloudflared once, bounces the uplink from attempt
+# CF_NET_BOUNCE_AT, and reboots from attempt CF_NET_REBOOT_AT (same 6-hour rate limit).
+# Probes are by IP so a dead resolver cannot fake a dead uplink. Empty disables the path.
+CF_NET_PROBES="${CF_NET_PROBES-1.1.1.1:443 8.8.8.8:53 9.9.9.9:443}"
+CF_NET_BOUNCE_AT="${CF_NET_BOUNCE_AT:-2}"
+CF_NET_REBOOT_AT="${CF_NET_REBOOT_AT:-4}"
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Recovery timing constants (seconds)
@@ -385,6 +400,134 @@ diag_snapshot() {
     echo "=== END DIAG ==="
 }
 
+# True when ANY of CF_NET_PROBES (host:port, by IP) accepts a TCP connection. An empty
+# list means the network-fault path is off, which reads as reachable so the classic
+# phases run unchanged.
+internet_reachable() {
+    [[ -z "${CF_NET_PROBES// /}" ]] && return 0
+    local hp
+    for hp in ${CF_NET_PROBES}; do
+        timeout 5 bash -c "exec 3<>/dev/tcp/${hp%%:*}/${hp##*:}" 2>/dev/null && return 0
+    done
+    return 1
+}
+
+# "<device> <gateway> <gateway-reachable yes|no>" for the default route, for the log and
+# the RCA: a reachable gateway with no internet points upstream, an unreachable one at
+# this host's own link.
+uplink_status() {
+    local dev gw ok="no"
+    read -r gw dev < <(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++){if($i=="via")g=$(i+1);if($i=="dev")d=$(i+1)}; print g, d; exit}')
+    [[ -n "${gw:-}" ]] && ping -c 1 -W 2 "${gw}" >/dev/null 2>&1 && ok="yes"
+    echo "${dev:-none} ${gw:-none} ${ok}"
+}
+
+# What the network-fault path does on a given attempt: cloudflared | bounce | reboot.
+# Pure, so the test can pin it.
+net_plan() {
+    local attempt="$1"
+    if [[ "${attempt}" -ge "${CF_NET_REBOOT_AT}" ]]; then
+        echo "reboot"
+    elif [[ "${attempt}" -ge "${CF_NET_BOUNCE_AT}" ]]; then
+        echo "bounce"
+    else
+        echo "cloudflared"
+    fi
+}
+
+# True when the fault is the network, not the stack: the tunnel is down, the site's
+# containers are up, local HTTP is fine, and no internet probe answers.
+# $1 tunnel-healthy (0/1 exit of tunnel_healthy), $2 HTTP code, $3 stopped containers,
+# $4 internet-reachable (0/1 exit of internet_reachable).
+is_network_fault() {
+    [[ "$1" -ne 0 ]] || return 1
+    [[ "$2" != "ERR" && "${2:0:1}" != "5" ]] || return 1
+    [[ -z "$3" ]] || return 1
+    [[ "$4" -ne 0 ]]
+}
+
+# Bounce the default-route device; with no default route at all, the whole of
+# NetworkManager networking. Wi-Fi also gets a radio cycle, which resets a chip that
+# stays associated but stops passing data.
+bounce_uplink() {
+    local dev="$1"
+    if [[ "${dev}" == "none" ]]; then
+        run_step "nmcli networking off" nmcli networking off
+        sleep 3
+        run_step "nmcli networking on" nmcli networking on
+    else
+        run_step "nmcli device disconnect ${dev}" nmcli device disconnect "${dev}"
+        if [[ "${dev}" == wl* ]]; then
+            run_step "nmcli radio wifi off" nmcli radio wifi off
+            sleep 3
+            run_step "nmcli radio wifi on" nmcli radio wifi on
+        fi
+        sleep 3
+        run_step "nmcli device connect ${dev}" nmcli device connect "${dev}"
+    fi
+    sleep "${_CLOUDFLARED_SETTLE}"
+    run_step "systemctl restart cloudflared" systemctl restart cloudflared
+    sleep "${_CLOUDFLARED_SETTLE}"
+}
+
+# Reboot, rate-limited to once per CF_REBOOT_MIN_INTERVAL. Shared by Phase 3 and the
+# network-fault path.
+reboot_pi() {
+    NOW=$(date +%s)
+    LAST_REBOOT=0
+    [[ -f "${REBOOT_TS_FILE}" ]] \
+        && LAST_REBOOT=$(cat "${REBOOT_TS_FILE}" 2>/dev/null || echo 0)
+    SINCE_LAST=$(( NOW - LAST_REBOOT ))
+
+    if [[ "${LAST_REBOOT}" -gt 0 \
+          && "${SINCE_LAST}" -lt "${CF_REBOOT_MIN_INTERVAL}" ]]; then
+        MINS_AGO=$(( SINCE_LAST / 60 ))
+        logger -t "${LOG_TAG}" \
+            "RATE LIMIT: rebooted ${MINS_AGO} min ago — not rebooting again yet"
+        ntfy_send "pi2s3: Tunnel Stuck Down" \
+            "Site down. Watchdog rebooted ${MINS_AGO}m ago — not rebooting again.
+
+Manual action required.
+Reasons: ${REASON_STR}
+Pre-reboot diag: ${PREDIAG_LOG}" \
+            "urgent" "sos"
+        exit 0
+    fi
+
+    logger -t "${LOG_TAG}" \
+        "Phase 3: rebooting Pi (attempt ${ATTEMPT}, reasons: ${REASON_STR})"
+
+    # Dump full diagnostics to persistent log before the reboot
+    {
+        echo ""
+        echo "################################################################"
+        echo "WATCHDOG TRIGGERED REBOOT — $(date)"
+        echo "Attempt ${ATTEMPT} | Reasons: ${REASON_STR}"
+        diag_snapshot
+    } >> "${PREDIAG_LOG}" 2>&1
+
+    echo "${NOW}" > "${REBOOT_TS_FILE}"
+
+    ntfy_send "pi2s3: Rebooting" \
+        "Recovery failed after ${ATTEMPT} attempts. Rebooting now.
+
+Reasons: ${REASON_STR}
+${DIAG_MEM} | ${DIAG_SWAP}
+OOM: ${DIAG_OOM:-none}
+Diag: ${PREDIAG_LOG}" \
+        "urgent" "sos"
+
+    # Graceful Docker shutdown (best-effort, 20 s)
+    if [[ -n "${COMPOSE_DIR}" ]]; then
+        run_step "pre-reboot docker compose down" \
+            timeout 20 bash -c "cd '${COMPOSE_DIR}' && docker compose down --timeout 15"
+    fi
+    sync
+
+    sudo reboot
+    exit 0
+}
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 main() {
 
@@ -410,6 +553,19 @@ if [[ ${CF_TUNNEL_CHECK_ENABLED} -eq 0 ]]; then
     logger -t "${LOG_TAG}" "INFO: CF_METRICS_URL is empty — tunnel check deliberately disabled on this host"
 elif ! tunnel_healthy "${CONNS}"; then
     DOWN_REASONS+=("CF ha_connections=${CONNS:-UNREACHABLE at ${CF_METRICS_URL}}")
+fi
+
+# 4. Network fault? Only asked when something is already wrong, so a healthy tick
+#    costs nothing extra.
+NETWORK_FAULT=0
+if [[ ${#DOWN_REASONS[@]} -gt 0 ]]; then
+    _th=0; tunnel_healthy "${CONNS}" || _th=1
+    _ir=0; internet_reachable || _ir=1
+    if is_network_fault "${_th}" "${HTTP_CODE}" "${STOPPED_CONTAINERS}" "${_ir}"; then
+        NETWORK_FAULT=1
+        read -r UPLINK_DEV UPLINK_GW UPLINK_GW_OK < <(uplink_status)
+        DOWN_REASONS+=("no internet from this host (uplink ${UPLINK_DEV}, gateway ${UPLINK_GW} reachable=${UPLINK_GW_OK})")
+    fi
 fi
 
 # ── Healthy path ─────────────────────────────────────────────────────────────
@@ -448,6 +604,42 @@ logger -t "${LOG_TAG}" \
     "DOWN attempt ${ATTEMPT} — ${REASON_STR} | ${DIAG_MEM} | ${DIAG_SWAP} | CF: ${DIAG_CF}"
 
 COMPOSE_DIR=$(find_compose_dir)
+
+# ── Network-fault path: the stack is fine, the uplink is not ────────────────
+if [[ ${NETWORK_FAULT} -eq 1 ]]; then
+    if [[ "${ATTEMPT}" -eq 1 ]]; then
+        INCIDENT_LOG="$(write_incident_log)"
+        ntfy_send "pi2s3: Tunnel Down — No Internet" \
+            "This host cannot reach the internet; the site itself answers locally (HTTP ${HTTP_CODE}).
+Uplink ${UPLINK_DEV}, gateway ${UPLINK_GW} reachable=${UPLINK_GW_OK}.
+Plan: restart cloudflared now, bounce the uplink from attempt ${CF_NET_BOUNCE_AT}, reboot from attempt ${CF_NET_REBOOT_AT}." \
+            "high" "rotating_light"
+        notify_file "pi2s3: Incident Log" "${INCIDENT_LOG}" "page_facing_up" || true
+    fi
+    _plan="$(net_plan "${ATTEMPT}")"
+    logger -t "${LOG_TAG}" "Network fault (attempt ${ATTEMPT}): ${_plan}"
+    case "${_plan}" in
+        cloudflared)
+            run_step "systemctl restart cloudflared" systemctl restart cloudflared
+            sleep "${_CLOUDFLARED_SETTLE}"
+            ;;
+        bounce)
+            bounce_uplink "${UPLINK_DEV}"
+            ;;
+        reboot)
+            reboot_pi
+            ;;
+    esac
+    NEW_CONNS=$(ha_connections)
+    logger -t "${LOG_TAG}" "Network fault result: ha_connections=${NEW_CONNS:-?}"
+    if tunnel_healthy "${NEW_CONNS}"; then
+        rm -f "${STATE_FILE}"
+        ntfy_send "pi2s3: Tunnel Restored" \
+            "Internet back after ${_plan} (attempt ${ATTEMPT}). ha_connections=${NEW_CONNS}" \
+            "default" "white_check_mark"
+    fi
+    exit 0
+fi
 
 # ── Phase 1: targeted restart (attempts 1–PHASE1_MAX) ────────────────────────
 if [[ "${ATTEMPT}" -le "${CF_PHASE1_MAX}" ]]; then
@@ -587,59 +779,7 @@ ha_connections=${NEW_CONNS:-n/a} | HTTP=${NEW_HTTP}" \
 
 # ── Phase 3: Pi reboot (attempt PHASE2_MAX+1 and beyond) ────────────────────
 else
-
-    NOW=$(date +%s)
-    LAST_REBOOT=0
-    [[ -f "${REBOOT_TS_FILE}" ]] \
-        && LAST_REBOOT=$(cat "${REBOOT_TS_FILE}" 2>/dev/null || echo 0)
-    SINCE_LAST=$(( NOW - LAST_REBOOT ))
-
-    if [[ "${LAST_REBOOT}" -gt 0 \
-          && "${SINCE_LAST}" -lt "${CF_REBOOT_MIN_INTERVAL}" ]]; then
-        MINS_AGO=$(( SINCE_LAST / 60 ))
-        logger -t "${LOG_TAG}" \
-            "RATE LIMIT: rebooted ${MINS_AGO} min ago — not rebooting again yet"
-        ntfy_send "pi2s3: Tunnel Stuck Down" \
-            "Site down 40+ min. Watchdog rebooted ${MINS_AGO}m ago — not rebooting again.
-
-Manual action required.
-Reasons: ${REASON_STR}
-Pre-reboot diag: ${PREDIAG_LOG}" \
-            "urgent" "sos"
-        exit 0
-    fi
-
-    logger -t "${LOG_TAG}" \
-        "Phase 3: rebooting Pi (attempt ${ATTEMPT}, reasons: ${REASON_STR})"
-
-    # Dump full diagnostics to persistent log before the reboot
-    {
-        echo ""
-        echo "################################################################"
-        echo "WATCHDOG TRIGGERED REBOOT — $(date)"
-        echo "Attempt ${ATTEMPT} | Reasons: ${REASON_STR}"
-        diag_snapshot
-    } >> "${PREDIAG_LOG}" 2>&1
-
-    echo "${NOW}" > "${REBOOT_TS_FILE}"
-
-    ntfy_send "pi2s3: Rebooting" \
-        "Stack restart failed after ${ATTEMPT} attempts. Rebooting now.
-
-Reasons: ${REASON_STR}
-${DIAG_MEM} | ${DIAG_SWAP}
-OOM: ${DIAG_OOM:-none}
-Diag: ${PREDIAG_LOG}" \
-        "urgent" "sos"
-
-    # Graceful Docker shutdown (best-effort, 20 s)
-    if [[ -n "${COMPOSE_DIR}" ]]; then
-        run_step "pre-reboot docker compose down" \
-            timeout 20 bash -c "cd '${COMPOSE_DIR}' && docker compose down --timeout 15"
-    fi
-    sync
-
-    sudo reboot
+    reboot_pi
 fi
 
 } # end main
